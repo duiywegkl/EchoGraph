@@ -1,0 +1,22 @@
+system:
+  name: "ChronoForge"
+  version: "0.1.0"
+  
+llm:
+  provider: "openai"
+  model: "deepseek-v3.1"
+  max_tokens: 4000
+  temperature: 0.8
+  
+memory:
+  max_hot_memory: 5
+  max_context_length: 3000
+  
+game:
+  world_name: "默认世界"
+  character_name: "系统"
+  
+paths:
+  data: "./data"
+  logs: "./logs"
+  configs: "./configs"

@@ -1,0 +1,19 @@
+{
+  "conversations": [
+    {
+      "timestamp": "2025-08-30T03:47:28.505734",
+      "user": "我走进这家店，想看看店主在卖什么。",
+      "ai": "系统出现了一点小问题，我们稍后再试。"
+    }
+  ],
+  "states": {
+    "character_name": {
+      "value": "Kael",
+      "timestamp": "2025-08-30T03:46:52.368129"
+    },
+    "world_setting": {
+      "value": "奇幻世界",
+      "timestamp": "2025-08-30T03:46:52.368129"
+    }
+  }
+}
