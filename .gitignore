@@ -96,6 +96,12 @@ Thumbs.db
 *.swo
 *~
 
+# 异常的系统目录（可能由工具错误创建）
+%USERPROFILE%/
+%APPDATA%/
+%LOCALAPPDATA%/
+%TEMP%/
+
 # 本地数据
 data/local_conversations/
 data/test_data/
