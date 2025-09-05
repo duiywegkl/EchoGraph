@@ -142,4 +142,4 @@ coverage.xml
 # MyPy
 .mypy_cache/
 .dmypy.json
-dmypy.json
+dmypy.json.claude/
