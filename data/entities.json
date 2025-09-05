@@ -1,0 +1,41 @@
+{
+  "entities": [
+    {
+      "name": "主角",
+      "type": "character",
+      "description": "故事的主要角色",
+      "created_time": 1757084770.079383
+    },
+    {
+      "name": "神秘村庄",
+      "type": "location",
+      "description": "一个充满秘密的村庄",
+      "created_time": 1757084770.079383
+    },
+    {
+      "name": "魔法剑",
+      "type": "item",
+      "description": "拥有神奇力量的武器",
+      "created_time": 1757084770.079383
+    },
+    {
+      "name": "初次相遇",
+      "type": "event",
+      "description": "角色之间的第一次见面",
+      "created_time": 1757084770.079383
+    },
+    {
+      "name": "智者",
+      "type": "character",
+      "description": "拥有古老智慧的长者",
+      "created_time": 1757084770.079383
+    },
+    {
+      "name": "古老神殿",
+      "type": "location",
+      "description": "古代文明的遗迹",
+      "created_time": 1757084770.079383
+    }
+  ],
+  "last_modified": 1757084770.079383
+}

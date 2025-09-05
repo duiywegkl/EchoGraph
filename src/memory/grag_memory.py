@@ -30,6 +30,10 @@ class GRAGMemory:
         if self.graph_save_path:
             self.knowledge_graph.load_graph(self.graph_save_path)
 
+        # 数据变化追踪
+        self._data_changed = False
+        self._last_conversation_count = 0
+
         logger.info("GRAGMemory initialized with Hot, Warm, and Cold memory layers.")
 
     # --- Interface for Hot and Warm Memory ---
@@ -37,6 +41,7 @@ class GRAGMemory:
     def add_conversation(self, user_input: str, ai_response: str):
         """向热记忆中添加一轮对话。"""
         self.basic_memory.add_conversation(user_input, ai_response)
+        self._data_changed = True  # 标记数据已变化
 
     def get_recent_conversation(self, turns: int = 5) -> str:
         """获取最近几轮的对话历史。"""
@@ -45,6 +50,7 @@ class GRAGMemory:
     def update_state(self, key: str, value: Any):
         """更新温记忆中的状态。"""
         self.basic_memory.update_state(key, value)
+        self._data_changed = True  # 标记数据已变化
 
     def get_state(self, key: str) -> Any:
         """从温记忆中获取状态。"""
@@ -55,18 +61,26 @@ class GRAGMemory:
     def add_or_update_node(self, node_id: str, node_type: str, **kwargs):
         """在知识图谱中添加或更新节点，带有冲突解决机制。"""
         self.knowledge_graph.add_or_update_node_with_conflict_resolution(node_id, node_type, **kwargs)
+        self._data_changed = True  # 标记数据已变化
 
     def add_edge(self, source: str, target: str, relationship: str, **kwargs):
         """在知识图谱中添加关系。"""
         self.knowledge_graph.add_edge(source, target, relationship, **kwargs)
+        self._data_changed = True  # 标记数据已变化
 
     def delete_node(self, node_id: str) -> bool:
         """从知识图谱中删除节点及其所有关系。"""
-        return self.knowledge_graph.delete_node(node_id)
+        result = self.knowledge_graph.delete_node(node_id)
+        if result:
+            self._data_changed = True  # 标记数据已变化
+        return result
 
     def delete_edge(self, source: str, target: str, relationship: str = None) -> bool:
         """从知识图谱中删除边。"""
-        return self.knowledge_graph.delete_edge(source, target, relationship)
+        result = self.knowledge_graph.delete_edge(source, target, relationship)
+        if result:
+            self._data_changed = True  # 标记数据已变化
+        return result
 
     def mark_node_as_deleted(self, node_id: str, reason: str = ""):
         """软删除节点，标记为已删除但保留历史记录。"""
@@ -133,7 +147,11 @@ class GRAGMemory:
         return full_context
 
     def save_all_memory(self):
-        """保存所有记忆状态。"""
+        """只在有数据变化时保存记忆状态。"""
+        if not self._data_changed:
+            logger.info("没有数据变化，跳过保存")
+            return
+        
         # 保存热、温记忆
         self.basic_memory.save_to_file()
         
@@ -142,3 +160,7 @@ class GRAGMemory:
             self.knowledge_graph.save_graph(self.graph_save_path)
         else:
             logger.warning("Knowledge graph save path is not set. Graph will not be saved.")
+        
+        # 重置变化标记
+        self._data_changed = False
+        logger.info("记忆状态已保存")

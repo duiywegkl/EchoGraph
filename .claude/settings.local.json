@@ -12,7 +12,8 @@
       "Read(/D:\\GitHubProjects\\chronoforge\\sillytavern_plugin/**)",
       "Read(/D:\\GitHubProjects\\chronoforge\\sillytavern_plugin/**)",
       "Read(/D:\\GitHubProjects\\chronoforge\\sillytavern_plugin/**)",
-      "Read(/D:\\GitHubProjects\\chronoforge\\st-memory-enhancement-master/**)"
+      "Read(/D:\\GitHubProjects\\chronoforge\\st-memory-enhancement-master/**)",
+      "Bash(python -c:*)"
     ],
     "deny": [],
     "ask": []
