@@ -195,22 +195,13 @@ ChronoForge 提供RESTful API接口，支持：
 4. 推送分支：`git push origin feature/amazing-feature`
 5. 提交Pull Request
 
-## 许可证
-
-本项目采用MIT许可证 - 详见 [LICENSE](LICENSE) 文件
-
 ## 致谢
 
 特别感谢以下优秀的AI助手在项目开发过程中提供的宝贵支持：
 
 ### 🌟 月费优秀员工
 - **Claude-4-Sonnet**: 在系统架构设计、代码重构和复杂逻辑实现方面提供了专业的技术指导
+- 其中大部分逻辑都由Claude重构并能且实现，估计以后也要通过它进行开发和维护
 
 ### 🌟 免费优秀员工  
 - **Gemini-2.5-Pro**: 在项目初期规划、代码审查和文档编写方面给予了重要帮助
-
-没有这些AI助手的智慧协作，ChronoForge项目无法达到今天的完成度。它们不仅是开发工具，更是创作伙伴！
-
----
-
-**ChronoForge** - 让每一次对话都成为传奇故事的开始 ✨
