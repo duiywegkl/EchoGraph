@@ -87,6 +87,7 @@ cache/
 *.bak
 *_backup.*
 *_old.*
+*.backup
 run_ui_backup.py
 
 # 系统文件
@@ -106,6 +107,10 @@ Thumbs.db
 data/local_conversations/
 data/test_data/
 data/debug/
+data/memory/memory_*.json
+
+# Claude相关文件
+.claude/
 
 # 生成的图谱文件
 graph.html

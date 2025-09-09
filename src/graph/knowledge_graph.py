@@ -391,3 +391,17 @@ class KnowledgeGraph:
             logger.info(f"Permanently removed deleted node '{node_id}' after {days_threshold} days.")
         
         return len(nodes_to_remove)
+    
+    def clear(self):
+        """清空整个知识图谱"""
+        try:
+            node_count = self.graph.number_of_nodes()
+            edge_count = self.graph.number_of_edges()
+            
+            self.graph.clear()
+            
+            logger.info(f"知识图谱已清空: 删除了 {node_count} 个节点和 {edge_count} 条边")
+            
+        except Exception as e:
+            logger.error(f"清空知识图谱失败: {e}")
+            raise
