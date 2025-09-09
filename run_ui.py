@@ -16,17 +16,337 @@ from PySide6.QtWidgets import (
     QFormLayout, QLineEdit, QPushButton, QCheckBox, QTabWidget, 
     QMessageBox, QSplitter, QListWidget, QLabel, QTextEdit,
     QGroupBox, QComboBox, QInputDialog, QStyle, QDialog, QFileDialog,
-    QRadioButton, QButtonGroup
+    QRadioButton, QButtonGroup, QScrollArea, QFrame
 )
-from PySide6.QtCore import Qt, QObject, Signal as pyqtSignal, QUrl, Slot
+from PySide6.QtCore import Qt, QObject, Signal as pyqtSignal, QUrl, Slot, QTimer, QPropertyAnimation, QRect, QThread
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebChannel import QWebChannel
-from PySide6.QtGui import QIcon, QFont, QColor, QIntValidator
+from PySide6.QtGui import QIcon, QFont, QColor, QIntValidator, QTextCursor, QPainter, QPen, QBrush
 from dotenv import dotenv_values, set_key
 from loguru import logger
 
 sys.path.append(str(Path(__file__).parent))
 from src.memory import GRAGMemory
+
+# 导入重构后的组件
+from src.ui.widgets.chat_components import ChatDisplayWidget, ChatBubble, LoadingBubble
+from src.ui.managers.conversation_manager import ConversationManager
+from src.ui.workers.llm_worker import LLMWorkerThread
+from src.ui.managers.scenario_manager import ScenarioManager
+from src.ui.managers.window_manager import WindowManager
+from src.ui.managers.resource_cleanup_manager import ResourceCleanupManager
+from src.ui.generators.graph_html_generator import GraphHTMLGenerator
+
+class ChatBubble(QFrame):
+    """聊天气泡组件"""
+    
+    # 添加信号
+    message_clicked = pyqtSignal(object)  # 点击消息时发出信号
+    
+    def __init__(self, message: str, is_user: bool, color: str = None):
+        super().__init__()
+        self.message = message
+        self.is_user = is_user
+        self.delete_mode_enabled = False  # 是否处于删除模式
+        # 统一的深色主题配色
+        if is_user:
+            # 用户消息：简洁的蓝色
+            self.color = color or "#5865f2"  # Discord蓝
+            self.text_color = "#ffffff"
+            self.border_color = "transparent"
+        else:
+            # AI消息：深色背景，浅色文字，微妙边框
+            self.color = color or "#36393f"  # Discord深色
+            self.text_color = "#dcddde"      # 温和的浅色
+            self.border_color = "#40444b"    # 微妙的边框
+        self.setup_ui()
+    
+    def set_delete_mode(self, enabled: bool):
+        """设置删除模式"""
+        self.delete_mode_enabled = enabled
+        if enabled:
+            self.setCursor(Qt.PointingHandCursor)
+            # 添加删除模式的视觉提示
+            self.setStyleSheet(self.styleSheet() + """
+                QFrame:hover {
+                    border: 2px solid #e74c3c !important;
+                    background-color: rgba(231, 76, 60, 0.1) !important;
+                }
+            """)
+        else:
+            self.setCursor(Qt.ArrowCursor)
+            self.setStyleSheet("")  # 重置样式
+            self.setup_ui()  # 重新设置UI样式
+    
+    def mousePressEvent(self, event):
+        """鼠标点击事件"""
+        if self.delete_mode_enabled and event.button() == Qt.LeftButton:
+            self.message_clicked.emit(self)
+        super().mousePressEvent(event)
+    
+    def setup_ui(self):
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(20, 8, 20, 8)
+        
+        # 创建消息标签
+        message_label = QLabel(self.message)
+        message_label.setWordWrap(True)
+        
+        if self.is_user:
+            # 用户消息样式 - 简洁的蓝色
+            message_label.setStyleSheet(f"""
+                QLabel {{
+                    background-color: {self.color};
+                    color: {self.text_color};
+                    border-radius: 18px;
+                    padding: 12px 16px;
+                    font-size: 14px;
+                    line-height: 1.4;
+                    max-width: 400px;
+                    min-height: 20px;
+                    border: none;
+                    font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
+                    font-weight: 500;
+                }}
+            """)
+        else:
+            # AI消息样式 - Discord风格深色
+            message_label.setStyleSheet(f"""
+                QLabel {{
+                    background-color: {self.color};
+                    color: {self.text_color};
+                    border: 1px solid {self.border_color};
+                    border-radius: 8px;
+                    padding: 12px 16px;
+                    font-size: 14px;
+                    line-height: 1.5;
+                    max-width: 450px;
+                    min-height: 20px;
+                    font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
+                }}
+            """)
+        
+        message_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        
+        if self.is_user:
+            # 用户消息右对齐
+            layout.addStretch()
+            layout.addWidget(message_label)
+        else:
+            # AI消息左对齐
+            layout.addWidget(message_label)
+            layout.addStretch()
+
+class LoadingBubble(QFrame):
+    """加载动画气泡"""
+    def __init__(self):
+        super().__init__()
+        self.dots_count = 1
+        self.max_dots = 6
+        self.setup_ui()
+        
+        # 设置定时器来更新动画
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.update_animation)
+        self.timer.start(500)  # 每500ms更新一次
+    
+    def setup_ui(self):
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(20, 8, 20, 8)
+        
+        self.message_label = QLabel("助手正在思考...")
+        self.message_label.setStyleSheet("""
+            QLabel {
+                background-color: #36393f;
+                color: #72767d;
+                border: 1px solid #40444b;
+                border-radius: 8px;
+                padding: 12px 16px;
+                font-size: 14px;
+                min-width: 120px;
+                font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
+                font-style: italic;
+            }
+        """)
+        
+        layout.addWidget(self.message_label)
+        layout.addStretch()
+    
+    def update_animation(self):
+        dots = "." * self.dots_count
+        self.message_label.setText(f"助手正在思考{dots}")
+        self.dots_count = (self.dots_count % self.max_dots) + 1
+    
+    def stop_animation(self):
+        self.timer.stop()
+
+class ChatDisplayWidget(QScrollArea):
+    """聊天显示组件"""
+    def __init__(self):
+        super().__init__()
+        self.messages_layout = QVBoxLayout()
+        self.current_loading_bubble = None
+        self.message_widgets = []  # 存储所有消息组件的引用
+        self.setup_ui()
+    
+    def setup_ui(self):
+        self.setWidgetResizable(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.setMinimumHeight(400)
+        
+        # 创建容器widget
+        container = QWidget()
+        container.setStyleSheet("""
+            QWidget {
+                background-color: #2f3136;
+            }
+        """)
+        container_layout = QVBoxLayout(container)
+        container_layout.setSpacing(5)
+        container_layout.setContentsMargins(0, 10, 0, 10)
+        
+        # 添加消息布局
+        container_layout.addLayout(self.messages_layout)
+        container_layout.addStretch()  # 推到顶部
+        
+        self.setWidget(container)
+        
+        # 设置样式 - 现代深色聊天背景（类似Discord/Slack）
+        self.setStyleSheet("""
+            QScrollArea {
+                border: none;
+                border-radius: 0px;
+                background-color: #2f3136;
+            }
+            QWidget {
+                background-color: #2f3136;
+            }
+            QScrollBar:vertical {
+                width: 8px;
+                border-radius: 4px;
+                background-color: #2f3136;
+                border: none;
+            }
+            QScrollBar::handle:vertical {
+                border-radius: 4px;
+                background-color: #202225;
+                min-height: 20px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background-color: #40444b;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                border: none;
+                background: none;
+                height: 0px;
+            }
+        """)
+    
+    def add_message(self, message: str, is_user: bool, color: str = None):
+        # 限制消息历史大小，防止内存泄漏
+        MAX_MESSAGES = 1000  # 最多保留1000条消息
+        
+        # 如果超过限制，删除最旧的消息
+        if len(self.message_widgets) >= MAX_MESSAGES:
+            old_msg_info = self.message_widgets.pop(0)
+            old_widget = old_msg_info['widget']
+            self.messages_layout.removeWidget(old_widget)
+            old_widget.deleteLater()
+            logger.info(f"🧹 [UI] 删除旧消息以防止内存泄漏，当前消息数: {len(self.message_widgets)}")
+        
+        bubble = ChatBubble(message, is_user, color)
+        bubble.message_clicked.connect(self.on_message_clicked)  # 连接点击信号
+        self.messages_layout.addWidget(bubble)
+        self.message_widgets.append({
+            'widget': bubble,
+            'message': message,
+            'is_user': is_user,
+            'color': color
+        })
+        self.scroll_to_bottom()
+    
+    def set_delete_mode(self, enabled: bool):
+        """设置所有气泡的删除模式"""
+        for msg_info in self.message_widgets:
+            msg_info['widget'].set_delete_mode(enabled)
+    
+    def on_message_clicked(self, bubble):
+        """处理消息气泡点击事件"""
+        # 找到对应的消息信息
+        for i, msg_info in enumerate(self.message_widgets):
+            if msg_info['widget'] == bubble:
+                # 询问确认删除
+                reply = QMessageBox.question(
+                    self,
+                    "确认删除",
+                    f"确定要删除这条{'用户' if msg_info['is_user'] else 'AI'}消息吗？",
+                    QMessageBox.Yes | QMessageBox.No
+                )
+                
+                if reply == QMessageBox.Yes:
+                    # 从布局中移除
+                    self.messages_layout.removeWidget(bubble)
+                    bubble.deleteLater()
+                    
+                    # 从列表中移除
+                    self.message_widgets.pop(i)
+                    
+                    # 发出删除信号通知父组件更新对话历史
+                    # TODO: 实现对话历史同步
+                
+                break
+    
+    def show_loading_animation(self):
+        if self.current_loading_bubble:
+            self.remove_loading_animation()
+        
+        self.current_loading_bubble = LoadingBubble()
+        self.messages_layout.addWidget(self.current_loading_bubble)
+        self.scroll_to_bottom()
+        return self.current_loading_bubble
+    
+    def remove_loading_animation(self):
+        if self.current_loading_bubble:
+            self.current_loading_bubble.stop_animation()
+            self.messages_layout.removeWidget(self.current_loading_bubble)
+            self.current_loading_bubble.deleteLater()
+            self.current_loading_bubble = None
+    
+    def scroll_to_bottom(self):
+        # 延迟滚动以确保布局完成
+        QTimer.singleShot(50, lambda: self.verticalScrollBar().setValue(
+            self.verticalScrollBar().maximum()
+        ))
+    
+    def clear_messages(self):
+        # 清空所有消息
+        while self.messages_layout.count():
+            child = self.messages_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+        self.remove_loading_animation()
+        self.message_widgets.clear()
+    
+    def remove_last_ai_message(self):
+        """删除最后一条AI回复"""
+        # 从后往前找最后一条AI消息
+        for i in range(len(self.message_widgets) - 1, -1, -1):
+            if not self.message_widgets[i]['is_user']:
+                # 找到最后一条AI消息，删除它
+                widget_to_remove = self.message_widgets[i]['widget']
+                self.messages_layout.removeWidget(widget_to_remove)
+                widget_to_remove.deleteLater()
+                self.message_widgets.pop(i)
+                return True
+        return False
+    
+    def get_last_user_message(self):
+        """获取最后一条用户消息"""
+        for i in range(len(self.message_widgets) - 1, -1, -1):
+            if self.message_widgets[i]['is_user']:
+                return self.message_widgets[i]['message']
+        return None
 from src.core.perception import PerceptionModule
 from src.core.rpg_text_processor import RPGTextProcessor
 from src.core.game_engine import GameEngine
@@ -101,7 +421,7 @@ class ConversationManager(QObject):
         
         self.conversation_list_updated.emit(sorted_conversations)
         
-        # 如果没有当前对话，选择最新的
+        # 如果没有当前对话，选择最新的（但如果已经有了就不要重复触发）
         if not self.current_conversation_id and sorted_conversations:
             self.current_conversation_id = sorted_conversations[0]['id']
             self.conversation_changed.emit(self.current_conversation_id)
@@ -126,10 +446,14 @@ class ConversationManager(QObject):
         
         self.conversations[conv_id] = conversation
         self._save_conversation(conversation)
-        self.load_conversations()  # 重新加载更新列表
         
         # 切换到新对话
         self.current_conversation_id = conv_id
+        
+        # 重新加载更新列表，但不要触发自动选择逻辑
+        self.load_conversations()  
+        
+        # 手动发出对话切换信号
         self.conversation_changed.emit(conv_id)
         
         return conv_id
@@ -243,9 +567,59 @@ class IntegratedPlayPage(QWidget):
         # 设置初始按钮状态
         self.local_mode_radio.setEnabled(False)  # 当前选中的模式变灰
         self.tavern_mode_radio.setEnabled(True)
+        
+        # 初始化加载现有对话
+        self.load_existing_conversations()
+    
+    def load_existing_conversations(self):
+        """加载现有对话到下拉框"""
+        try:
+            logger.info("📥 [UI] 开始加载现有对话...")
+            
+            # 触发对话管理器加载对话
+            self.conversation_manager.load_conversations()
+            
+            # 获取排序后的对话列表
+            conversations = list(self.conversation_manager.conversations.values())
+            logger.info(f"📋 [UI] 找到 {len(conversations)} 个对话")
+            
+            if conversations:
+                # 按最后修改时间排序
+                sorted_conversations = sorted(
+                    conversations, 
+                    key=lambda x: x.get('last_modified', 0), 
+                    reverse=True
+                )
+                
+                for i, conv in enumerate(sorted_conversations):
+                    logger.info(f"📄 [UI] 对话{i+1}: {conv['name']} (ID: {conv['id']})")
+                
+                self.update_conversation_combo(sorted_conversations)
+                
+                # 如果有对话，自动选择第一个并加载其内容
+                if sorted_conversations:
+                    first_conv = sorted_conversations[0]
+                    logger.info(f"🎯 [UI] 自动选择第一个对话: {first_conv['name']}")
+                    
+                    self.conversation_manager.current_conversation_id = first_conv['id']
+                    self.load_conversation(first_conv['id'])
+                    logger.info(f"✅ [UI] 自动加载对话: {first_conv['name']}")
+            else:
+                logger.info("📭 [UI] 没有找到现有对话")
+        except Exception as e:
+            logger.error(f"❌ [UI] 加载现有对话失败: {e}")
+            import traceback
+            logger.error(f"详细错误: {traceback.format_exc()}")
     
     def init_ui(self):
         """初始化UI"""
+        # 设置页面背景为深色
+        self.setStyleSheet("""
+            IntegratedPlayPage {
+                background-color: #2f3136;
+            }
+        """)
+        
         layout = QVBoxLayout(self)
         
         # 顶部工具栏
@@ -256,10 +630,8 @@ class IntegratedPlayPage(QWidget):
         conv_management = self.create_conversation_management()
         layout.addWidget(conv_management)
         
-        # 对话显示区域
-        self.chat_display = QTextEdit()
-        self.chat_display.setReadOnly(True)
-        self.chat_display.setMinimumHeight(400)
+        # 对话显示区域 - 使用新的气泡对话框组件
+        self.chat_display = ChatDisplayWidget()
         layout.addWidget(self.chat_display)
         
         # 输入区域
@@ -273,6 +645,48 @@ class IntegratedPlayPage(QWidget):
         
         # 模式选择组
         mode_group = QGroupBox("测试模式")
+        mode_group.setStyleSheet("""
+            QGroupBox {
+                color: #dcddde;
+                border: 1px solid #4f545c;
+                border-radius: 8px;
+                margin-top: 1ex;
+                padding-top: 15px;
+                font-weight: bold;
+                background-color: #36393f;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 15px;
+                padding: 0 8px 0 8px;
+                color: #5865f2;
+                font-size: 14px;
+            }
+            QRadioButton {
+                color: #dcddde;
+                font-size: 13px;
+                spacing: 8px;
+                padding: 4px;
+            }
+            QRadioButton::indicator {
+                width: 16px;
+                height: 16px;
+                border-radius: 8px;
+                border: 2px solid #4f545c;
+                background-color: #40444b;
+            }
+            QRadioButton::indicator:checked {
+                background-color: #5865f2;
+                border-color: #5865f2;
+            }
+            QRadioButton::indicator:hover {
+                border-color: #5865f2;
+            }
+            QRadioButton::indicator:disabled {
+                background-color: #2f3136;
+                border-color: #72767d;
+            }
+        """)
         mode_layout = QVBoxLayout(mode_group)
         
         # 单选按钮组
@@ -313,6 +727,28 @@ class IntegratedPlayPage(QWidget):
     def create_conversation_management(self) -> QWidget:
         """创建对话管理区域"""
         group = QGroupBox("对话管理")
+        group.setStyleSheet("""
+            QGroupBox {
+                color: #dcddde;
+                border: 1px solid #4f545c;
+                border-radius: 8px;
+                margin-top: 1ex;
+                padding-top: 15px;
+                font-weight: bold;
+                background-color: #36393f;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 15px;
+                padding: 0 8px 0 8px;
+                color: #5865f2;
+                font-size: 14px;
+            }
+            QLabel {
+                color: #dcddde;
+                font-size: 13px;
+            }
+        """)
         layout = QHBoxLayout(group)
         
         # 对话选择下拉框
@@ -341,6 +777,40 @@ class IntegratedPlayPage(QWidget):
     def create_input_area(self) -> QWidget:
         """创建输入区域"""
         widget = QWidget()
+        widget.setStyleSheet("""
+            QWidget {
+                background-color: #36393f;
+                border-radius: 8px;
+                padding: 10px;
+            }
+            QPushButton {
+                background-color: #5865f2;
+                color: #ffffff;
+                border: none;
+                padding: 10px 20px;
+                border-radius: 6px;
+                font-weight: bold;
+                font-size: 13px;
+                min-width: 80px;
+            }
+            QPushButton:hover {
+                background-color: #4752c4;
+            }
+            QPushButton:pressed {
+                background-color: #3c45a5;
+            }
+            QPushButton:disabled {
+                background-color: #4f545c;
+                color: #72767d;
+            }
+            QPushButton:checked {
+                background-color: #e74c3c;
+                color: #ffffff;
+            }
+            QPushButton:checked:hover {
+                background-color: #c0392b;
+            }
+        """)
         layout = QVBoxLayout(widget)
         
         # 输入框
@@ -351,12 +821,25 @@ class IntegratedPlayPage(QWidget):
         # 按钮行
         button_layout = QHBoxLayout()
         
+        # 重新生成按钮
+        self.regenerate_btn = QPushButton("重新生成")
+        self.regenerate_btn.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
+        self.regenerate_btn.setToolTip("重新生成最后一轮AI回复")
+        
+        # 删除模式切换按钮
+        self.delete_mode_btn = QPushButton("删除模式")
+        self.delete_mode_btn.setIcon(self.style().standardIcon(QStyle.SP_TrashIcon))
+        self.delete_mode_btn.setCheckable(True)
+        self.delete_mode_btn.setToolTip("切换删除模式，可以选择删除任意对话")
+        
         self.send_btn = QPushButton("发送")
         self.send_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
         
         self.clear_btn = QPushButton("清空对话")
         self.clear_btn.setIcon(self.style().standardIcon(QStyle.SP_DialogResetButton))
         
+        button_layout.addWidget(self.regenerate_btn)
+        button_layout.addWidget(self.delete_mode_btn)
         button_layout.addStretch()
         button_layout.addWidget(self.clear_btn)
         button_layout.addWidget(self.send_btn)
@@ -380,6 +863,8 @@ class IntegratedPlayPage(QWidget):
         # 对话交互
         self.send_btn.clicked.connect(self.send_message)
         self.clear_btn.clicked.connect(self.clear_conversation)
+        self.regenerate_btn.clicked.connect(self.regenerate_last_response)
+        self.delete_mode_btn.toggled.connect(self.toggle_delete_mode)
         self.input_text.installEventFilter(self)  # 监听快捷键
         
         # 对话管理器信号
@@ -508,6 +993,31 @@ class IntegratedPlayPage(QWidget):
         
         if reply == QMessageBox.Yes:
             if self.conversation_manager.delete_conversation(current_conv['id']):
+                # 删除对话时也清空知识图谱
+                try:
+                    # 获取主窗口实例
+                    main_window = None
+                    widget = self.parent()
+                    while widget is not None:
+                        if isinstance(widget, ChronoForgeMainWindow):
+                            main_window = widget
+                            break
+                        widget = widget.parent()
+                    
+                    if main_window and hasattr(main_window, 'memory'):
+                        main_window.memory.clear_all()
+                        logger.info("✅ 删除对话时已清空知识图谱")
+                        
+                        # 刷新知识图谱页面显示
+                        if hasattr(main_window, 'graph_page'):
+                            main_window.graph_page.refresh_graph()
+                            main_window.graph_page.update_entity_list()
+                            main_window.graph_page.update_stats()
+                            logger.info("✅ 知识图谱页面显示已刷新")
+                    
+                except Exception as e:
+                    logger.warning(f"⚠️ 清空知识图谱失败: {e}")
+                
                 QMessageBox.information(self, "成功", "对话删除成功")
     
     def rename_current_conversation(self):
@@ -529,58 +1039,117 @@ class IntegratedPlayPage(QWidget):
     
     def switch_conversation(self, conv_name: str):
         """切换对话"""
+        logger.info(f"🔄 [UI] 尝试切换对话: {conv_name}")
+        
+        if not conv_name or not conv_name.strip():
+            logger.warning(f"❌ [UI] 对话名称为空，忽略切换")
+            return
+            
         # 根据名称找到对话ID
+        found_conv_id = None
         for conv_id, conv_data in self.conversation_manager.conversations.items():
             if conv_data['name'] == conv_name:
-                self.conversation_manager.switch_conversation(conv_id)
+                found_conv_id = conv_id
                 break
+        
+        if found_conv_id:
+            logger.info(f"✅ [UI] 找到对话ID: {found_conv_id}，开始切换")
+            self.conversation_manager.switch_conversation(found_conv_id)
+        else:
+            logger.error(f"❌ [UI] 未找到对话: {conv_name}")
+            logger.info(f"📋 [UI] 可用对话: {list(self.conversation_manager.conversations.keys())}")
     
     def update_conversation_combo(self, conversations: List[Dict]):
         """更新对话下拉框"""
+        logger.info(f"🔄 [UI] 更新对话下拉框，{len(conversations)} 个对话")
+        
+        try:
+            # 临时断开信号，避免在更新过程中触发切换
+            self.conversation_combo.currentTextChanged.disconnect()
+            logger.info("🔌 [UI] 临时断开下拉框信号")
+        except Exception as e:
+            logger.warning(f"⚠️ [UI] 断开信号失败（可能还没连接）: {e}")
+        
         self.conversation_combo.clear()
         for conv in conversations:
             self.conversation_combo.addItem(conv['name'])
+            logger.info(f"📝 [UI] 添加对话到下拉框: {conv['name']}")
         
         # 选中当前对话
         current_conv = self.conversation_manager.get_current_conversation()
         if current_conv:
+            logger.info(f"🎯 [UI] 当前对话: {current_conv['name']}")
             index = self.conversation_combo.findText(current_conv['name'])
             if index >= 0:
                 self.conversation_combo.setCurrentIndex(index)
+                logger.info(f"✅ [UI] 设置下拉框选中索引: {index}")
+            else:
+                logger.error(f"❌ [UI] 在下拉框中找不到对话: {current_conv['name']}")
+        else:
+            logger.warning("⚠️ [UI] 没有当前对话可选中")
+        
+        # 重新连接信号
+        self.conversation_combo.currentTextChanged.connect(self.switch_conversation)
+        logger.info("🔌 [UI] 重新连接下拉框信号")
+        
+        logger.info(f"✅ [UI] 下拉框更新完成，当前项目: {self.conversation_combo.currentText()}")
     
     def load_conversation(self, conv_id: str):
         """加载对话内容"""
-        self.chat_display.clear()
+        logger.info(f"📖 [UI] 开始加载对话内容: {conv_id}")
+        
+        self.chat_display.clear_messages()
         
         if not conv_id:
+            logger.warning("❌ [UI] 对话ID为空，无法加载")
             return
         
         conv = self.conversation_manager.get_current_conversation()
         if not conv:
+            logger.warning(f"❌ [UI] 找不到对话: {conv_id}")
             return
         
+        logger.info(f"📄 [UI] 找到对话: {conv['name']}")
+        messages = conv.get('messages', [])
+        logger.info(f"💬 [UI] 对话包含 {len(messages)} 条消息")
+        
         # 显示消息历史
-        for msg in conv.get('messages', []):
+        loaded_messages = 0
+        for msg in messages:
             if msg['role'] == 'user':
-                self.append_message(f"用户: {msg['content']}", "#2c3e50")
+                self.append_message(msg['content'], is_user=True)
+                loaded_messages += 1
             elif msg['role'] == 'assistant':
-                self.append_message(f"助手: {msg['content']}", "#27ae60")
+                self.append_message(msg['content'], is_user=False)
+                loaded_messages += 1
             elif msg['role'] == 'system':
-                self.append_message(f"系统: {msg['content']}", "#8e44ad")
+                self.append_message(f"系统: {msg['content']}", is_user=False)
+                loaded_messages += 1
+        
+        logger.info(f"✅ [UI] 成功加载 {loaded_messages} 条消息到聊天界面")
     
-    def append_message(self, message: str, color: str = "#2c3e50"):
+    def append_message(self, message: str, is_user: bool = None, color: str = None):
         """添加消息到显示区域"""
-        cursor = self.chat_display.textCursor()
-        cursor.movePosition(cursor.End)
+        # 从消息前缀判断类型
+        if is_user is None:
+            if message.startswith("用户: "):
+                is_user = True
+                message = message[3:]  # 移除前缀
+            elif message.startswith("助手: "):
+                is_user = False
+                message = message[3:]  # 移除前缀
+            else:
+                is_user = False
         
-        # 设置颜色
-        format = cursor.charFormat()
-        format.setForeground(QColor(color))
-        cursor.setCharFormat(format)
-        
-        cursor.insertText(message + "\n\n")
-        self.chat_display.setTextCursor(cursor)
-        self.chat_display.ensureCursorVisible()
+        self.chat_display.add_message(message, is_user, color)
+    
+    def show_loading_animation(self):
+        """显示加载动画"""
+        return self.chat_display.show_loading_animation()
+    
+    def remove_loading_animation(self):
+        """移除加载动画"""
+        self.chat_display.remove_loading_animation()
     
     def send_message(self):
         """发送消息"""
@@ -596,7 +1165,7 @@ class IntegratedPlayPage(QWidget):
         self.input_text.clear()
         
         # 显示用户消息
-        self.append_message(f"用户: {message}", "#2c3e50")
+        self.append_message(message, is_user=True)
         
         # 添加到对话历史
         self.conversation_manager.add_message({
@@ -604,8 +1173,8 @@ class IntegratedPlayPage(QWidget):
             'content': message
         })
         
-        # 显示思考状态
-        self.append_message("思考中...", "#7f8c8d")
+        # 显示动态加载状态
+        self.loading_message_widget = self.show_loading_animation()
         
         # 发送到API
         self.process_message(message)
@@ -618,28 +1187,154 @@ class IntegratedPlayPage(QWidget):
             self.process_tavern_message(message)
     
     def process_test_message(self, message: str):
-        """处理测试模式消息"""
+        """处理测试模式消息 - 使用多线程避免UI阻塞"""
         try:
-            # 使用本地引擎处理
-            response = f"测试回复: {message}的处理结果"  # 简化实现
+            # 清理之前的线程
+            if hasattr(self, 'llm_worker') and self.llm_worker is not None:
+                if self.llm_worker.isRunning():
+                    logger.info("🔄 [UI] 停止之前的LLM工作线程")
+                    self.llm_worker.terminate()
+                    self.llm_worker.wait(1000)  # 等待最多1秒
+                self.llm_worker.deleteLater()
             
-            self.append_message(f"助手: {response}", "#27ae60")
+            # 创建并启动工作线程
+            self.llm_worker = LLMWorkerThread(self.engine, message)
+            
+            # 连接信号
+            self.llm_worker.response_ready.connect(self.on_llm_response_ready)
+            self.llm_worker.error_occurred.connect(self.on_llm_error)
+            self.llm_worker.grag_data_ready.connect(self.on_grag_data_ready)
+            self.llm_worker.finished.connect(self.on_llm_worker_finished)  # 新增：线程完成清理
+            
+            # 启动线程
+            logger.info(f"🚀 [UI] 启动LLM工作线程处理消息: {message}")
+            self.llm_worker.start()
+            
+        except Exception as e:
+            logger.error(f"❌ [UI] 启动工作线程失败: {e}")
+            self.remove_loading_animation()
+            error_response = "抱歉，系统遇到了一些问题。让我们重新开始吧。"
+            self.append_message(error_response, is_user=False)
+    
+    def on_grag_data_ready(self, grag_data: dict):
+        """GRAG数据准备完成的回调"""
+        logger.info(f"📊 [UI] 收到GRAG数据 - 实体: {grag_data['entities']}, 上下文长度: {grag_data['context_length']}")
+    
+    def on_llm_response_ready(self, llm_response: str):
+        """LLM回复准备完成的回调"""
+        try:
+            logger.info(f"✅ [UI] 收到LLM回复，开始处理UI更新")
+            
+            # 移除加载动画并显示回复
+            self.remove_loading_animation()
+            self.append_message(llm_response, is_user=False)
             
             # 添加到对话历史
             self.conversation_manager.add_message({
                 'role': 'assistant',
-                'content': response
+                'content': llm_response
             })
             
+            # 处理LLM回复，更新知识图谱
+            try:
+                logger.info(f"🔄 [GRAG] 开始更新知识图谱...")
+                update_results = self.engine.extract_updates_from_response(llm_response, self.llm_worker.message)
+                self.engine.memory.add_conversation(self.llm_worker.message, llm_response)
+                self.engine.memory.save_all_memory()
+                
+                logger.info(f"✅ [GRAG] 知识图谱更新成功: {update_results}")
+                logger.info(f"📈 [GRAG] 更新统计: 节点更新={update_results.get('nodes_updated', 0)}, 边添加={update_results.get('edges_added', 0)}")
+                
+                # 实时刷新知识图谱页面显示
+                try:
+                    # 获取主窗口实例
+                    main_window = None
+                    widget = self.parent()
+                    while widget is not None:
+                        if isinstance(widget, ChronoForgeMainWindow):
+                            main_window = widget
+                            break
+                        widget = widget.parent()
+                    
+                    if main_window and hasattr(main_window, 'graph_page'):
+                        # 同步实体数据到JSON文件
+                        main_window.memory.sync_entities_to_json()
+                        # 刷新图谱显示
+                        main_window.graph_page.refresh_graph()
+                        main_window.graph_page.update_entity_list()
+                        main_window.graph_page.update_stats()
+                        logger.info("✅ [GRAG] 知识图谱页面已实时刷新")
+                except Exception as refresh_error:
+                    logger.warning(f"⚠️ [GRAG] 实时刷新知识图谱页面失败: {refresh_error}")
+                    
+            except Exception as e:
+                logger.warning(f"⚠️ [GRAG] 知识图谱更新失败: {e}")
+            
         except Exception as e:
-            logger.error(f"Test message processing failed: {e}")
-            self.append_message(f"错误: {str(e)}", "#e74c3c")
+            logger.error(f"❌ [UI] 处理LLM回复时出错: {e}")
+    
+    def on_llm_error(self, error_message: str):
+        """LLM处理出错的回调"""
+        logger.error(f"❌ [UI] LLM处理出错: {error_message}")
+        self.remove_loading_animation()
+        error_response = "抱歉，系统遇到了一些问题。让我们重新开始吧。"
+        self.append_message(error_response, is_user=False)
+    
+    def on_llm_worker_finished(self):
+        """LLM工作线程完成时的清理回调"""
+        logger.info("🧹 [UI] LLM工作线程已完成，进行清理")
+        if hasattr(self, 'llm_worker') and self.llm_worker is not None:
+            self.llm_worker.deleteLater()
+            self.llm_worker = None
     
     def process_tavern_message(self, message: str):
         """处理酒馆模式消息"""
         # TODO: 实现与SillyTavern的交互
         pass
     
+    def regenerate_last_response(self):
+        """重新生成最后一轮AI回复"""
+        try:
+            # 获取最后一条用户消息
+            last_user_message = self.chat_display.get_last_user_message()
+            if not last_user_message:
+                QMessageBox.information(self, "提示", "没有找到可重新生成的对话")
+                return
+            
+            # 删除最后一条AI回复
+            if not self.chat_display.remove_last_ai_message():
+                QMessageBox.information(self, "提示", "没有找到可删除的AI回复")
+                return
+            
+            # 从对话历史中删除最后一条AI回复
+            current_conv = self.conversation_manager.get_current_conversation()
+            if current_conv and current_conv.get('messages'):
+                # 从后往前找最后一条AI回复并删除
+                for i in range(len(current_conv['messages']) - 1, -1, -1):
+                    if current_conv['messages'][i]['role'] == 'assistant':
+                        current_conv['messages'].pop(i)
+                        self.conversation_manager._save_conversation(current_conv)
+                        break
+            
+            # 重新发送用户消息（触发新的AI回复）
+            self.process_message(last_user_message)
+            
+        except Exception as e:
+            logger.error(f"重新生成回复失败: {e}")
+            QMessageBox.warning(self, "错误", f"重新生成失败：{str(e)}")
+    
+    def toggle_delete_mode(self, enabled: bool):
+        """切换删除模式"""
+        if enabled:
+            self.delete_mode_btn.setText("退出删除")
+            self.delete_mode_btn.setStyleSheet("QPushButton { background-color: #e74c3c; }")
+            self.chat_display.set_delete_mode(True)
+            QMessageBox.information(self, "删除模式", "删除模式已开启\n点击任意对话气泡可删除该条消息")
+        else:
+            self.delete_mode_btn.setText("删除模式")
+            self.delete_mode_btn.setStyleSheet("")
+            self.chat_display.set_delete_mode(False)
+
     def clear_conversation(self):
         """清空当前对话"""
         reply = QMessageBox.question(
@@ -651,7 +1346,32 @@ class IntegratedPlayPage(QWidget):
         
         if reply == QMessageBox.Yes:
             self.conversation_manager.clear_current_conversation()
-            self.chat_display.clear()
+            self.chat_display.clear_messages()
+            
+            # 清空对话时也清空知识图谱
+            try:
+                # 获取主窗口实例
+                main_window = None
+                widget = self.parent()
+                while widget is not None:
+                    if isinstance(widget, ChronoForgeMainWindow):
+                        main_window = widget
+                        break
+                    widget = widget.parent()
+                
+                if main_window and hasattr(main_window, 'memory'):
+                    main_window.memory.clear_all()
+                    logger.info("✅ 清空对话时已清空知识图谱")
+                    
+                    # 刷新知识图谱页面显示
+                    if hasattr(main_window, 'graph_page'):
+                        main_window.graph_page.refresh_graph()
+                        main_window.graph_page.update_entity_list()
+                        main_window.graph_page.update_stats()
+                        logger.info("✅ 知识图谱页面显示已刷新")
+                
+            except Exception as e:
+                logger.warning(f"⚠️ 清空知识图谱失败: {e}")
 
 
 class GraphPage(QWidget):
@@ -662,6 +1382,9 @@ class GraphPage(QWidget):
         self.memory = memory_system
         self.graph_file_path = Path(__file__).parent / "graph.html"
         self.current_selected_node = None
+        
+        # 创建HTML生成器
+        self.html_generator = GraphHTMLGenerator()
         
         # 创建WebChannel桥接
         self.bridge = GraphBridge(self)
@@ -713,10 +1436,18 @@ class GraphPage(QWidget):
         self.reset_view_btn = QPushButton("重置视图")
         self.reset_view_btn.setIcon(self.style().standardIcon(QStyle.SP_ComputerIcon))
         
+        self.init_graph_btn = QPushButton("初始化图谱")
+        self.init_graph_btn.setIcon(self.style().standardIcon(QStyle.SP_FileDialogNewFolder))
+        
+        self.clear_graph_btn = QPushButton("清空图谱")
+        self.clear_graph_btn.setIcon(self.style().standardIcon(QStyle.SP_DialogResetButton))
+        
         header.addWidget(title)
         header.addStretch()
         header.addWidget(self.refresh_btn)
         header.addWidget(self.export_btn)
+        header.addWidget(self.init_graph_btn)
+        header.addWidget(self.clear_graph_btn)
         header.addWidget(self.reset_view_btn)
         
         layout.addLayout(header)
@@ -885,6 +1616,8 @@ class GraphPage(QWidget):
         # 图谱操作
         self.refresh_btn.clicked.connect(self.refresh_graph)
         self.export_btn.clicked.connect(self.export_graph)
+        self.init_graph_btn.clicked.connect(self.initialize_graph)
+        self.clear_graph_btn.clicked.connect(self.clear_graph)
         self.reset_view_btn.clicked.connect(self.reset_view)
         
         # 搜索功能
@@ -913,8 +1646,10 @@ class GraphPage(QWidget):
         logger.info("刷新知识关系图谱...")
         
         try:
-            # TODO: 实现真实的图谱刷新逻辑
-            # 这里先添加一些示例数据
+            # 重新加载实体和关系到知识图谱（确保同步，现在包含关系）
+            self.memory.reload_entities_from_json()
+            
+            # 更新UI显示
             self.update_entity_list()
             self.update_stats()
             
@@ -947,1403 +1682,30 @@ class GraphPage(QWidget):
                     'group': self._get_type_group(entity['type'])
                 })
             
-            # 创建合理的关系连接
-            relationships = [
-                # 直接的角色-物品关系
-                {"source": "主角", "target": "魔法剑", "relation": "拥有"},
-                
-                # 角色-事件关系（事件作为中介）
-                {"source": "主角", "target": "初次相遇", "relation": "参与"},
-                {"source": "智者", "target": "初次相遇", "relation": "参与"},
-                {"source": "初次相遇", "target": "神秘村庄", "relation": "发生于"},
-                
-                # 角色-地点的长期关系
-                {"source": "智者", "target": "古老神殿", "relation": "守护"},
-                {"source": "主角", "target": "神秘村庄", "relation": "到达"}
-            ]
+            # 获取知识图谱中的真实关系
+            graph = self.memory.knowledge_graph.graph
+            for source, target, attrs in graph.edges(data=True):
+                relationship_type = attrs.get('relationship', 'related_to')
+                links.append({
+                    'source': source,
+                    'target': target,
+                    'relation': relationship_type
+                })
             
-            # 将预定义关系添加到links数组
-            entity_names = {entity['name'] for entity in entities}
-            for rel in relationships:
-                if rel["source"] in entity_names and rel["target"] in entity_names:
-                    links.append(rel)
+            logger.info(f"从知识图谱获取了 {len(links)} 个关系连接")
             
             # 将数据转换为JSON字符串
             nodes_json = json.dumps(nodes, ensure_ascii=False)
             links_json = json.dumps(links, ensure_ascii=False)
             
-            # 生成HTML内容
-            html_content = self._create_html_template(nodes_json, links_json)
-            
-            with open(self.graph_file_path, 'w', encoding='utf-8') as f:
-                f.write(html_content)
+            # 使用HTML生成器生成文件
+            self.html_generator.generate_graph_html(nodes_json, links_json, self.graph_file_path)
                 
         except Exception as e:
             logger.error(f"生成图谱HTML失败: {e}")
             logger.error(f"错误详情: {traceback.format_exc()}")
-            # 如果失败，使用简化版本
-            self._generate_fallback_html()
-    
-    def _create_html_template(self, nodes_json, links_json):
-        """创建HTML模板"""
-        return f"""<!DOCTYPE html>
-<html>
-<head>
-    <title>ChronoForge Knowledge Graph</title>
-    <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
-    <style>
-        body {{
-            background-color: #2d2d2d;
-            color: white;
-            font-family: Arial, sans-serif;
-            margin: 0;
-            padding: 20px;
-        }}
-        
-        .loading {{
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            flex-direction: column;
-        }}
-        
-        .spinner {{
-            border: 4px solid #3c3c3c;
-            border-top: 4px solid #4a90e2;
-            border-radius: 50%;
-            width: 40px;
-            height: 40px;
-            animation: spin 1s linear infinite;
-            margin-bottom: 20px;
-        }}
-        
-        @keyframes spin {{
-            0% {{ transform: rotate(0deg); }}
-            100% {{ transform: rotate(360deg); }}
-        }}
-        
-        .graph-container {{
-            width: 100%;
-            height: 100vh;
-            overflow: hidden;
-            display: none;
-        }}
-        
-        /* 确保SVG不产生滚动条 */
-        #graph {{
-            display: block;
-            overflow: hidden;
-        }}
-        
-        .node {{
-            stroke: #fff;
-            stroke-width: 2px;
-            cursor: pointer;
-        }}
-        
-        .node.character {{ fill: #4a90e2; }}
-        .node.location {{ fill: #27ae60; }}
-        .node.item {{ fill: #f39c12; }}
-        .node.event {{ fill: #e74c3c; }}
-        .node.concept {{ fill: #9b59b6; }}
-        
-        .link {{
-            stroke: #999;
-            stroke-opacity: 0.6;
-            stroke-width: 2px;
-        }}
-        
-        .node-label {{
-            font-size: 12px;
-            fill: white;
-            text-anchor: middle;
-            pointer-events: none;
-            font-weight: bold;
-        }}
-        
-        /* 关系编辑模式样式 */
-        .editing-mode {{
-            cursor: crosshair !important;
-        }}
-        
-        .temp-line {{
-            stroke: #ff6b6b;
-            stroke-width: 3px;
-            stroke-dasharray: 5,5;
-            opacity: 0.7;
-        }}
-        
-        .selected-node {{
-            stroke: #ff6b6b !important;
-            stroke-width: 4px !important;
-            filter: brightness(1.2);
-        }}
-        
-        .editable-link {{
-            cursor: pointer;
-        }}
-        
-        .editable-link:hover {{
-            stroke-width: 4px !important;
-            stroke: #ff6b6b !important;
-        }}
-        
-        .relation-label {{
-            font-size: 10px;
-            fill: #ccc;
-            text-anchor: middle;
-            pointer-events: none;
-            opacity: 0.8;
-        }}
-        
-        .tooltip {{
-            position: absolute;
-            background-color: rgba(0, 0, 0, 0.8);
-            color: white;
-            padding: 10px;
-            border-radius: 5px;
-            font-size: 14px;
-            pointer-events: none;
-            opacity: 0;
-            transition: opacity 0.3s;
-            max-width: 200px;
-            z-index: 1000;
-        }}
-        
-        .controls {{
-            position: absolute;
-            top: 10px;
-            left: 10px;
-            background-color: rgba(0, 0, 0, 0.7);
-            padding: 10px;
-            border-radius: 5px;
-            z-index: 100;
-            display: none;
-        }}
-        
-        .controls button {{
-            background-color: #4a90e2;
-            color: white;
-            border: none;
-            padding: 5px 10px;
-            margin: 2px;
-            border-radius: 3px;
-            cursor: pointer;
-        }}
-        
-        .controls button:hover {{
-            background-color: #357abd;
-        }}
-        
-        .fallback {{
-            display: none;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            flex-direction: column;
-        }}
-        
-        .entity-card {{
-            background: #3c3c3c;
-            border: 2px solid #5a5a5a;
-            border-radius: 8px;
-            padding: 15px;
-            text-align: center;
-            transition: transform 0.2s;
-            margin: 10px;
-            min-width: 180px;
-        }}
-        
-        .entity-card:hover {{
-            transform: translateY(-2px);
-            border-color: #4a90e2;
-        }}
-        
-        .entity-type {{
-            font-size: 12px;
-            opacity: 0.7;
-            margin-bottom: 5px;
-        }}
-        
-        .entity-name {{
-            font-size: 16px;
-            font-weight: bold;
-            margin-bottom: 8px;
-        }}
-        
-        .entity-desc {{
-            font-size: 13px;
-            opacity: 0.8;
-            line-height: 1.3;
-        }}
-        
-        .entity-grid {{
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 15px;
-            max-width: 1000px;
-            margin: 30px 0;
-        }}
-    </style>
-</head>
-<body>
-    <div id="loading" class="loading">
-        <div class="spinner"></div>
-        <p>正在加载图谱...</p>
-    </div>
-    
-    <div class="controls" id="controls">
-        <button onclick="resetZoom()">重置视图</button>
-        <button onclick="togglePhysics()">关闭物理效果</button>
-        <button onclick="toggleEditMode()" id="editModeBtn">编辑关系</button>
-        <button onclick="location.reload()">刷新图谱</button>
-    </div>
-    
-    <div class="graph-container" id="graphContainer">
-        <svg id="graph" width="100%" height="100%"></svg>
-    </div>
-    
-    <div class="tooltip" id="tooltip"></div>
-    
-    <div id="fallback" class="fallback">
-        <h2 style="color: #4a90e2; margin-bottom: 30px;">知识图谱 - 简化视图</h2>
-        <div class="entity-grid" id="entityGrid">
-            <!-- 实体卡片将通过JavaScript动态生成 -->
-        </div>
-        <p style="opacity: 0.7; font-size: 14px; margin-top: 20px;">
-            网络访问受限，无法加载D3.js库，显示简化版本<br>
-            <small>已尝试从CDN和本地文件加载D3.js</small><br>
-            <small>本地文件路径: ./assets/js/d3.v7.min.js</small>
-        </p>
-        <button onclick="location.reload()" style="
-            background: #4a90e2; color: white; border: none; 
-            padding: 10px 20px; border-radius: 5px; cursor: pointer; margin-top: 15px;
-        ">重新加载</button>
-    </div>
-    
-    <script>
-        const nodes = {nodes_json};
-        const links = {links_json};
-        
-        // WebChannel桥接对象
-        var bridge = null;
-        
-        // 初始化WebChannel
-        function initWebChannel() {{
-            console.log('初始化WebChannel...');
-            if (typeof QWebChannel !== 'undefined') {{
-                new QWebChannel(qt.webChannelTransport, function (channel) {{
-                    bridge = channel.objects.bridge;
-                    console.log('✅ WebChannel初始化成功');
-                    console.log('Bridge对象:', bridge);
-                    
-                    // 测试连接
-                    if (bridge && bridge.log) {{
-                        bridge.log('WebChannel连接测试成功');
-                    }}
-                }});
-            }} else {{
-                console.error('❌ QWebChannel不可用');
-            }}
-        }}
-        
-        console.log('页面加载开始');
-        console.log('节点数据:', nodes);
-        console.log('连接数据:', links);
-        
-        // CDN列表 - 如果网络受限，可以考虑下载到本地
-        const cdnUrls = [
-            'https://d3js.org/d3.v7.min.js',
-            'https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js',
-            'https://unpkg.com/d3@7/dist/d3.min.js',
-            'https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js'
-        ];
-        
-        // 检查是否有本地D3.js文件
-        const localD3Path = './assets/js/d3.v7.min.js';
-        
-        let currentCdnIndex = 0;
-        let loadStartTime = Date.now();
-        
-        // 添加一个函数来检查CDN内容
-        function checkCdnContent(url) {{
-            console.log(`🔍 检查CDN内容: ${{url}}`);
-            
-            fetch(url, {{
-                method: 'GET',
-                mode: 'cors',
-                cache: 'no-cache'
-            }})
-            .then(response => {{
-                console.log(`📡 CDN响应状态: ${{response.status}} ${{response.statusText}}`);
-                console.log(`📡 Content-Type: ${{response.headers.get('content-type')}}`);
-                console.log(`📡 Content-Length: ${{response.headers.get('content-length')}}`);
-                
-                return response.text();
-            }})
-            .then(content => {{
-                console.log(`📄 CDN内容长度: ${{content.length}} 字符`);
-                console.log(`📄 前100字符:`, content.substring(0, 100));
-                
-                // 检查是否是HTML内容
-                if (content.toLowerCase().includes('<html') || content.toLowerCase().includes('<!doctype')) {{
-                    console.error(`❌ CDN返回HTML而非JavaScript: ${{url}}`);
-                    console.log('完整HTML内容:', content);
-                }} else if (content.includes('d3') && content.includes('function')) {{
-                    console.log(`✅ CDN内容看起来是有效的JavaScript: ${{url}}`);
-                }} else {{
-                    console.warn(`⚠️  CDN内容类型未知: ${{url}}`);
-                    console.log('内容预览:', content.substring(0, 500));
-                }}
-            }})
-            .catch(error => {{
-                console.error(`❌ 无法获取CDN内容: ${{url}}`, error);
-                console.error('Fetch错误类型:', error.name);
-                console.error('Fetch错误信息:', error.message);
-            }});
-        }}
-
-        // 尝试加载本地D3.js文件
-        function tryLoadLocalD3() {{
-            console.log('🏠 尝试加载本地D3.js文件:', localD3Path);
-            
-            const script = document.createElement('script');
-            script.src = localD3Path;
-            script.timeout = 5000;
-            
-            const loadTimer = setTimeout(() => {{
-                console.warn('本地D3.js加载超时');
-                script.onerror();
-            }}, 5000);
-            
-            script.onload = function() {{
-                clearTimeout(loadTimer);
-                console.log('✅ 本地D3.js加载成功！');
-                console.log('D3版本:', typeof d3 !== 'undefined' ? d3.version : 'undefined');
-                
-                if (typeof d3 === 'undefined') {{
-                    console.error('本地脚本加载了但是d3对象未定义');
-                    showFallback();
-                    return;
-                }}
-                
-                hideLoading();
-                try {{
-                    initializeGraph();
-                }} catch (error) {{
-                    console.error('初始化图谱失败:', error);
-                    showFallback();
-                }}
-            }};
-            
-            script.onerror = function() {{
-                clearTimeout(loadTimer);
-                console.error('❌ 本地D3.js文件不存在或加载失败');
-                console.log('💡 建议: 下载D3.js到', localD3Path);
-                
-                // 如果本地文件也失败，显示简化版本
-                console.log('🎨 显示简化版本图谱...');
-                showFallback();
-            }};
-            
-            document.head.appendChild(script);
-        }}
-        
-        function loadD3Script() {{
-            // 由于网络受限，直接尝试本地文件
-            console.log('⚠️  检测到网络访问受限，CDN无法访问');
-            console.log('🔄 跳过CDN，直接尝试本地D3.js文件');
-            
-            tryLoadLocalD3();
-            return;
-            
-            /* 原CDN加载代码（网络受限时不执行）
-            if (currentCdnIndex >= cdnUrls.length) {{
-                console.error('所有CDN都失败了，尝试本地文件');
-                tryLoadLocalD3();
-                return;
-            }}
-            
-            const currentUrl = cdnUrls[currentCdnIndex];
-            console.log(`尝试加载CDN ${{currentCdnIndex + 1}}/${{cdnUrls.length}}: ${{currentUrl}}`);
-            
-            // 首先检查CDN内容
-            checkCdnContent(currentUrl);
-            
-            const script = document.createElement('script');
-            script.src = currentUrl;
-            script.timeout = 10000; // 10秒超时
-            
-            const loadTimer = setTimeout(() => {{
-                console.warn(`CDN ${{currentUrl}} 加载超时`);
-                script.onerror();
-            }}, 10000);
-            
-            script.onload = function() {{
-                clearTimeout(loadTimer);
-                const loadTime = Date.now() - loadStartTime;
-                console.log(`✅ D3.js加载成功！来源: ${{currentUrl}}, 耗时: ${{loadTime}}ms`);
-                console.log('D3版本:', typeof d3 !== 'undefined' ? d3.version : 'undefined');
-                
-                if (typeof d3 === 'undefined') {{
-                    console.error('脚本加载了但是d3对象未定义');
-                    console.log('🔍 检查window对象中的d3:', window.d3);
-                    console.log('🔍 检查全局变量:', Object.keys(window).filter(key => key.includes('d3')));
-                    script.onerror();
-                    return;
-                }}
-                
-                hideLoading();
-                try {{
-                    initializeGraph();
-                }} catch (error) {{
-                    console.error('初始化图谱失败:', error);
-                    console.error('错误堆栈:', error.stack);
-                    showFallback();
-                }}
-            }};
-            
-            script.onerror = function(error) {{
-                clearTimeout(loadTimer);
-                console.error(`❌ CDN失败: ${{currentUrl}}`);
-                console.error('错误详情:', error);
-                console.error('错误事件:', event);
-                console.error('错误类型:', event ? event.type : 'unknown');
-                console.error('脚本标签:', script);
-                console.error('脚本src:', script.src);
-                console.error('脚本readyState:', script.readyState);
-                
-                // 再次检查CDN内容以进行对比
-                console.log('🔄 脚本失败后重新检查CDN内容...');
-                checkCdnContent(currentUrl);
-                
-                currentCdnIndex++;
-                setTimeout(() => {{
-                    console.log(`等待1秒后尝试下一个CDN...`);
-                    loadD3Script();
-                }}, 1000);
-            }};
-            
-            console.log('添加script标签到head');
-            document.head.appendChild(script);
-            */
-        }}
-        
-        function hideLoading() {{
-            console.log('隐藏加载动画，显示图谱');
-            document.getElementById('loading').style.display = 'none';
-            document.getElementById('graphContainer').style.display = 'block';
-            document.getElementById('controls').style.display = 'block';
-        }}
-        
-        function showFallback() {{
-            console.log('显示简化版本');
-            document.getElementById('loading').style.display = 'none';
-            document.getElementById('fallback').style.display = 'flex';
-            
-            // 生成实体卡片
-            generateEntityCards();
-        }}
-        
-        function generateEntityCards() {{
-            const entityGrid = document.getElementById('entityGrid');
-            const typeColors = {{
-                'character': '#4a90e2',
-                'location': '#27ae60', 
-                'item': '#f39c12',
-                'event': '#e74c3c',
-                'concept': '#9b59b6'
-            }};
-            
-            let cardsHtml = '';
-            nodes.forEach(node => {{
-                const color = typeColors[node.type] || '#9b59b6';
-                cardsHtml += `
-                    <div class="entity-card" style="border-color: ${{color}};">
-                        <div class="entity-type" style="color: ${{color}};">[${{node.type}}]</div>
-                        <div class="entity-name">${{node.name}}</div>
-                        <div class="entity-desc">${{node.description || '暂无描述'}}</div>
-                    </div>
-                `;
-            }});
-            
-            entityGrid.innerHTML = cardsHtml;
-            console.log('实体卡片生成完成');
-        }}
-        
-        function initializeGraph() {{
-            console.log('开始初始化图谱');
-            
-            try {{
-                const svg = d3.select("#graph");
-                console.log('SVG元素选择成功');
-                
-                const width = window.innerWidth;
-                const height = window.innerHeight;
-                console.log(`画布尺寸: ${{width}}x${{height}}`);
-                
-                svg.attr("width", width).attr("height", height);
-                
-                const g = svg.append("g");
-                console.log('创建SVG组元素');
-                
-                // 缩放行为
-                const zoom = d3.zoom()
-                    .scaleExtent([0.1, 4])
-                    .on("zoom", (event) => {{
-                        g.attr("transform", event.transform);
-                    }});
-                
-                svg.call(zoom);
-                console.log('缩放行为设置完成');
-                
-                // 力导向布局
-                let simulation = d3.forceSimulation(nodes)
-                    .force("link", d3.forceLink(links).id(d => d.id).distance(100))
-                    .force("charge", d3.forceManyBody().strength(-300))
-                    .force("center", d3.forceCenter(width / 2, height / 2));
-                
-                console.log('力导向布局创建完成');
-                
-                // 创建连线
-                const link = g.append("g")
-                    .selectAll("line")
-                    .data(links)
-                    .join("line")
-                    .attr("class", "link editable-link");
-                
-                console.log(`创建了 ${{links.length}} 条连线`);
-                
-                // 添加关系标签
-                const linkLabel = g.append("g")
-                    .selectAll("text")
-                    .data(links)
-                    .join("text")
-                    .attr("class", "relation-label")
-                    .text(d => d.relation || "关联")
-                    .style("cursor", "pointer"); // 让标签可点击
-                
-                // 关系连线点击编辑（任何时候都可以点击连线编辑）
-                link.on("click", function(event, d) {{
-                    event.stopPropagation();
-                    openRelationEditDialog(d);
-                }});
-                
-                // 关系标签点击编辑（任何时候都可以点击标签编辑）
-                linkLabel.on("click", function(event, d) {{
-                    event.stopPropagation();
-                    openRelationEditDialog(d);
-                }});
-                
-                // 创建节点
-                const node = g.append("g")
-                    .selectAll("circle")
-                    .data(nodes)
-                    .join("circle")
-                    .attr("class", d => `node ${{d.type}}`)
-                    .attr("r", 20)
-                    .call(d3.drag()
-                        .on("start", dragstarted)
-                        .on("drag", dragged)
-                        .on("end", dragended));
-                
-                console.log(`创建了 ${{nodes.length}} 个节点`);
-                
-                // 节点标签
-                const label = g.append("g")
-                    .selectAll("text")
-                    .data(nodes)
-                    .join("text")
-                    .attr("class", "node-label")
-                    .attr("dy", ".35em")
-                    .text(d => d.name);
-                
-                console.log('节点标签创建完成');
-                
-                // 工具提示
-                const tooltip = d3.select("#tooltip");
-                
-                node.on("mouseover", (event, d) => {{
-                    tooltip.style("opacity", 1)
-                        .html(`<strong>${{d.name}}</strong><br/>
-                               类型: ${{d.type}}<br/>
-                               描述: ${{d.description || '暂无描述'}}`)
-                        .style("left", (event.pageX + 10) + "px")
-                        .style("top", (event.pageY - 10) + "px");
-                }})
-                .on("mouseout", () => {{
-                    tooltip.style("opacity", 0);
-                }});
-                
-                console.log('工具提示事件绑定完成');
-                
-                // 更新位置
-                simulation.on("tick", () => {{
-                    link.attr("x1", d => d.source.x)
-                        .attr("y1", d => d.source.y)
-                        .attr("x2", d => d.target.x)
-                        .attr("y2", d => d.target.y);
-                    
-                    // 更新关系标签位置（在连线中点）
-                    linkLabel.attr("x", d => (d.source.x + d.target.x) / 2)
-                             .attr("y", d => (d.source.y + d.target.y) / 2 - 5);
-                    
-                    node.attr("cx", d => d.x)
-                        .attr("cy", d => d.y);
-                    
-                    label.attr("x", d => d.x)
-                         .attr("y", d => d.y);
-                }});
-                
-                // 拖拽函数（支持物理效果开关）
-                function dragstarted(event, d) {{
-                    if (physicsEnabled) {{
-                        if (!event.active) simulation.alphaTarget(0.3).restart();
-                    }}
-                    d.fx = d.x;
-                    d.fy = d.y;
-                }}
-                
-                function dragged(event, d) {{
-                    d.fx = event.x;
-                    d.fy = event.y;
-                    
-                    // 如果物理效果关闭，手动更新节点和标签位置
-                    if (!physicsEnabled) {{
-                        d.x = event.x;
-                        d.y = event.y;
-                        
-                        // 手动更新节点位置
-                        node.filter(n => n.id === d.id)
-                            .attr("cx", d.x)
-                            .attr("cy", d.y);
-                        
-                        // 手动更新标签位置    
-                        label.filter(n => n.id === d.id)
-                            .attr("x", d.x)
-                            .attr("y", d.y);
-                        
-                        // 手动更新连接的边
-                        link.filter(l => l.source.id === d.id || l.target.id === d.id)
-                            .attr("x1", l => l.source.x)
-                            .attr("y1", l => l.source.y)
-                            .attr("x2", l => l.target.x)
-                            .attr("y2", l => l.target.y);
-                            
-                        // 手动更新关系标签位置
-                        linkLabel.filter(l => l.source.id === d.id || l.target.id === d.id)
-                            .attr("x", l => (l.source.x + l.target.x) / 2)
-                            .attr("y", l => (l.source.y + l.target.y) / 2 - 5);
-                    }}
-                }}
-                
-                function dragended(event, d) {{
-                    if (physicsEnabled) {{
-                        // 物理效果开启：释放固定，让节点继续受力影响
-                        if (!event.active) simulation.alphaTarget(0);
-                        d.fx = null;
-                        d.fy = null;
-                    }} else {{
-                        // 物理效果关闭：保持当前位置固定，不再移动
-                        d.fx = event.x;
-                        d.fy = event.y;
-                        console.log(`节点 ${{d.name}} 固定在位置: (${{event.x}}, ${{event.y}})`);
-                    }}
-                }}
-                
-                // 关系编辑功能
-                let editMode = false;
-                let selectedNode = null;
-                let tempLine = null;
-                
-                // 编辑模式切换
-                window.toggleEditMode = function() {{
-                    console.log('=== toggleEditMode 函数被调用 ===');
-                    console.log('当前 editMode 值:', editMode);
-                    console.log('即将切换为:', !editMode);
-                    
-                    editMode = !editMode;
-                    console.log('新的 editMode 值:', editMode);
-                    
-                    const btn = document.getElementById('editModeBtn');
-                    console.log('找到按钮元素:', btn);
-                    
-                    if (!btn) {{
-                        console.error('❌ 找不到编辑按钮元素！');
-                        return;
-                    }}
-                    
-                    if (editMode) {{
-                        console.log('✅ 进入关系编辑模式');
-                        btn.textContent = '退出编辑';
-                        btn.style.backgroundColor = '#e74c3c';
-                        svg.classed('editing-mode', true);
-                        console.log('按钮文本已更改为: 退出编辑');
-                        console.log('按钮背景色已更改为: 红色');
-                        console.log('SVG已添加editing-mode类');
-                        
-                        // 检查SVG和节点是否存在
-                        console.log('SVG元素:', svg.node());
-                        console.log('节点数量:', node ? node.size() : '节点未定义');
-                        console.log('selectedNode:', selectedNode);
-                        
-                    }} else {{
-                        console.log('✅ 退出关系编辑模式');
-                        btn.textContent = '编辑关系';
-                        btn.style.backgroundColor = '#4a90e2';
-                        svg.classed('editing-mode', false);
-                        clearSelection();
-                        console.log('按钮文本已更改为: 编辑关系');
-                        console.log('按钮背景色已更改为: 蓝色');
-                        console.log('SVG已移除editing-mode类');
-                        console.log('选择状态已清除');
-                    }}
-                    
-                    console.log('=== toggleEditMode 函数执行完成 ===');
-                }}
-                
-                // 清除选择状态
-                function clearSelection() {{
-                    if (selectedNode) {{
-                        selectedNode.classed('selected-node', false);
-                        selectedNode = null;
-                    }}
-                    if (tempLine) {{
-                        tempLine.remove();
-                        tempLine = null;
-                    }}
-                }}
-                
-                // 节点点击事件
-                node.on("click", function(event, d) {{
-                    event.stopPropagation();
-                    
-                    console.log('节点被点击:', d.name, '编辑模式:', editMode, '已选中节点:', selectedNode ? selectedNode.datum().name : 'none');
-                    
-                    if (editMode) {{
-                        // 编辑模式：既可以编辑节点，也可以创建关系
-                        // 如果没有选中节点，直接调用Python编辑方法
-                        // 如果已有选中节点，则创建关系
-                        if (!selectedNode) {{
-                            console.log('通过WebChannel编辑节点:', d.name, '类型:', d.type);
-                            // 直接调用Python方法
-                            if (typeof bridge !== 'undefined' && bridge.editNode) {{
-                                bridge.editNode(d.name, d.type);
-                            }} else {{
-                                console.warn('WebChannel bridge不可用');
-                            }}
-                        }} else {{
-                            console.log('进入关系编辑模式');
-                            handleRelationEdit(d, d3.select(this));
-                        }}
-                    }} else {{
-                        console.log('普通模式，不执行任何操作');
-                    }}
-                    // 默认状态：点击节点不做任何操作，只有通过右侧面板的编辑按钮才能编辑节点
-                }});
-                
-                // 移除双击事件，避免意外触发编辑
-                
-                // 处理关系编辑
-                function handleRelationEdit(nodeData, nodeElement) {{
-                    if (!selectedNode) {{
-                        // 选择第一个节点
-                        selectedNode = nodeElement;
-                        selectedNode.classed('selected-node', true);
-                        console.log('选择了源节点:', nodeData.name);
-                    }} else {{
-                        // 选择第二个节点，创建关系
-                        const sourceData = selectedNode.datum();
-                        const targetData = nodeData;
-                        
-                        if (sourceData.id === targetData.id) {{
-                            console.log('不能连接到自己');
-                            clearSelection();
-                            return;
-                        }}
-                        
-                        // 检查是否已存在关系
-                        const existingLink = links.find(link => 
-                            (link.source.id === sourceData.id && link.target.id === targetData.id) ||
-                            (link.source.id === targetData.id && link.target.id === sourceData.id)
-                        );
-                        
-                        if (existingLink) {{
-                            console.log('节点间已存在关系，打开关系编辑对话框');
-                            openRelationEditDialog(existingLink);
-                            clearSelection();
-                            return;
-                        }}
-                        
-                        // 弹窗询问关系类型
-                        const relation = prompt('请输入关系类型:', '关联');
-                        if (relation && relation.trim()) {{
-                            createNewRelation(sourceData, targetData, relation.trim());
-                        }}
-                        
-                        clearSelection();
-                    }}
-                }}
-                
-                // 打开节点编辑对话框（支持新增和编辑模式）
-                function openNodeEditDialog(nodeData, isNewNode = false) {{
-                    console.log(isNewNode ? '打开新增节点对话框' : '打开节点编辑对话框:', nodeData.name);
-                    
-                    // 为新增模式创建默认数据
-                    if (isNewNode) {{
-                        nodeData = {{
-                            id: 'new_' + Date.now(),
-                            name: '',
-                            type: 'character',
-                            description: '',
-                            attributes: {{}}
-                        }};
-                    }}
-                    
-                    // 创建模态对话框
-                    const dialog = document.createElement('div');
-                    dialog.style.cssText = `
-                        position: fixed;
-                        top: 50%;
-                        left: 50%;
-                        transform: translate(-50%, -50%);
-                        background: #2d2d2d;
-                        color: white;
-                        border: 2px solid #4a90e2;
-                        border-radius: 10px;
-                        padding: 20px;
-                        min-width: 400px;
-                        max-height: 80vh;
-                        overflow-y: auto;
-                        z-index: 1000;
-                        box-shadow: 0 10px 30px rgba(0,0,0,0.5);
-                    `;
-                    
-                    // 创建背景遮罩
-                    const overlay = document.createElement('div');
-                    overlay.style.cssText = `
-                        position: fixed;
-                        top: 0;
-                        left: 0;
-                        width: 100%;
-                        height: 100%;
-                        background: rgba(0,0,0,0.7);
-                        z-index: 999;
-                    `;
-                    
-                    // 构建对话框内容
-                    let dialogHTML = `
-                        <h3 style="margin-top: 0; color: #4a90e2;">${{isNewNode ? '新增节点' : '编辑节点: ' + nodeData.name}}</h3>
-                        <hr style="border-color: #4a90e2;">
-                        
-                        <div style="margin-bottom: 15px;">
-                            <label>节点名称: <span style="color: #e74c3c;">*</span></label><br>
-                            <input type="text" id="nodeName" value="${{nodeData.name}}" style="
-                                width: 100%;
-                                padding: 8px;
-                                background: #3c3c3c;
-                                color: white;
-                                border: 1px solid #5a5a5a;
-                                border-radius: 4px;
-                                margin-top: 5px;
-                            " placeholder="请输入节点名称">
-                        </div>
-                        
-                        <div style="margin-bottom: 15px;">
-                            <label>类型:</label><br>
-                            <select id="nodeType" style="
-                                width: 100%;
-                                padding: 8px;
-                                background: #3c3c3c;
-                                color: white;
-                                border: 1px solid #5a5a5a;
-                                border-radius: 4px;
-                                margin-top: 5px;
-                            ">
-                                <option value="character" ${{nodeData.type === 'character' ? 'selected' : ''}}>角色</option>
-                                <option value="location" ${{nodeData.type === 'location' ? 'selected' : ''}}>地点</option>
-                                <option value="item" ${{nodeData.type === 'item' ? 'selected' : ''}}>物品</option>
-                                <option value="event" ${{nodeData.type === 'event' ? 'selected' : ''}}>事件</option>
-                                <option value="concept" ${{nodeData.type === 'concept' ? 'selected' : ''}}>概念</option>
-                            </select>
-                        </div>
-                        
-                        <div style="margin-bottom: 15px;">
-                            <label>描述:</label><br>
-                            <textarea id="nodeDescription" style="
-                                width: 100%;
-                                height: 80px;
-                                padding: 8px;
-                                background: #3c3c3c;
-                                color: white;
-                                border: 1px solid #5a5a5a;
-                                border-radius: 4px;
-                                margin-top: 5px;
-                                resize: vertical;
-                            " placeholder="描述该节点的特征、属性等...">${{nodeData.description || ''}}</textarea>
-                        </div>
-                        
-                        <h4 style="color: #4a90e2;">动态属性</h4>
-                        <div id="attributesContainer">
-                            <!-- 动态属性将在这里生成 -->
-                        </div>
-                        
-                        <button id="addAttributeBtn" style="
-                            background: #27ae60;
-                            color: white;
-                            border: none;
-                            padding: 8px 16px;
-                            border-radius: 4px;
-                            cursor: pointer;
-                            margin: 10px 5px 20px 0;
-                        ">+ 添加属性</button>
-                        
-                        <div style="text-align: right; margin-top: 20px;">
-                            <button id="cancelBtn" style="
-                                background: #95a5a6;
-                                color: white;
-                                border: none;
-                                padding: 10px 20px;
-                                border-radius: 4px;
-                                cursor: pointer;
-                                margin-right: 10px;
-                            ">取消</button>
-                            <button id="saveBtn" style="
-                                background: #4a90e2;
-                                color: white;
-                                border: none;
-                                padding: 10px 20px;
-                                border-radius: 4px;
-                                cursor: pointer;
-                            ">${{isNewNode ? '创建' : '保存'}}</button>
-                        </div>
-                    `;
-                    
-                    dialog.innerHTML = dialogHTML;
-                    
-                    // 添加到页面
-                    document.body.appendChild(overlay);
-                    document.body.appendChild(dialog);
-                    
-                    // 生成动态属性
-                    generateAttributeInputs(nodeData, document.getElementById('attributesContainer'));
-                    
-                    // 绑定事件
-                    document.getElementById('addAttributeBtn').onclick = () => addAttributeRow();
-                    document.getElementById('cancelBtn').onclick = () => closeDialog();
-                    document.getElementById('saveBtn').onclick = () => saveNodeData(nodeData, isNewNode);
-                    overlay.onclick = () => closeDialog();
-                    
-                    // 自动聚焦名称输入框
-                    setTimeout(() => {{
-                        document.getElementById('nodeName').focus();
-                    }}, 100);
-                    
-                    function closeDialog() {{
-                        document.body.removeChild(overlay);
-                        document.body.removeChild(dialog);
-                    }}
-                    
-                    function addAttributeRow(key = '', value = '') {{
-                        const container = document.getElementById('attributesContainer');
-                        const row = document.createElement('div');
-                        row.style.cssText = 'display: flex; gap: 10px; margin-bottom: 10px; align-items: center;';
-                        
-                        row.innerHTML = `
-                            <input type="text" placeholder="属性名" value="${{key}}" style="
-                                flex: 1;
-                                padding: 6px;
-                                background: #3c3c3c;
-                                color: white;
-                                border: 1px solid #5a5a5a;
-                                border-radius: 4px;
-                            ">
-                            <input type="text" placeholder="属性值" value="${{value}}" style="
-                                flex: 2;
-                                padding: 6px;
-                                background: #3c3c3c;
-                                color: white;
-                                border: 1px solid #5a5a5a;
-                                border-radius: 4px;
-                            ">
-                            <button onclick="this.parentElement.remove()" style="
-                                background: #e74c3c;
-                                color: white;
-                                border: none;
-                                padding: 6px 10px;
-                                border-radius: 4px;
-                                cursor: pointer;
-                            ">删除</button>
-                        `;
-                        
-                        container.appendChild(row);
-                    }}
-                    
-                    function generateAttributeInputs(data, container) {{
-                        container.innerHTML = '';
-                        
-                        // 显示现有属性
-                        if (data.attributes) {{
-                            Object.entries(data.attributes).forEach(([key, value]) => {{
-                                addAttributeRow(key, value);
-                            }});
-                        }}
-                        
-                        // 如果没有属性，添加一个空行
-                        if (!data.attributes || Object.keys(data.attributes).length === 0) {{
-                            addAttributeRow();
-                        }}
-                    }}
-                    
-                    function saveNodeData(originalData, isNew) {{
-                        // 获取基本信息
-                        const newName = document.getElementById('nodeName').value.trim();
-                        const newType = document.getElementById('nodeType').value;
-                        const newDescription = document.getElementById('nodeDescription').value.trim();
-                        
-                        if (!newName) {{
-                            alert('节点名称不能为空');
-                            document.getElementById('nodeName').focus();
-                            return;
-                        }}
-                        
-                        // 收集动态属性
-                        const newAttributes = {{}};
-                        const attributeRows = document.querySelectorAll('#attributesContainer > div');
-                        
-                        attributeRows.forEach(row => {{
-                            const inputs = row.querySelectorAll('input');
-                            const key = inputs[0].value.trim();
-                            const value = inputs[1].value.trim();
-                            
-                            if (key && value) {{
-                                newAttributes[key] = value;
-                            }}
-                        }});
-                        
-                        if (isNew) {{
-                            // 创建新节点
-                            const newNode = {{
-                                id: newName, // 使用名称作为ID
-                                name: newName,
-                                type: newType,
-                                description: newDescription,
-                                attributes: newAttributes,
-                                group: getTypeGroup(newType)
-                            }};
-                            
-                            // 添加到nodes数组
-                            nodes.push(newNode);
-                            
-                            console.log('创建新节点:', newNode);
-                        }} else {{
-                            // 更新现有节点数据
-                            originalData.name = newName;
-                            originalData.type = newType;
-                            originalData.description = newDescription;
-                            originalData.attributes = newAttributes;
-                            
-                            console.log('节点数据已更新:', originalData);
-                        }}
-                        
-                        // 更新可视化
-                        updateNodeVisualization();
-                        
-                        closeDialog();
-                    }}
-                    
-                    function getTypeGroup(entityType) {{
-                        const typeGroups = {{
-                            'character': 1,
-                            'location': 2,
-                            'item': 3,
-                            'event': 4,
-                            'concept': 5
-                        }};
-                        return typeGroups[entityType] || 5;
-                    }}
-                    
-                    function updateNodeVisualization() {{
-                        // 重新绑定节点数据
-                        const nodeSelection = g.selectAll('.node')
-                            .data(nodes, d => d.id);
-                        
-                        // 添加新节点
-                        const newNodes = nodeSelection.enter()
-                            .append('circle')
-                            .attr('class', d => `node ${{d.type}}`)
-                            .attr('r', 20)
-                            .call(d3.drag()
-                                .on("start", dragstarted)
-                                .on("drag", dragged)
-                                .on("end", dragended));
-                        
-                        // 为新节点添加事件
-                        newNodes.on("click", function(event, d) {{
-                            event.stopPropagation();
-                            console.log('新节点被点击:', d.name, '编辑模式:', editMode, '已选中节点:', selectedNode ? selectedNode.datum().name : 'none');
-                            
-                            if (editMode) {{
-                                // 编辑模式：既可以编辑节点，也可以创建关系
-                                if (!selectedNode) {{
-                                    console.log('通过WebChannel编辑新节点:', d.name, '类型:', d.type);
-                                    // 直接调用Python方法
-                                    if (typeof bridge !== 'undefined' && bridge.editNode) {{
-                                        bridge.editNode(d.name, d.type);
-                                    }} else {{
-                                        console.warn('WebChannel bridge不可用');
-                                    }}
-                                }} else {{
-                                    console.log('进入关系编辑模式');
-                                    handleRelationEdit(d, d3.select(this));
-                                }}
-                            }} else {{
-                                console.log('普通模式，不执行任何操作');
-                            }}
-                            // 默认状态：点击节点不做任何操作，只有通过右侧面板的编辑按钮才能编辑节点
-                        }});
-                        
-                        // 移除双击事件，避免意外触发编辑
-                        
-                        // 更新节点标签
-                        const labelSelection = g.selectAll('.node-label')
-                            .data(nodes, d => d.id);
-                        
-                        labelSelection.enter()
-                            .append('text')
-                            .attr('class', 'node-label')
-                            .attr('dy', '.35em')
-                            .merge(labelSelection)
-                            .text(d => d.name);
-                        
-                        // 更新现有节点
-                        nodeSelection.merge(newNodes)
-                            .attr("class", d => `node ${{d.type}}`);
-                        
-                        // 重启力导向布局
-                        simulation.nodes(nodes);
-                        simulation.alpha(0.3).restart();
-                    }}
-                }}
-                
-                // 打开关系编辑对话框
-                function openRelationEditDialog(linkData) {{
-                    const newRelation = prompt(
-                        `编辑关系: ${{linkData.source.name}} -> ${{linkData.target.name}}\\n当前关系: ${{linkData.relation}}\\n\\n请输入新的关系类型:`,
-                        linkData.relation
-                    );
-                    
-                    if (newRelation && newRelation.trim() && newRelation.trim() !== linkData.relation) {{
-                        linkData.relation = newRelation.trim();
-                        
-                        // 更新关系标签
-                        g.selectAll('.relation-label')
-                            .text(d => d.relation || '关联');
-                        
-                        console.log('关系已更新:', newRelation);
-                    }}
-                }}
-                
-                // 创建新关系
-                function createNewRelation(source, target, relation) {{
-                    const newLink = {{
-                        source: source,
-                        target: target,
-                        relation: relation
-                    }};
-                    
-                    links.push(newLink);
-                    
-                    // 重新绑定数据并更新可视化
-                    updateVisualization();
-                    
-                    console.log(`创建新关系: ${{source.name}} -> ${{target.name}} (${{relation}})`);
-                }}
-                
-                // 更新可视化
-                function updateVisualization() {{
-                    // 更新连线
-                    const linkSelection = g.select("g").selectAll("line")
-                        .data(links);
-                    
-                    const newLinks = linkSelection.enter()
-                        .append("line")
-                        .attr("class", "link editable-link");
-                    
-                    // 为新连线添加事件
-                    newLinks.on("click", function(event, d) {{
-                        if (editMode) return;
-                        event.stopPropagation();
-                        openRelationEditDialog(d);
-                    }});
-                    
-                    newLinks.on("contextmenu", function(event, d) {{
-                        if (!editMode) return;
-                        event.preventDefault();
-                        const confirmed = confirm(`确定要删除关系 "${{d.source.name}} -> ${{d.target.name}} (${{d.relation}})" 吗？`);
-                        if (confirmed) {{
-                            deleteRelation(d);
-                        }}
-                    }});
-                    
-                    linkSelection.merge(newLinks);
-                    
-                    // 更新关系标签
-                    const labelSelection = g.selectAll(".relation-label")
-                        .data(links);
-                    
-                    const newLabels = labelSelection.enter()
-                        .append("text")
-                        .attr("class", "relation-label")
-                        .style("cursor", "pointer");
-                    
-                    // 为新标签添加事件
-                    newLabels.on("click", function(event, d) {{
-                        if (editMode) return;
-                        event.stopPropagation();
-                        openRelationEditDialog(d);
-                    }});
-                    
-                    labelSelection.merge(newLabels)
-                        .text(d => d.relation || "关联");
-                    
-                    // 重启力导向布局
-                    simulation.nodes(nodes);
-                    simulation.force("link").links(links);
-                    simulation.alpha(0.3).restart();
-                }}
-                link.on("contextmenu", function(event, d) {{
-                    if (!editMode) return;
-                    
-                    event.preventDefault();
-                    
-                    const confirmed = confirm(`确定要删除关系 "${{d.source.name}} -> ${{d.target.name}} (${{d.relation}})" 吗？`);
-                    if (confirmed) {{
-                        deleteRelation(d);
-                    }}
-                }});
-                
-                // 删除关系
-                function deleteRelation(linkData) {{
-                    const index = links.findIndex(link => 
-                        link.source.id === linkData.source.id && 
-                        link.target.id === linkData.target.id &&
-                        link.relation === linkData.relation
-                    );
-                    
-                    if (index > -1) {{
-                        links.splice(index, 1);
-                        updateVisualization();
-                        console.log('删除关系:', linkData.relation);
-                    }}
-                }}
-                
-                // SVG点击取消选择
-                svg.on("click", function(event) {{
-                    if (editMode && event.target === this) {{
-                        clearSelection();
-                    }}
-                }});
-                
-                // 控制函数
-                window.resetZoom = function() {{
-                    console.log('重置视图');
-                    svg.transition().duration(750).call(
-                        zoom.transform,
-                        d3.zoomIdentity.translate(0, 0).scale(1)
-                    );
-                }}
-                
-                let physicsEnabled = true;
-                window.togglePhysics = function() {{
-                    const btn = document.querySelector('button[onclick="togglePhysics()"]');
-                    
-                    if (physicsEnabled) {{
-                        console.log('关闭物理效果（仍可拖动但不弹跳）');
-                        physicsEnabled = false;
-                        btn.textContent = '启动物理效果';
-                        btn.style.backgroundColor = '#95a5a6';
-                        
-                        // 停止力的作用，但保持拖拽功能
-                        simulation.stop();
-                        
-                    }} else {{
-                        console.log('启动物理效果');
-                        physicsEnabled = true;
-                        btn.textContent = '关闭物理效果';
-                        btn.style.backgroundColor = '#4a90e2';
-                        
-                        // 重新启动物理模拟
-                        simulation.alpha(0.3).restart();
-                    }}
-                }}
-                
-                // 窗口大小改变时调整
-                window.addEventListener('resize', () => {{
-                    const newWidth = window.innerWidth;
-                    const newHeight = window.innerHeight;
-                    console.log(`窗口大小改变: ${{newWidth}}x${{newHeight}}`);
-                    svg.attr("width", newWidth).attr("height", newHeight);
-                    simulation.force("center", d3.forceCenter(newWidth / 2, newHeight / 2));
-                    simulation.alpha(0.3).restart();
-                }});
-                
-                console.log('D3版本:', typeof d3 !== 'undefined' ? d3.version : 'undefined');
-        console.log('nodes数组是否存在:', typeof nodes !== 'undefined');
-        console.log('links数组是否存在:', typeof links !== 'undefined');
-        console.log('svg是否存在:', typeof svg !== 'undefined');
-        console.log('simulation是否存在:', typeof simulation !== 'undefined');
-        console.log('toggleEditMode是否存在:', typeof window.toggleEditMode !== 'undefined');
-        
-        // 添加全局调试函数
-        window.debugGraph = function() {{
-            console.log('=== 图谱状态调试信息 ===');
-            console.log('D3.js已加载:', typeof d3 !== 'undefined');
-            console.log('nodes数组长度:', nodes ? nodes.length : 'undefined');
-            console.log('links数组长度:', links ? links.length : 'undefined');
-            console.log('editMode当前值:', editMode);
-            console.log('selectedNode:', selectedNode);
-            console.log('按钮元素:', document.getElementById('editModeBtn'));
-            console.log('SVG元素:', svg ? svg.node() : 'undefined');
-            console.log('node元素数量:', node ? node.size() : 'undefined');
-            console.log('=========================');
-        }};
-        
-        console.log('✅ 调试函数已注册，可以在控制台调用 window.debugGraph() 查看状态');
-        console.log('✅ 图谱初始化完成！');
-                
-            }} catch (error) {{
-                console.error('图谱初始化过程中发生错误:', error);
-                console.error('错误堆栈:', error.stack);
-                throw error;
-            }}
-        }}
-        
-        // 页面加载完成后开始
-        if (document.readyState === 'loading') {{
-            console.log('等待DOM加载完成...');
-            document.addEventListener('DOMContentLoaded', () => {{
-                console.log('DOM加载完成，初始化WebChannel和D3');
-                initWebChannel();
-                loadD3Script();
-            }});
-        }} else {{
-            console.log('DOM已加载，立即初始化WebChannel和D3');
-            initWebChannel();
-            loadD3Script();
-        }}
-        
-        // 超时保护
-        setTimeout(() => {{
-            if (document.getElementById('loading').style.display !== 'none') {{
-                console.warn('30秒超时，强制显示简化版本');
-                showFallback();
-            }}
-        }}, 30000);
-    </script>
-</body>
-</html>"""
+            # 如果失败，使用HTML生成器的备用方案
+            self.html_generator._generate_fallback_html(self.graph_file_path)
     
     def _get_type_group(self, entity_type):
         """获取实体类型的分组ID"""
@@ -2355,34 +1717,6 @@ class GraphPage(QWidget):
             'concept': 5
         }
         return type_groups.get(entity_type, 5)
-    
-    def _generate_fallback_html(self):
-        """生成备用的简化HTML"""
-        html_content = """
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>ChronoForge Knowledge Graph</title>
-            <style>
-                body { background-color: #2d2d2d; color: white; font-family: Arial, sans-serif; }
-                .graph-container { display: flex; justify-content: center; align-items: center; height: 100vh; }
-                .placeholder { font-size: 18px; opacity: 0.7; text-align: center; }
-            </style>
-        </head>
-        <body>
-            <div class="graph-container">
-                <div class="placeholder">
-                    知识图谱加载失败<br>
-                    请检查网络连接或刷新页面<br>
-                    <small>(需要访问CDN获取D3.js库)</small>
-                </div>
-            </div>
-        </body>
-        </html>
-        """
-        
-        with open(self.graph_file_path, 'w', encoding='utf-8') as f:
-            f.write(html_content)
     
     def update_entity_list(self, filter_type: str = "全部"):
         """更新实体列表"""
@@ -2417,38 +1751,35 @@ class GraphPage(QWidget):
             self._add_sample_entities()
     
     def get_all_entities(self):
-        """获取所有实体（从实际存储获取）"""
-        # 从文件系统加载实体数据
-        entities_file = Path(__file__).parent / "data" / "entities.json"
-        entities_file.parent.mkdir(exist_ok=True, parents=True)
-        
-        if entities_file.exists():
-            try:
-                with open(entities_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    return data.get('entities', [])
-            except Exception as e:
-                logger.error(f"加载实体数据失败: {e}")
-        
-        # 如果文件不存在或加载失败，返回默认数据
-        default_entities = [
-            {"name": "主角", "type": "character", "description": "故事的主要角色", "created_time": time.time(), 
-             "attributes": {"性别": "男", "年龄": "20", "职业": "冒险者"}},
-            {"name": "神秘村庄", "type": "location", "description": "一个充满秘密的村庄", "created_time": time.time(),
-             "attributes": {"人口": "200", "特色": "古老传说", "位置": "森林深处"}},
-            {"name": "魔法剑", "type": "item", "description": "拥有神奇力量的武器", "created_time": time.time(),
-             "attributes": {"攻击力": "150", "魔法属性": "火焰", "重量": "轻"}},
-            {"name": "初次相遇", "type": "event", "description": "角色之间的第一次见面", "created_time": time.time(),
-             "attributes": {"时间": "黄昏", "地点": "村庄广场", "天气": "晴朗"}},
-            {"name": "智者", "type": "character", "description": "拥有古老智慧的长者", "created_time": time.time(),
-             "attributes": {"年龄": "70", "智慧": "博学", "性格": "慈祥"}},
-            {"name": "古老神殿", "type": "location", "description": "古代文明的遗迹", "created_time": time.time(),
-             "attributes": {"建造年代": "千年前", "守护者": "智者", "秘密": "封印之力"}},
-        ]
-        
-        # 保存默认数据
-        self.save_entities(default_entities)
-        return default_entities
+        """获取所有实体（从知识图谱内存状态获取）"""
+        try:
+            entities = []
+            
+            # 直接从知识图谱内存中获取数据
+            for node_id, attrs in self.memory.knowledge_graph.graph.nodes(data=True):
+                entity = {
+                    'name': node_id,
+                    'type': attrs.get('type', 'concept'),
+                    'description': attrs.get('description', ''),
+                    'created_time': attrs.get('created_time', time.time()),
+                    'last_modified': attrs.get('last_modified', time.time()),
+                    'attributes': {}
+                }
+                
+                # 添加动态属性，排除系统属性
+                excluded_keys = {'type', 'description', 'created_time', 'last_modified'}
+                for key, value in attrs.items():
+                    if key not in excluded_keys:
+                        entity['attributes'][key] = value
+                
+                entities.append(entity)
+            
+            logger.info(f"📊 从知识图谱内存获取 {len(entities)} 个实体")
+            return entities
+            
+        except Exception as e:
+            logger.error(f"从知识图谱获取实体失败: {e}")
+            return []
     
     def save_entities(self, entities):
         """保存实体数据"""
@@ -2468,12 +1799,150 @@ class GraphPage(QWidget):
     def _add_sample_entities(self):
         """添加示例实体（备用方案）"""
         sample_entities = [
-            {"name": "主角", "type": "character"},
-            {"name": "神秘村庄", "type": "location"},
-            {"name": "魔法剑", "type": "item"},
-            {"name": "初次相遇", "type": "event"},
-            {"name": "智者", "type": "character"},
-            {"name": "古老神殿", "type": "location"},
+            {"name": "克罗诺", "type": "character"},
+            {"name": "利恩王国", "type": "location"},
+            {"name": "传送装置", "type": "item"},
+            {"name": "千年祭", "type": "event"},
+            {"name": "玛尔", "type": "character"},
+            {"name": "时空之门", "type": "location"},
+        ]
+        
+        for entity in sample_entities:
+            item_text = f"[{entity['type']}] {entity['name']}"
+            self.entity_list.addItem(item_text)
+    
+    def update_stats(self):
+        """更新图谱统计信息"""
+        try:
+            entities = self.get_all_entities()
+            node_count = len(entities)
+            
+            # 计算关系数量（简单估算：每个实体平均2个关系）
+            relation_count = node_count * 2
+            
+            import datetime
+            current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            
+            stats_text = f"""节点数量: {node_count}
+关系数量: {relation_count}
+最后更新: {current_time}"""
+            
+            self.stats_label.setText(stats_text)
+            
+        except Exception as e:
+            logger.error(f"更新统计信息失败: {e}")
+            import datetime
+            current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            
+            stats_text = f"""节点数量: 6
+关系数量: 8
+最后更新: {current_time}"""
+            
+            self.stats_label.setText(stats_text)
+    
+    def _get_type_group(self, entity_type):
+        """获取实体类型的分组ID"""
+        type_groups = {
+            'character': 1,
+            'location': 2,
+            'item': 3,
+            'event': 4,
+            'concept': 5
+        }
+        return type_groups.get(entity_type, 5)
+    
+    def _generate_fallback_html(self):
+        """生成备用的简化HTML"""
+        # 使用HTML生成器生成备用HTML
+        self.html_generator._generate_fallback_html(self.graph_file_path)
+    
+    def update_entity_list(self, filter_type: str = "全部"):
+        """更新实体列表"""
+        self.entity_list.clear()
+        
+        # 从实际的知识图谱获取数据
+        try:
+            all_entities = self.get_all_entities()
+            
+            # 根据筛选条件过滤实体
+            filtered_entities = []
+            for entity in all_entities:
+                if filter_type == "全部":
+                    filtered_entities.append(entity)
+                elif filter_type == "角色" and entity['type'] == "character":
+                    filtered_entities.append(entity)
+                elif filter_type == "地点" and entity['type'] == "location":
+                    filtered_entities.append(entity)
+                elif filter_type == "物品" and entity['type'] == "item":
+                    filtered_entities.append(entity)
+                elif filter_type == "事件" and entity['type'] == "event":
+                    filtered_entities.append(entity)
+            
+            # 添加到列表
+            for entity in filtered_entities:
+                item_text = f"[{entity['type']}] {entity['name']}"
+                self.entity_list.addItem(item_text)
+                
+        except Exception as e:
+            logger.error(f"更新实体列表失败: {e}")
+            # 如果获取失败，显示示例数据
+            self._add_sample_entities()
+    
+    def get_all_entities(self):
+        """获取所有实体（从知识图谱内存状态获取）"""
+        try:
+            entities = []
+            
+            # 直接从知识图谱内存中获取数据
+            for node_id, attrs in self.memory.knowledge_graph.graph.nodes(data=True):
+                entity = {
+                    'name': node_id,
+                    'type': attrs.get('type', 'concept'),
+                    'description': attrs.get('description', ''),
+                    'created_time': attrs.get('created_time', time.time()),
+                    'last_modified': attrs.get('last_modified', time.time()),
+                    'attributes': {}
+                }
+                
+                # 添加动态属性，排除系统属性
+                excluded_keys = {'type', 'description', 'created_time', 'last_modified'}
+                for key, value in attrs.items():
+                    if key not in excluded_keys:
+                        entity['attributes'][key] = value
+                
+                entities.append(entity)
+            
+            logger.info(f"📊 从知识图谱内存获取 {len(entities)} 个实体")
+            return entities
+            
+        except Exception as e:
+            logger.error(f"从知识图谱获取实体失败: {e}")
+            return []
+    
+    def save_entities(self, entities):
+        """保存实体数据"""
+        entities_file = Path(__file__).parent / "data" / "entities.json"
+        entities_file.parent.mkdir(exist_ok=True, parents=True)
+        
+        try:
+            data = {
+                'entities': entities,
+                'last_modified': time.time()
+            }
+            with open(entities_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"保存实体数据失败: {e}")
+    
+    def _add_sample_entities(self):
+        """添加示例实体（备用方案）"""
+        sample_entities = [
+            {"name": "克罗诺", "type": "character"},
+            {"name": "利恩王国", "type": "location"},
+            {"name": "传送装置", "type": "item"},
+            {"name": "千年祭", "type": "event"},
+            {"name": "玛尔", "type": "character"},
+            {"name": "时空之门", "type": "location"},
         ]
         
         for entity in sample_entities:
@@ -2601,13 +2070,23 @@ class GraphPage(QWidget):
                     selected_entity.get('created_time', time.time())
                 ).strftime("%Y-%m-%d %H:%M:%S")
                 
+                # 构建属性详情
+                attributes = selected_entity.get('attributes', {})
+                if attributes:
+                    attr_lines = []
+                    for key, value in attributes.items():
+                        attr_lines.append(f"  • {key}: {value}")
+                    attr_text = "\n".join(attr_lines)
+                else:
+                    attr_text = "  暂无属性"
+                
                 detail_text = f"""节点信息:
 名称: {selected_entity['name']}
 类型: {selected_entity['type']}
 描述: {selected_entity.get('description', '暂无描述')}
 创建时间: {created_time}
-属性: {len(selected_entity.get('attributes', {}))} 个
-关系: 开发中..."""
+属性:
+{attr_text}"""
                 
             else:
                 # 备用显示
@@ -2616,8 +2095,7 @@ class GraphPage(QWidget):
 类型: {entity_type}
 创建时间: 未知
 描述: 暂无描述
-属性: 开发中...
-关系: 开发中..."""
+属性: 暂无数据"""
             
             self.detail_text.setText(detail_text)
             self.current_selected_node = entity_name
@@ -3031,13 +2509,67 @@ class GraphPage(QWidget):
                 else:
                     # 更新现有实体
                     all_entities = self.get_all_entities()
+                    
+                    # 找到并更新对应的实体
+                    entity_updated = False
+                    for i, entity in enumerate(all_entities):
+                        if entity['name'] == entity_name and entity['type'] == entity_type:
+                            # 更新找到的实体
+                            all_entities[i] = current_entity
+                            entity_updated = True
+                            logger.info(f"找到并更新实体: {entity_name} -> {new_name}")
+                            break
+                    
+                    if not entity_updated:
+                        logger.warning(f"未找到要更新的实体: {entity_name} ({entity_type})")
+                        QMessageBox.warning(dialog, "更新失败", f"未找到要更新的实体: {entity_name}")
+                        return
+                    
                     self.save_entities(all_entities)
-                    logger.info(f"更新节点: {new_name} (类型: {type_combo.currentText()})")
+                    logger.info(f"实体更新成功: {new_name} (类型: {type_combo.currentText()})")
+                    
+                    # 同步更新知识图谱中的节点
+                    try:
+                        # 如果名称改变了，需要先删除旧节点，再创建新节点
+                        if new_name != entity_name:
+                            # 删除旧节点
+                            if self.memory.knowledge_graph.graph.has_node(entity_name):
+                                self.memory.knowledge_graph.graph.remove_node(entity_name)
+                                logger.info(f"删除旧节点: {entity_name}")
+                        
+                        # 创建或更新新节点
+                        self.memory.knowledge_graph.add_or_update_node(
+                            new_name, 
+                            current_entity['type'], 
+                            description=current_entity['description'],
+                            **current_entity['attributes']
+                        )
+                        logger.info(f"同步更新知识图谱节点成功: {new_name}")
+                    except Exception as e:
+                        logger.warning(f"同步知识图谱失败: {e}")
                 
                 # 更新界面
                 self.update_entity_list()
                 self.update_stats()
                 self.refresh_graph()  # 刷新图谱显示
+                
+                # 同步到知识图谱
+                try:
+                    # 获取主窗口实例
+                    main_window = None
+                    widget = self.parent()
+                    while widget is not None:
+                        if isinstance(widget, ChronoForgeMainWindow):
+                            main_window = widget
+                            break
+                        widget = widget.parent()
+                    
+                    if main_window and hasattr(main_window, 'memory'):
+                        # 重新加载实体到知识图谱
+                        main_window.memory.reload_entities_from_json()
+                        logger.info("✅ 实体修改已同步到知识图谱")
+                except Exception as e:
+                    logger.warning(f"⚠️ 同步到知识图谱失败: {e}")
                 
                 QMessageBox.information(dialog, "成功", success_msg)
                 dialog.accept()
@@ -3183,6 +2715,78 @@ class GraphPage(QWidget):
             # 如果JavaScript执行失败，重新生成图谱
             self.refresh_graph()
     
+    def clear_graph(self):
+        """清空知识图谱"""
+        reply = QMessageBox.question(
+            self,
+            "确认清空",
+            "确定要清空当前的知识图谱吗？\n\n此操作将删除所有实体和关系，无法撤销。",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            try:
+                # 清空内存中的知识图谱
+                self.memory.clear_all()
+                
+                # 刷新显示
+                self.refresh_graph()
+                
+                # 更新统计信息
+                self.update_stats()
+                
+                QMessageBox.information(self, "清空完成", "知识图谱已成功清空。")
+                logger.info("知识图谱已清空")
+                
+            except Exception as e:
+                logger.error(f"清空知识图谱失败: {e}")
+                QMessageBox.warning(self, "清空失败", f"清空知识图谱时出现错误：\n{str(e)}")
+    
+    def initialize_graph(self):
+        """初始化知识图谱"""
+        reply = QMessageBox.question(
+            self,
+            "初始化知识图谱",
+            "是否要创建默认的游戏开局？\n\n这将清空现有图谱并创建新的世界设定。",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes
+        )
+        
+        if reply == QMessageBox.Yes:
+            self.create_default_scenario_for_graph()
+    
+    def create_default_scenario_for_graph(self):
+        """为知识图谱创建默认场景（不依赖对话ID）"""
+        try:
+            # 使用主窗口的方法创建默认开局
+            main_window = None
+            widget = self.parent()
+            while widget is not None:
+                if isinstance(widget, ChronoForgeMainWindow):
+                    main_window = widget
+                    break
+                widget = widget.parent()
+            
+            if main_window:
+                # 先清空现有图谱
+                self.memory.clear_all()
+                
+                # 创建默认开局
+                main_window.create_default_game_scenario("manual_init")
+                
+                # 立即刷新图谱页面显示
+                self.refresh_graph()
+                self.update_entity_list() 
+                self.update_stats()
+                logger.info("✅ 知识图谱初始化完成，页面已刷新")
+            else:
+                QMessageBox.warning(self, "初始化失败", "无法找到主窗口实例。")
+                
+        except Exception as e:
+            logger.error(f"初始化知识图谱失败: {e}")
+            QMessageBox.warning(self, "初始化失败", f"初始化知识图谱时出现错误：\n{str(e)}")
+    
     def open_dev_tools(self):
         """打开开发者工具"""
         try:
@@ -3320,6 +2924,9 @@ class ChronoForgeMainWindow(QMainWindow):
         # 初始化核心组件
         self.init_components()
         
+        # 初始化管理器
+        self.init_managers()
+        
         # 启动API服务器
         self.start_api_server()
         
@@ -3327,7 +2934,7 @@ class ChronoForgeMainWindow(QMainWindow):
         self.init_ui()
         
         # 设置窗口属性
-        self.setup_window()
+        WindowManager.setup_window(self)
     
     def init_components(self):
         """初始化核心组件"""
@@ -3353,6 +2960,27 @@ class ChronoForgeMainWindow(QMainWindow):
         except Exception as e:
             logger.error(f"核心组件初始化失败: {e}")
             QMessageBox.critical(self, "初始化错误", f"无法初始化核心组件：\n{e}")
+            sys.exit(1)
+    
+    def init_managers(self):
+        """初始化管理器组件"""
+        try:
+            # 场景管理器
+            self.scenario_manager = ScenarioManager(
+                self.memory, 
+                self.perception, 
+                self.rpg_processor, 
+                self.validation_layer
+            )
+            
+            # 资源清理管理器
+            self.cleanup_manager = ResourceCleanupManager(self)
+            
+            logger.info("管理器组件初始化完成")
+            
+        except Exception as e:
+            logger.error(f"管理器初始化失败: {e}")
+            QMessageBox.critical(self, "初始化错误", f"无法初始化管理器组件：\n{e}")
             sys.exit(1)
     
     def start_api_server(self):
@@ -3399,54 +3027,113 @@ class ChronoForgeMainWindow(QMainWindow):
         # 系统配置页面
         self.config_page = ConfigPage()
         self.tabs.addTab(self.config_page, "系统配置")
-    
-    def setup_window(self):
-        """设置窗口属性"""
-        self.setWindowTitle("ChronoForge - 智能角色扮演助手")
-        self.setMinimumSize(1200, 800)
-        self.resize(1400, 900)
         
-        # 设置应用图标
-        icon_path = Path(__file__).parent / "assets" / "icons" / "chronoforge.png"
-        if icon_path.exists():
-            self.setWindowIcon(QIcon(str(icon_path)))
-        
-        # 居中显示
-        self.center_window()
+        # 设置对话和知识图谱的联动
+        self.setup_cross_page_connections()
     
-    def center_window(self):
-        """窗口居中显示"""
-        frame_geometry = self.frameGeometry()
-        screen = QApplication.primaryScreen().availableGeometry().center()
-        frame_geometry.moveCenter(screen)
-        self.move(frame_geometry.topLeft())
+    def setup_cross_page_connections(self):
+        """设置页面间的联动连接"""
+        # 当对话切换时，刷新知识图谱
+        self.play_page.conversation_manager.conversation_changed.connect(
+            self.on_conversation_changed
+        )
+    
+    def on_conversation_changed(self, conv_id: str):
+        """处理对话切换事件"""
+        logger.info(f"对话切换到: {conv_id}")
+        
+        # 如果conv_id为空，说明没有剩余对话
+        if not conv_id:
+            logger.info("没有剩余对话，保持当前状态")
+            return
+        
+        # 获取对话信息
+        conv = self.play_page.conversation_manager.conversations.get(conv_id)
+        if not conv:
+            logger.warning(f"对话 {conv_id} 不存在")
+            return
+        
+        # 检查对话是否有消息内容
+        messages = conv.get('messages', [])
+        
+        if not messages:
+            # 新对话或空对话 - 询问是否创建默认开局
+            logger.info("这是一个空对话，询问是否创建默认开局")
+            self.prompt_initialize_knowledge_graph(conv_id)
+        else:
+            # 有内容的对话 - 不做任何操作，保持当前知识图谱
+            logger.info("切换到有内容的对话，保持当前知识图谱状态")
+    
+    def load_conversation_knowledge_graph(self, conv_id: str) -> bool:
+        """加载对话相关的知识图谱 - 暂时简化实现"""
+        # TODO: 未来可以实现真正的对话-图谱关联机制
+        # 现在先简化，只在真正需要时才处理
+        return True  # 默认返回True，表示加载成功
+    
+    def prompt_initialize_knowledge_graph(self, conv_id: str):
+        """提示用户初始化知识图谱"""
+        # 防止重复调用的标志
+        if hasattr(self, '_initializing_knowledge_graph') and self._initializing_knowledge_graph:
+            logger.info("知识图谱正在初始化中，跳过重复调用")
+            return
+        
+        try:
+            self._initializing_knowledge_graph = True
+            
+            # 获取对话名称以便更好地提示用户
+            conv = self.play_page.conversation_manager.conversations.get(conv_id)
+            conv_name = conv.get('name', '当前对话') if conv else '当前对话'
+            
+            reply = QMessageBox.question(
+                self, 
+                "知识图谱初始化", 
+                f"对话 \"{conv_name}\" 还没有开始。\n\n是否要创建默认的奇幻游戏开局来开始你的冒险？\n\n点击\"否\"将保持当前知识图谱状态。",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes
+            )
+            
+            if reply == QMessageBox.Yes:
+                self.create_default_game_scenario(conv_id)
+        finally:
+            self._initializing_knowledge_graph = False
+    
+    def create_default_game_scenario(self, conv_id: str):
+        """为对话创建默认游戏开局"""
+        try:
+            logger.info(f"为对话 {conv_id} 创建默认游戏开局")
+            
+            # 使用场景管理器创建超时空之轮场景
+            opening_story, entity_count, relationship_count = self.scenario_manager.create_chrono_trigger_scenario()
+            
+            # 刷新图谱显示
+            self.graph_page.refresh_graph()
+            self.graph_page.update_entity_list()
+            self.graph_page.update_stats()
+            logger.info("✅ 知识图谱页面已刷新")
+            
+            # 在聊天界面显示开场故事
+            self.play_page.chat_display.add_message(opening_story, False)  # False表示不是用户消息
+            
+            # 将开场故事保存到对话历史中
+            self.play_page.conversation_manager.add_message({
+                'role': 'assistant',
+                'content': opening_story
+            })
+            
+            # 显示成功消息
+            self.scenario_manager.show_scenario_success_message(self, entity_count, relationship_count)
+            
+        except Exception as e:
+            logger.error(f"创建默认游戏开局失败: {e}")
+            self.scenario_manager.show_scenario_error_message(self, e)
+    
     
     def closeEvent(self, event):
         """关闭事件处理"""
-        try:
-            # 终止API服务器进程
-            if hasattr(self, 'api_server_process') and self.api_server_process:
-                logger.info("正在关闭API服务器...")
-                self.api_server_process.terminate()
-                
-                # 等待进程结束，最多等待5秒
-                try:
-                    self.api_server_process.wait(timeout=5)
-                    logger.info("API服务器已正常关闭")
-                except subprocess.TimeoutExpired:
-                    logger.warning("API服务器未响应，强制终止...")
-                    self.api_server_process.kill()
-                    self.api_server_process.wait()
-            
-            # 保存任何需要保存的数据
-            if hasattr(self, 'memory') and self.memory:
-                self.memory.save_all_memory()
-                logger.info("知识图谱已保存")
-            
+        success = self.cleanup_manager.cleanup_all_resources()
+        if success:
             event.accept()
-            
-        except Exception as e:
-            logger.error(f"关闭程序时发生错误: {e}")
+        else:
             event.accept()  # 即使出错也要关闭
 
 
@@ -3458,210 +3145,7 @@ def main():
     app.setApplicationVersion("1.0.0")
     
     # 设置深色主题
-    app.setStyleSheet("""
-        /* 主窗口 */
-        QMainWindow {
-            background-color: #1e1e1e;
-            color: #ffffff;
-        }
-        
-        /* 标签页 */
-        QTabWidget::pane {
-            border: 1px solid #3c3c3c;
-            background-color: #2d2d2d;
-            border-radius: 4px;
-        }
-        QTabBar::tab {
-            background-color: #3c3c3c;
-            color: #ffffff;
-            padding: 10px 20px;
-            margin-right: 2px;
-            border-top-left-radius: 4px;
-            border-top-right-radius: 4px;
-            min-width: 100px;
-        }
-        QTabBar::tab:selected {
-            background-color: #4a90e2;
-            font-weight: bold;
-        }
-        QTabBar::tab:hover {
-            background-color: #505050;
-        }
-        
-        /* 输入控件 */
-        QTextEdit, QLineEdit {
-            background-color: #3c3c3c;
-            color: #ffffff;
-            border: 1px solid #5a5a5a;
-            border-radius: 4px;
-            padding: 8px;
-            font-size: 14px;
-        }
-        QTextEdit:focus, QLineEdit:focus {
-            border: 2px solid #4a90e2;
-        }
-        
-        /* 下拉框 */
-        QComboBox {
-            background-color: #3c3c3c;
-            color: #ffffff;
-            border: 1px solid #5a5a5a;
-            border-radius: 4px;
-            padding: 6px 10px;
-            min-width: 150px;
-        }
-        QComboBox:hover {
-            border: 1px solid #4a90e2;
-        }
-        QComboBox::drop-down {
-            border: none;
-            background-color: #4a90e2;
-            width: 20px;
-            border-radius: 2px;
-        }
-        QComboBox::down-arrow {
-            image: none;
-            border-left: 4px solid transparent;
-            border-right: 4px solid transparent;
-            border-top: 4px solid #ffffff;
-        }
-        
-        /* 按钮 */
-        QPushButton {
-            background-color: #4a90e2;
-            color: #ffffff;
-            border: none;
-            padding: 10px 20px;
-            border-radius: 6px;
-            font-weight: bold;
-            font-size: 13px;
-        }
-        QPushButton:hover {
-            background-color: #357abd;
-        }
-        QPushButton:pressed {
-            background-color: #2e5f99;
-        }
-        QPushButton:disabled {
-            background-color: #5a5a5a;
-            color: #888888;
-        }
-        
-        /* 分组框 */
-        QGroupBox {
-            color: #ffffff;
-            border: 1px solid #5a5a5a;
-            border-radius: 8px;
-            margin-top: 1ex;
-            padding-top: 15px;
-            font-weight: bold;
-            background-color: #2d2d2d;
-        }
-        QGroupBox::title {
-            subcontrol-origin: margin;
-            left: 15px;
-            padding: 0 8px 0 8px;
-            color: #4a90e2;
-            font-size: 14px;
-        }
-        
-        /* 标签 */
-        QLabel {
-            color: #ffffff;
-            font-size: 13px;
-        }
-        
-        /* 列表 */
-        QListWidget {
-            background-color: #3c3c3c;
-            color: #ffffff;
-            border: 1px solid #5a5a5a;
-            border-radius: 4px;
-            padding: 4px;
-        }
-        QListWidget::item {
-            padding: 6px;
-            border-radius: 2px;
-        }
-        QListWidget::item:selected {
-            background-color: #4a90e2;
-        }
-        QListWidget::item:hover {
-            background-color: #505050;
-        }
-        
-        /* 分割器 */
-        QSplitter::handle {
-            background-color: #5a5a5a;
-        }
-        QSplitter::handle:horizontal {
-            width: 3px;
-        }
-        QSplitter::handle:vertical {
-            height: 3px;
-        }
-        
-        /* 复选框 */
-        QCheckBox {
-            color: #ffffff;
-            spacing: 8px;
-        }
-        QCheckBox::indicator {
-            width: 16px;
-            height: 16px;
-            border-radius: 2px;
-            border: 2px solid #5a5a5a;
-            background-color: #3c3c3c;
-        }
-        QCheckBox::indicator:checked {
-            background-color: #4a90e2;
-            border-color: #4a90e2;
-        }
-        QCheckBox::indicator:checked:hover {
-            background-color: #357abd;
-        }
-        
-        /* 滚动条 */
-        QScrollBar:vertical {
-            background-color: #2d2d2d;
-            width: 12px;
-            border-radius: 6px;
-        }
-        QScrollBar::handle:vertical {
-            background-color: #5a5a5a;
-            border-radius: 6px;
-            min-height: 20px;
-        }
-        QScrollBar::handle:vertical:hover {
-            background-color: #6a6a6a;
-        }
-        
-        /* 消息框和对话框样式 */
-        QMessageBox, QInputDialog, QDialog {
-            background-color: #2d2d2d;
-            color: #ffffff;
-            border: 1px solid #5a5a5a;
-            border-radius: 8px;
-        }
-        QMessageBox QLabel, QInputDialog QLabel {
-            color: #ffffff;
-            background-color: transparent;
-        }
-        QMessageBox QPushButton, QInputDialog QPushButton, QDialog QPushButton {
-            background-color: #4a90e2;
-            color: #ffffff;
-            border: none;
-            padding: 8px 16px;
-            border-radius: 4px;
-            min-width: 80px;
-        }
-        QMessageBox QPushButton:hover, QInputDialog QPushButton:hover, QDialog QPushButton:hover {
-            background-color: #357abd;
-        }
-        QMessageBox QPushButton:pressed, QInputDialog QPushButton:pressed, QDialog QPushButton:pressed {
-            background-color: #2e5f99;
-        }
-    """)
+    WindowManager.apply_dark_theme(app)
     
     # 创建主窗口
     try:

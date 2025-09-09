@@ -30,11 +30,186 @@ class GRAGMemory:
         if self.graph_save_path:
             self.knowledge_graph.load_graph(self.graph_save_path)
 
+        # 加载UI中的实体数据到知识图谱
+        self._load_entities_from_json()
+
         # 数据变化追踪
         self._data_changed = False
         self._last_conversation_count = 0
 
         logger.info("GRAGMemory initialized with Hot, Warm, and Cold memory layers.")
+
+    def _load_entities_from_json(self):
+        """从UI的entities.json文件加载实体到知识图谱中"""
+        import json
+        import os
+        from pathlib import Path
+        
+        # 实体文件路径
+        entities_file = Path(__file__).parent.parent.parent / "data" / "entities.json"
+        
+        if not entities_file.exists():
+            logger.info(f"实体文件 {entities_file} 不存在，跳过加载")
+            return
+        
+        try:
+            with open(entities_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            entities = data.get('entities', [])
+            if not entities:
+                logger.info("实体文件中没有实体数据")
+                return
+            
+            entities_loaded = 0
+            for entity in entities:
+                entity_name = entity.get('name')
+                entity_type = entity.get('type', 'concept')
+                
+                if not entity_name:
+                    logger.warning(f"跳过没有名称的实体: {entity}")
+                    continue
+                
+                # 准备属性
+                attributes = {}
+                if entity.get('description'):
+                    attributes['description'] = entity['description']
+                if entity.get('created_time'):
+                    attributes['created_time'] = entity['created_time']
+                if entity.get('last_modified'):
+                    attributes['last_modified'] = entity['last_modified']
+                
+                # 添加动态属性
+                if entity.get('attributes'):
+                    for key, value in entity['attributes'].items():
+                        attributes[key] = value
+                
+                # 将实体添加到知识图谱
+                self.knowledge_graph.add_or_update_node(entity_name, entity_type, **attributes)
+                entities_loaded += 1
+            
+            logger.info(f"✅ 成功从 entities.json 加载了 {entities_loaded} 个实体到知识图谱")
+            
+            # 加载关系
+            relationships = data.get('relationships', [])
+            relationships_loaded = 0
+            
+            for rel in relationships:
+                try:
+                    source = rel.get('source')
+                    target = rel.get('target')
+                    relationship_type = rel.get('relationship', 'related_to')
+                    description = rel.get('description', '')
+                    
+                    if source and target:
+                        # 检查源节点和目标节点是否存在
+                        if (self.knowledge_graph.graph.has_node(source) and 
+                            self.knowledge_graph.graph.has_node(target)):
+                            
+                            # 添加关系属性
+                            rel_attrs = {'relationship': relationship_type}
+                            if description:
+                                rel_attrs['description'] = description
+                            
+                            # 添加其他属性
+                            if rel.get('attributes'):
+                                rel_attrs.update(rel['attributes'])
+                            
+                            # 添加边到知识图谱
+                            self.knowledge_graph.graph.add_edge(source, target, **rel_attrs)
+                            relationships_loaded += 1
+                            
+                        else:
+                            logger.warning(f"跳过关系 {source} -> {target}：节点不存在")
+                    else:
+                        logger.warning(f"跳过无效关系: {rel}")
+                        
+                except Exception as e:
+                    logger.warning(f"加载关系失败 {rel}: {e}")
+            
+            logger.info(f"✅ 成功从 entities.json 加载了 {relationships_loaded} 个关系到知识图谱")
+            
+        except Exception as e:
+            logger.error(f"❌ 从 entities.json 加载实体失败: {e}")
+            logger.exception("详细错误信息:")
+    
+    def sync_entities_to_json(self):
+        """将知识图谱中的实体同步到entities.json文件"""
+        import json
+        import time
+        from pathlib import Path
+        
+        # 实体文件路径
+        entities_file = Path(__file__).parent.parent.parent / "data" / "entities.json"
+        entities_file.parent.mkdir(exist_ok=True, parents=True)
+        
+        try:
+            entities = []
+            
+            # 从知识图谱中获取所有节点
+            for node_id, attrs in self.knowledge_graph.graph.nodes(data=True):
+                entity = {
+                    'name': node_id,
+                    'type': attrs.get('type', 'concept'),
+                    'description': attrs.get('description', ''),
+                    'created_time': attrs.get('created_time', time.time()),
+                    'last_modified': attrs.get('last_modified', time.time()),
+                    'attributes': {}
+                }
+                
+                # 添加动态属性，排除系统属性
+                excluded_keys = {'type', 'description', 'created_time', 'last_modified'}
+                for key, value in attrs.items():
+                    if key not in excluded_keys:
+                        entity['attributes'][key] = value
+                
+                entities.append(entity)
+            
+            # 获取所有关系
+            relationships = []
+            for source, target, attrs in self.knowledge_graph.graph.edges(data=True):
+                relationship = {
+                    'source': source,
+                    'target': target,
+                    'relationship': attrs.get('relationship', 'related_to'),
+                    'description': attrs.get('description', ''),
+                    'attributes': {k: v for k, v in attrs.items() if k not in ['relationship', 'description']}
+                }
+                relationships.append(relationship)
+            
+            # 保存到文件
+            data = {
+                'entities': entities,
+                'relationships': relationships,  # 新增：保存关系
+                'last_modified': time.time()
+            }
+            
+            with open(entities_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            
+            logger.info(f"✅ 成功同步 {len(entities)} 个实体和 {len(relationships)} 个关系到 entities.json")
+            
+        except Exception as e:
+            logger.error(f"❌ 同步实体到 entities.json 失败: {e}")
+            logger.exception("详细错误信息:")
+
+    def reload_entities_from_json(self):
+        """重新加载entities.json文件中的实体"""
+        logger.info("🔄 重新加载实体数据...")
+        
+        # 清空现有节点（只清空实体节点，保留其他节点）
+        nodes_to_remove = []
+        for node_id, attrs in self.knowledge_graph.graph.nodes(data=True):
+            if attrs.get('type') in ['character', 'location', 'item', 'event', 'concept']:
+                nodes_to_remove.append(node_id)
+        
+        for node_id in nodes_to_remove:
+            self.knowledge_graph.graph.remove_node(node_id)
+        
+        # 重新加载
+        self._load_entities_from_json()
+        
+        logger.info("✅ 实体数据重新加载完成")
 
     # --- Interface for Hot and Warm Memory ---
 
@@ -164,3 +339,26 @@ class GRAGMemory:
         # 重置变化标记
         self._data_changed = False
         logger.info("记忆状态已保存")
+    
+    def clear_all(self):
+        """清空所有记忆层的数据"""
+        try:
+            # 清空热、温记忆
+            self.basic_memory.conversation_history.clear()
+            self.basic_memory.state_table.clear()
+            
+            # 清空冷记忆（知识图谱）
+            self.knowledge_graph.clear()
+            
+            # 同步清空entities.json文件
+            self.sync_entities_to_json()
+            
+            # 重置变化标记
+            self._data_changed = True
+            self._last_conversation_count = 0
+            
+            logger.info("所有记忆层数据已清空，包括entities.json文件")
+            
+        except Exception as e:
+            logger.error(f"清空记忆数据失败: {e}")
+            raise

@@ -96,7 +96,10 @@ class GameEngine:
                     logger.warning(f"Failed to add edge {edge_data.get('source', '')} -> {edge_data.get('target', '')}: {e}")
             
             logger.info(f"Successfully initialized graph: {nodes_added} nodes, {edges_added} edges added.")
-            self.memory.knowledge_graph.save_graph()
+            
+            # 保存知识图谱
+            if self.memory.graph_save_path:
+                self.memory.knowledge_graph.save_graph(self.memory.graph_save_path)
             
             return {
                 "nodes_added": nodes_added,
@@ -240,7 +243,10 @@ class GameEngine:
                 edges_added_count -= 1
         
         logger.info(f"成功应用更新({source}): {nodes_updated_count} nodes updated, {edges_added_count} edges added, {nodes_deleted_count} nodes deleted, {edges_deleted_count} edges deleted.")
-        self.memory.knowledge_graph.save_graph()
+        
+        # 保存知识图谱
+        if self.memory.graph_save_path:
+            self.memory.knowledge_graph.save_graph(self.memory.graph_save_path)
         
         return {
             "nodes_updated": nodes_updated_count, 
