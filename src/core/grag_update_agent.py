@@ -51,15 +51,26 @@ class GRAGUpdateAgent:
                 user_input, llm_response, relevant_context, recent_context
             )
             
-            # 3. 请求LLM进行分析
-            logger.info("正在请求GRAG更新分析...")
+            # 3. 请求LLM进行分析（记录prompt与响应预览）
+            logger.info("🧠 [GRAG] 请求LLM进行更新分析...")
+            try:
+                logger.info(f"[GRAG] Prompt preview (first 600 chars):\n---\n{analysis_prompt[:600]}\n---")
+                logger.debug(f"[GRAG] Full analysis prompt:\n{analysis_prompt}")
+            except Exception:
+                pass
+
             analysis_result = self.llm_client.generate_response(
                 analysis_prompt,
                 max_tokens=2000,
                 temperature=0.1,  # 低温度确保一致性
                 system_message="你是一个专门分析RPG对话并生成知识图谱更新指令的智能Agent。请严格按照JSON格式返回分析结果。"
             )
-            
+
+            try:
+                logger.info(f"[GRAG] LLM response preview (first 800 chars):\n---\n{(analysis_result or '')[:800]}\n---")
+            except Exception:
+                pass
+
             # 4. 解析LLM返回的更新指令
             update_instructions = self._parse_llm_analysis(analysis_result)
             

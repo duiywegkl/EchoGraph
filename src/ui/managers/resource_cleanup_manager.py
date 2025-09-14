@@ -47,21 +47,26 @@ class ResourceCleanupManager:
     def cleanup_api_server(self):
         """关闭API服务器进程"""
         try:
+            # 检查是否是我们启动的进程
             if hasattr(self.main_window, 'api_server_process') and self.main_window.api_server_process:
-                logger.info("正在关闭API服务器...")
+                logger.info("🔄 正在关闭UI启动的API服务器...")
                 self.main_window.api_server_process.terminate()
                 
                 # 等待进程结束，最多等待5秒
                 try:
                     self.main_window.api_server_process.wait(timeout=5)
-                    logger.info("API服务器已正常关闭")
+                    logger.info("✅ API服务器已正常关闭")
                 except subprocess.TimeoutExpired:
-                    logger.warning("API服务器未响应，强制终止...")
+                    logger.warning("⚠️ API服务器未响应，强制终止...")
                     self.main_window.api_server_process.kill()
                     self.main_window.api_server_process.wait()
-                    logger.info("API服务器已强制关闭")
+                    logger.info("✅ API服务器已强制关闭")
+            elif hasattr(self.main_window, 'api_server_process') and self.main_window.api_server_process is None:
+                logger.info("📡 API服务器由外部启动，UI不进行关闭操作")
+            else:
+                logger.info("🔍 未找到API服务器进程句柄")
         except Exception as e:
-            logger.warning(f"关闭API服务器时出错: {e}")
+            logger.warning(f"❌ 关闭API服务器时出错: {e}")
     
     def save_application_data(self):
         """保存应用程序数据"""

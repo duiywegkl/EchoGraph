@@ -12,10 +12,23 @@ class LLMClient:
         self.model = config.llm.model
         self.max_tokens = config.llm.max_tokens
         self.temperature = config.llm.temperature
-    
+
     def chat(self, messages: List[Dict[str, str]], **kwargs) -> str:
-        """单次LLM调用 - 严格JSON模式"""
+        """单次LLM调用 - 严格JSON模式，带详细日志"""
         try:
+            # 记录调用参数和关键信息（不记录API密钥）
+            try:
+                sys_msgs = [m for m in messages if m.get('role') == 'system']
+                usr_msgs = [m for m in messages if m.get('role') == 'user']
+                logger.info(f"🤖 [LLM] 调用开始 | model={kwargs.get('model', self.model)} | max_tokens={kwargs.get('max_tokens', self.max_tokens)} | temp={kwargs.get('temperature', self.temperature)}")
+                if sys_msgs:
+                    logger.info(f"[LLM] System message preview (first 300 chars):\n---\n{sys_msgs[-1].get('content','')[:300]}\n---")
+                if usr_msgs:
+                    logger.info(f"[LLM] User prompt preview (first 500 chars):\n---\n{usr_msgs[-1].get('content','')[:500]}\n---")
+                logger.debug(f"[LLM] Full messages: {messages}")
+            except Exception:
+                pass
+
             response = self.client.chat.completions.create(
                 model=kwargs.get('model', self.model),
                 messages=messages,
@@ -24,11 +37,13 @@ class LLMClient:
                 timeout=config.llm.request_timeout,
                 response_format={"type": "json_object"} # 启用JSON模式
             )
-            content = response.choices[0].message.content
-            logger.info(f"LLM调用成功，返回{len(content)}字符")
+            content = response.choices[0].message.content or ""
+            logger.info(f"🤖 [LLM] 调用成功 | 返回长度={len(content)}")
+            logger.info(f"[LLM] Raw response preview (first 800 chars):\n---\n{content[:800]}\n---")
+            logger.debug(f"[LLM] Full raw response object: {response}")
             return content
         except Exception as e:
-            logger.error(f"LLM调用失败: {e}")
+            logger.error(f"❌ [LLM] 调用失败: {e}")
             return "抱歉，系统暂时无法响应。"
 
     def generate_response(self, prompt: str, max_tokens: int = None, temperature: float = None, system_message: str = None) -> str:
@@ -37,12 +52,12 @@ class LLMClient:
         将单个prompt转换为消息格式进行调用
         """
         messages = []
-        
+
         if system_message:
             messages.append({"role": "system", "content": system_message})
-            
+
         messages.append({"role": "user", "content": prompt})
-        
+
         return self.chat(
             messages=messages,
             max_tokens=max_tokens or self.max_tokens,
