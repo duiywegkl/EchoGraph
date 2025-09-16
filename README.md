@@ -1,10 +1,10 @@
-# ChronoForge - 智能角色扮演助手
+# EchoGraph - 智能角色扮演助手
 
-![ChronoForge Logo](assets/icons/chronoforge.png)
+![EchoGraph](assets/icons/OIG1.png)
 
 ## 项目简介
 
-ChronoForge 是一个基于大语言模型的智能角色扮演助手，集成了动态知识图谱、感知系统和验证层，为用户提供沉浸式的角色扮演体验。系统支持本地测试模式和SillyTavern酒馆模式，具备完整的知识管理和对话记忆功能。
+EchoGraph 是一个基于大语言模型的智能角色扮演助手，集成了动态知识图谱、感知系统和验证层，为用户提供沉浸式的角色扮演体验。系统支持本地测试模式和SillyTavern酒馆模式，具备完整的知识管理和对话记忆功能。
 
 ## 主要特性
 
@@ -36,7 +36,7 @@ ChronoForge 是一个基于大语言模型的智能角色扮演助手，集成�
 ## 系统架构
 
 ```
-ChronoForge/
+EchoGraph/
 ├── src/
 │   ├── core/           # 核心模块
 │   │   ├── game_engine.py      # 游戏引擎
@@ -98,8 +98,8 @@ graph TD
 
 1. **克隆项目**
 ```bash
-git clone https://github.com/duiywegkl/chronoforge.git
-cd chronoforge
+git clone https://github.com/duiywegkl/EchoGraph.git
+cd EchoGraph
 ```
 
 2. **安装依赖**
@@ -150,7 +150,7 @@ python run_ui.py
 
 ## API接口
 
-ChronoForge 提供RESTful API接口，支持：
+EchoGraph 提供RESTful API接口，支持：
 - `/chat/completions` - 聊天完成接口（兼容OpenAI格式）
 - `/health` - 健康检查接口
 - `/api/memory/*` - 记忆系统接口
