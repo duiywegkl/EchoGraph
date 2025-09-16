@@ -10,6 +10,7 @@ EchoGraph 是一个基于大语言模型的智能角色扮演助手，集成了�
 ## 2025/09/16
 
 因为项目已经趋于完成，所以提交了相对的酒馆插件以供测试 https://github.com/duiywegkl/echograph-sillytavern-plugin
+但是现在时间点我还没进行较为完整的测试，怀疑效果存疑。
 
 ## 主要特性
 
