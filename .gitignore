@@ -1,4 +1,4 @@
-# ChronoForge .gitignore
+# EchoGraph .gitignore
 
 # 参考项目 - 不需要版本控制
 st-memory-enhancement-master/
@@ -104,10 +104,7 @@ Thumbs.db
 %TEMP%/
 
 # 本地数据
-data/local_conversations/
-data/test_data/
-data/debug/
-data/memory/memory_*.json
+data/
 
 # Claude相关文件
 .claude/

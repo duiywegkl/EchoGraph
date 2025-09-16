@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ChronoForge Knowledge Graph</title>
+    <title>EchoGraph Knowledge Graph</title>
     <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
     <link rel="stylesheet" href="assets/css/graph/graph-visualization.css">
 </head>
@@ -26,18 +26,18 @@
         <h4>物理参数调节</h4>
         <div class="force-control">
             <label>排斥力度:</label>
-            <input type="range" id="repulsionSlider" min="-500" max="-20" step="10" value="-150">
-            <span id="repulsionValue">-150</span>
+            <input type="range" id="repulsionSlider" min="-1500" max="-20" step="20" value="-400">
+            <span id="repulsionValue">-400</span>
         </div>
         <div class="force-control">
             <label>连线长度:</label>
-            <input type="range" id="linkDistanceSlider" min="50" max="200" step="10" value="100">
-            <span id="linkDistanceValue">100</span>
+            <input type="range" id="linkDistanceSlider" min="60" max="250" step="10" value="120">
+            <span id="linkDistanceValue">120</span>
         </div>
         <div class="force-control">
             <label>碰撞半径:</label>
-            <input type="range" id="collisionSlider" min="20" max="50" step="2" value="35">
-            <span id="collisionValue">35</span>
+            <input type="range" id="collisionSlider" min="20" max="80" step="2" value="40">
+            <span id="collisionValue">40</span>
         </div>
         <div class="force-control">
             <label>中心引力:</label>

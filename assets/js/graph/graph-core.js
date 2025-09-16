@@ -1,5 +1,5 @@
 /**
- * ChronoForge 知识图谱可视化核心 JavaScript
+ * EchoGraph 知识图谱可视化核心 JavaScript
  */
 
 // 全局变量
@@ -26,22 +26,38 @@ const cdnUrls = [
  * 根据节点数量智能计算力参数
  */
 function calculateForceParameters(nodeCount, linkCount) {
-    // 基础排斥力：节点越多，排斥力越强，防止重叠
-    const baseRepulsion = Math.max(-300, -50 * Math.sqrt(nodeCount));
-    
-    // 碰撞半径：节点多时稍微减小，避免过度拥挤
-    const collisionRadius = nodeCount > 10 ? 30 : 35;
-    
-    // 连线距离：节点多时稍微缩短
-    const linkDistance = nodeCount > 15 ? 80 : 100;
-    
-    // 中心引力：只有当节点很少或者没有连线时才启用
-    const needCenterForce = nodeCount < 5 || linkCount < nodeCount * 0.3;
-    const centerStrength = needCenterForce ? 0.1 : 0;
-    
+    // 更强的基础排斥力：根据节点数量动态调整，防止挤在一起
+    let baseRepulsion;
+    if (nodeCount <= 5) {
+        baseRepulsion = -200;
+    } else if (nodeCount <= 10) {
+        baseRepulsion = -400;
+    } else if (nodeCount <= 20) {
+        baseRepulsion = -600;
+    } else {
+        baseRepulsion = -800 - (nodeCount - 20) * 20; // 节点越多，排斥力越强
+    }
+
+    // 碰撞半径：节点多时需要更大的半径避免重叠
+    const collisionRadius = Math.max(25, 35 + Math.log(nodeCount) * 5);
+
+    // 连线距离：节点多时需要更长的距离拉开空间
+    let linkDistance;
+    if (nodeCount <= 10) {
+        linkDistance = 100;
+    } else if (nodeCount <= 20) {
+        linkDistance = 120;
+    } else {
+        linkDistance = 140 + Math.log(nodeCount) * 10;
+    }
+
+    // 中心引力：只有当节点很少时才启用
+    const needCenterForce = nodeCount < 5;
+    const centerStrength = needCenterForce ? 0.05 : 0;
+
     console.log(`智能力参数 - 节点:${nodeCount}, 连线:${linkCount}`);
     console.log(`排斥力:${baseRepulsion}, 碰撞:${collisionRadius}, 连线:${linkDistance}, 中心:${centerStrength}`);
-    
+
     return {
         repulsion: baseRepulsion,
         collisionRadius: collisionRadius,
@@ -72,8 +88,8 @@ function updateForceParameters() {
     simulation.alpha(0.3).restart();
 }
 
-// 本地D3.js路径
-const localD3Path = './assets/js/d3.v7.min.js';
+// 本地D3.js路径（支持从HTML注入绝对路径）
+const localD3Path = (typeof window !== 'undefined' && window.localD3PathInjected) || './assets/js/d3.v7.min.js';
 
 /**
  * 初始化图谱数据

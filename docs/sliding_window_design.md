@@ -1,4 +1,4 @@
-# ChronoForge 滑动窗口对话管理设计
+# EchoGraph 滑动窗口对话管理设计
 
 ## 问题分析
 

@@ -13,25 +13,30 @@ class GRAGMemory:
     - 冷记忆 (Cold Memory): 结构化的知识图谱，使用 KnowledgeGraph。
     """
 
-    def __init__(self, hot_memory_size: int = 10, graph_save_path: Optional[str] = None):
+    def __init__(self, hot_memory_size: int = 10, graph_save_path: Optional[str] = None, entities_json_path: Optional[str] = None, auto_load_entities: bool = True):
         """
         初始化三层记忆系统。
 
         Args:
             hot_memory_size (int): 热记忆要保留的最近对话轮数。
             graph_save_path (Optional[str]): 知识图谱的保存/加载路径。
+            entities_json_path (Optional[str]): 实体JSON文件的保存/加载路径。
+            auto_load_entities (bool): 是否自动加载entities.json文件。默认True，设为False时需要手动调用加载。
         """
         # 热、温记忆层 (继承自BasicMemory的功能)
         self.basic_memory = BasicMemory(max_size=hot_memory_size)
-        
+
         # 冷记忆层
         self.knowledge_graph = KnowledgeGraph()
         self.graph_save_path = graph_save_path
+        self.entities_json_path = entities_json_path or str(Path(__file__).parent.parent.parent / "data" / "entities.json")
+
         if self.graph_save_path:
             self.knowledge_graph.load_graph(self.graph_save_path)
 
-        # 加载UI中的实体数据到知识图谱
-        self._load_entities_from_json()
+        # 根据参数决定是否自动加载UI中的实体数据到知识图谱
+        if auto_load_entities:
+            self._load_entities_from_json()
 
         # 数据变化追踪
         self._data_changed = False
@@ -44,10 +49,10 @@ class GRAGMemory:
         import json
         import os
         from pathlib import Path
-        
-        # 实体文件路径
-        entities_file = Path(__file__).parent.parent.parent / "data" / "entities.json"
-        
+
+        # 使用配置的实体文件路径
+        entities_file = Path(self.entities_json_path)
+
         if not entities_file.exists():
             logger.info(f"实体文件 {entities_file} 不存在，跳过加载")
             return
@@ -138,9 +143,9 @@ class GRAGMemory:
         import json
         import time
         from pathlib import Path
-        
-        # 实体文件路径
-        entities_file = Path(__file__).parent.parent.parent / "data" / "entities.json"
+
+        # 使用配置的实体文件路径
+        entities_file = Path(self.entities_json_path)
         entities_file.parent.mkdir(exist_ok=True, parents=True)
         
         try:
@@ -192,6 +197,11 @@ class GRAGMemory:
         except Exception as e:
             logger.error(f"❌ 同步实体到 entities.json 失败: {e}")
             logger.exception("详细错误信息:")
+
+    def set_entities_json_path(self, entities_json_path: str):
+        """动态设置entities.json文件路径"""
+        self.entities_json_path = entities_json_path
+        logger.info(f"🔄 更新entities.json路径: {entities_json_path}")
 
     def reload_entities_from_json(self):
         """重新加载entities.json文件中的实体"""

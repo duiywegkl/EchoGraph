@@ -16,7 +16,7 @@ class LLMConfig(BaseModel):
     provider: str = "openai"
     model: str = "deepseek-v3.1"
     stream: bool = False # 默认不使用流式输出
-    max_tokens: int = 4000
+    max_tokens: int = 16000
     temperature: float = 0.8
     api_key: Optional[str] = None
     base_url: Optional[str] = None
@@ -31,9 +31,12 @@ class GameConfig(BaseModel):
     character_name: str = "系统"
 
 class SystemConfig(BaseModel):
-    name: str = "ChronoForge"
-    version: str = "0.1.0"
+    name: str = "EchoGraph"
+    version: str = "1.0.0"
     debug: bool = True
+
+class LoggingConfig(BaseModel):
+    level: str = "INFO"
 
 class Config:
     def __init__(self, config_path: str = "config.yaml"):
@@ -64,6 +67,7 @@ class Config:
             llm_config['stream'] = True
         
         self.system = SystemConfig(**config_data.get('system', {}))
+        self.logging = LoggingConfig(**config_data.get('logging', {}))
         self.llm = LLMConfig(**llm_config)
         self.memory = MemoryConfig(**config_data.get('memory', {}))
         self.game = GameConfig(**config_data.get('game', {}))

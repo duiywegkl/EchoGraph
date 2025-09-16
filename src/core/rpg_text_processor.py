@@ -130,85 +130,156 @@ class RPGTextProcessor:
         """
         从RPG文本中提取实体、数值属性和复杂关系
         返回结构化的RPG游戏数据
+        添加文本长度限制和处理时间保护
         """
         nodes_to_add = []
         edges_to_add = []
         
-        logger.info(f"开始分析RPG文本: {text[:100]}...")
+        # 限制文本长度，避免处理过长的文本导致性能问题
+        max_text_length = 10000  # 最大处理10000字符
+        if len(text) > max_text_length:
+            logger.warning(f"文本长度超过限制 ({len(text)} > {max_text_length})，截断处理")
+            text = text[:max_text_length]
         
-        # 1. 提取RPG实体
-        for entity_type, patterns in self.rpg_entity_patterns.items():
-            for pattern in patterns:
-                matches = re.finditer(pattern, text, re.IGNORECASE)
-                for match in matches:
-                    entity_name = self._extract_entity_name_from_match(match)
-                    if entity_name and len(entity_name) > 1:
-                        entity_id = self._generate_rpg_entity_id(entity_name, entity_type)
-                        
-                        # 根据实体类型设置特殊属性
-                        attributes = {
-                            "name": entity_name,
-                            "source": "rpg_extraction"
-                        }
-                        
-                        # 为武器和装备提取数值属性
-                        if entity_type in ["weapon", "armor"]:
-                            attributes.update(self._extract_equipment_stats(match.group(0)))
-                        
-                        # 为角色提取等级信息
-                        elif entity_type == "character":
-                            level_info = self._extract_character_level(match.group(0))
-                            if level_info:
-                                attributes.update(level_info)
-                        
-                        nodes_to_add.append({
-                            "node_id": entity_id,
-                            "type": entity_type,
-                            "attributes": attributes
-                        })
+        logger.info(f"开始分析RPG文本: {text[:100]}... (总长度: {len(text)} 字符)")
         
-        # 2. 提取数值属性变化
-        numerical_updates = self._extract_numerical_changes(text)
-        for update in numerical_updates:
-            nodes_to_add.append(update)
-        
-        # 3. 提取RPG关系
-        for pattern, relation_type in self.rpg_relation_patterns:
-            matches = re.finditer(pattern, text, re.IGNORECASE)
-            for match in matches:
-                if len(match.groups()) >= 2:
-                    source_name = match.group(1).strip()
-                    target_name = match.group(2).strip()
+        try:
+            # 1. 提取RPG实体 - 添加超时保护
+            import time
+            start_time = time.time()
+            entity_count = 0
+            max_processing_time = 15  # 最大处理时间15秒
+            
+            for entity_type, patterns in self.rpg_entity_patterns.items():
+                # 检查是否超时
+                if time.time() - start_time > max_processing_time:
+                    logger.warning(f"实体提取超时 ({max_processing_time}秒)，停止进一步处理")
+                    break
+                
+                logger.debug(f"正在处理实体类型: {entity_type}")
+                
+                for pattern in patterns:
+                    try:
+                        # 为每个正则表达式设置匹配限制
+                        matches = re.finditer(pattern, text, re.IGNORECASE)
+                        match_count = 0
+                        max_matches_per_pattern = 50  # 每个模式最多50个匹配
+                        
+                        for match in matches:
+                            match_count += 1
+                            if match_count > max_matches_per_pattern:
+                                logger.debug(f"模式 {pattern[:50]}... 匹配数量超限，停止处理")
+                                break
+                            
+                            entity_name = self._extract_entity_name_from_match(match)
+                            if entity_name and len(entity_name) > 1:
+                                entity_id = self._generate_rpg_entity_id(entity_name, entity_type)
+                                
+                                # 根据实体类型设置特殊属性
+                                attributes = {
+                                    "name": entity_name,
+                                    "source": "rpg_extraction"
+                                }
+                                
+                                # 为武器和装备提取数值属性
+                                if entity_type in ["weapon", "armor"]:
+                                    attributes.update(self._extract_equipment_stats(match.group(0)))
+                                
+                                # 为角色提取等级信息
+                                elif entity_type == "character":
+                                    level_info = self._extract_character_level(match.group(0))
+                                    if level_info:
+                                        attributes.update(level_info)
+                                
+                                nodes_to_add.append({
+                                    "node_id": entity_id,
+                                    "type": entity_type,
+                                    "attributes": attributes
+                                })
+                                
+                                entity_count += 1
+                                
+                                # 限制总实体数量
+                                if entity_count > 100:  # 最多提取100个实体
+                                    logger.warning("实体数量超限，停止提取")
+                                    break
                     
-                    if source_name and target_name:
-                        source_id = self._generate_rpg_entity_id(source_name, "unknown")
-                        target_id = self._generate_rpg_entity_id(target_name, "unknown")
-                        
-                        edges_to_add.append({
-                            "source": source_id,
-                            "target": target_id,
-                            "relationship": relation_type
-                        })
+                    except Exception as regex_error:
+                        logger.warning(f"正则表达式处理失败 (模式: {pattern[:50]}...): {regex_error}")
+                        continue
+                
+                if entity_count > 100:
+                    break
+            
+            logger.info(f"实体提取完成: {entity_count} 个实体 (耗时: {time.time() - start_time:.2f}秒)")
+            
+            # 2. 提取数值属性变化 - 简化处理
+            try:
+                numerical_updates = self._extract_numerical_changes(text)
+                # 限制数值更新的数量
+                if len(numerical_updates) > 20:
+                    numerical_updates = numerical_updates[:20]
+                nodes_to_add.extend(numerical_updates)
+                logger.debug(f"数值属性提取完成: {len(numerical_updates)} 个更新")
+            except Exception as e:
+                logger.warning(f"数值属性提取失败: {e}")
+            
+            # 3. 提取RPG关系 - 简化处理
+            try:
+                relation_count = 0
+                for pattern, relation_type in self.rpg_relation_patterns:
+                    if time.time() - start_time > max_processing_time:
+                        logger.warning("关系提取超时，停止处理")
+                        break
+                    
+                    try:
+                        matches = re.finditer(pattern, text, re.IGNORECASE)
+                        for match in matches:
+                            relation_count += 1
+                            if relation_count > 30:  # 最多30个关系
+                                break
+                            
+                            # 简化的关系提取
+                            groups = match.groups()
+                            if len(groups) >= 2:
+                                source_entity = self._clean_entity_name(groups[0])
+                                target_entity = self._clean_entity_name(groups[1])
+                                
+                                if source_entity and target_entity and source_entity != target_entity:
+                                    edges_to_add.append({
+                                        "source": self._generate_rpg_entity_id(source_entity, "character"),
+                                        "target": self._generate_rpg_entity_id(target_entity, "character"),
+                                        "relationship": relation_type
+                                    })
+                    except Exception as relation_error:
+                        logger.debug(f"关系模式处理失败: {relation_error}")
+                        continue
+                    
+                    if relation_count > 30:
+                        break
+                
+                logger.info(f"关系提取完成: {len(edges_to_add)} 个关系")
+                
+            except Exception as e:
+                logger.warning(f"关系提取失败: {e}")
+            
+        except Exception as e:
+            logger.error(f"RPG文本分析过程中发生错误: {e}")
+            # 即使发生错误，也返回已经提取的数据
         
-        # 4. 提取技能和状态效果
-        skill_updates = self._extract_skills_and_effects(text)
-        edges_to_add.extend(skill_updates)
+        total_time = time.time() - start_time
+        logger.info(f"RPG文本分析完成: {len(nodes_to_add)} 节点, {len(edges_to_add)} 关系 (总耗时: {total_time:.2f}秒)")
         
-        result = {
+        return {
             "nodes_to_add": nodes_to_add,
             "edges_to_add": edges_to_add,
-            "nodes_to_delete": [],
-            "edges_to_delete": [],
-            "deletion_events": []
+            "processing_stats": {
+                "processing_time": total_time,
+                "text_length": len(text),
+                "entities_found": len(nodes_to_add),
+                "relations_found": len(edges_to_add)
+            }
         }
-        
-        # 检测删除事件
-        deletion_events = self._extract_deletion_events(text)
-        if deletion_events:
-            result.update(deletion_events)
-        
-        logger.info(f"RPG提取完成: {len(nodes_to_add)} 个实体, {len(edges_to_add)} 个关系, {len(result.get('deletion_events', []))} 个删除事件")
-        return result
 
     def _extract_deletion_events(self, text: str) -> Dict[str, Any]:
         """

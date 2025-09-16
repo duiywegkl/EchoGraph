@@ -1,4 +1,4 @@
-/* ChronoForge 知识图谱样式 */
+/* EchoGraph 知识图谱样式 */
 body {
     background-color: #2d2d2d;
     color: white;
@@ -191,3 +191,92 @@ body {
     max-width: 1000px;
     margin: 30px 0;
 }
+
+/* QSS_CONFIG_START */
+/* Styles for Qt ConfigPage widgets; applied via Qt StyleSheet (scoped to #configPage) */
+#configPage, #configPage QWidget {
+    background-color: #2f3136;
+    color: #dcddde;
+}
+#configPage QScrollArea {
+    background-color: #2f3136;
+    border: none;
+}
+#configPage QGroupBox {
+    font-weight: bold;
+    border: 2px solid #4f545c;
+    border-radius: 8px;
+    margin-top: 1ex;
+    padding-top: 15px;
+    background-color: #36393f;
+    color: #dcddde;
+}
+#configPage QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 15px;
+    padding: 0 8px;
+    color: #5865f2;
+    font-size: 14px;
+    font-weight: bold;
+}
+#configPage QLineEdit, #configPage QSpinBox, #configPage QDoubleSpinBox {
+    padding: 8px;
+    border: 1px solid #4f545c;
+    border-radius: 4px;
+    font-size: 13px;
+    background-color: #40444b;
+    color: #dcddde;
+}
+#configPage QLineEdit:focus, #configPage QSpinBox:focus, #configPage QDoubleSpinBox:focus {
+    border-color: #5865f2;
+    outline: none;
+    background-color: #484c52;
+}
+#configPage QCheckBox {
+    font-size: 13px;
+    color: #dcddde;
+    background-color: transparent;
+}
+#configPage QCheckBox::indicator {
+    width: 16px;
+    height: 16px;
+    border-radius: 3px;
+    border: 2px solid #4f545c;
+    background-color: #40444b;
+}
+#configPage QCheckBox::indicator:checked {
+    background-color: #5865f2;
+    border-color: #5865f2;
+}
+#configPage QCheckBox::indicator:hover {
+    border-color: #5865f2;
+}
+#configPage QPushButton {
+    padding: 8px 16px;
+    border: none;
+    border-radius: 4px;
+    background-color: #5865f2;
+    color: white;
+    font-weight: bold;
+    font-size: 13px;
+}
+#configPage QPushButton:hover {
+    background-color: #4752c4;
+}
+#configPage QPushButton:pressed {
+    background-color: #3c4396;
+}
+#configPage QLabel {
+    color: #dcddde;
+    font-size: 13px;
+    background-color: transparent;
+}
+
+/* Keep spinbox arrow buttons hidden */
+#configPage QSpinBox::up-button,
+#configPage QDoubleSpinBox::up-button,
+#configPage QSpinBox::down-button,
+#configPage QDoubleSpinBox::down-button {
+    width: 0px; height: 0px; border: none; background: transparent;
+}
+/* QSS_CONFIG_END */
