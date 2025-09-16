@@ -14,12 +14,20 @@ import argparse
 import asyncio
 from datetime import datetime
 from pathlib import Path
+
+# 导入配置
+from src.utils.config import config
+from dotenv import load_dotenv
+
+# 加载环境变量
+load_dotenv()
+
 # --- Configure file logging for API server ---
 os.makedirs("logs", exist_ok=True)
 logger.add(
     "logs/api_server_{time:YYYY-MM-DD}.log",
     format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {message}",
-    level="INFO",
+    level=os.getenv("LOG_LEVEL", config.logging.level).upper(),
     rotation="5 MB",
     retention="7 days"
 )
@@ -111,7 +119,7 @@ TAVERN_MODE_ACTIVE: bool = False
 
 # --- FastAPI 应用初始化 ---
 app = FastAPI(
-    title="ChronoForge API",
+    title="EchoGraph API",
     description="A backend service for SillyTavern to provide dynamic knowledge graph and RAG capabilities.",
     version="1.0.0"
 )
@@ -135,11 +143,11 @@ session_creation_locks: Dict[str, Lock] = {}
 def get_or_create_sliding_window_manager(session_id: str, session_config: Dict[str, Any] = None) -> DelayedUpdateManager:
     """获取或创建滑动窗口管理器"""
     if session_id not in sliding_window_managers:
-        # 从会话配置获取滑动窗口设置
+        # 从会话配置获取滑动窗口设置，如果没有则从环境变量获取
         sliding_config = (session_config or {}).get('sliding_window', {})
-        window_size = sliding_config.get('window_size', 4)
-        processing_delay = sliding_config.get('processing_delay', 1)
-        enable_enhanced_agent = sliding_config.get('enable_enhanced_agent', True)
+        window_size = sliding_config.get('window_size', int(os.getenv('SLIDING_WINDOW_SIZE', '4')))
+        processing_delay = sliding_config.get('processing_delay', int(os.getenv('PROCESSING_DELAY', '1')))
+        enable_enhanced_agent = sliding_config.get('enable_enhanced_agent', os.getenv('ENABLE_ENHANCED_AGENT', 'true').lower() in ('true', '1', 't'))
 
         # 获取对应的游戏引擎
         engine = sessions.get(session_id)
@@ -1516,7 +1524,7 @@ async def set_tavern_mode_state(payload: Dict[str, Any]):
             return False
         active = to_bool(raw_val)
         TAVERN_MODE_ACTIVE = active
-        logger.info(f"🛠️ [Mode] Set TAVERN_MODE_ACTIVE = {TAVERN_MODE_ACTIVE} (raw={raw_val!r})")
+        logger.debug(f"🛠️ [Mode] Set TAVERN_MODE_ACTIVE = {TAVERN_MODE_ACTIVE} (raw={raw_val!r})")
         return {"success": True, "active": TAVERN_MODE_ACTIVE}
     except Exception as e:
         logger.error(f"[Mode] Failed to set tavern mode: {e}")
@@ -1632,7 +1640,9 @@ async def process_tavern_message(request: TavernMessageRequest):
             # 为酒馆会话创建滑动窗口管理器
             if session_id not in sliding_window_managers:
                 from src.core.sliding_window import SlidingWindowManager
-                sliding_window = SlidingWindowManager(window_size=4, processing_delay=1)
+                window_size = int(os.getenv('SLIDING_WINDOW_SIZE', '4'))
+                processing_delay = int(os.getenv('PROCESSING_DELAY', '1'))
+                sliding_window = SlidingWindowManager(window_size=window_size, processing_delay=processing_delay)
                 sliding_window_managers[session_id] = DelayedUpdateManager(
                     sliding_window=sliding_window,
                     grag_agent=None  # 将在需要时创建
@@ -1657,7 +1667,7 @@ async def process_tavern_message(request: TavernMessageRequest):
             )
 
             if relevant_context:
-                enhanced_context = f"[ChronoForge Enhanced Context]\n{relevant_context}\n\n[User Message]\n{request.message}"
+                enhanced_context = f"[EchoGraph Enhanced Context]\n{relevant_context}\n\n[User Message]\n{request.message}"
                 logger.info(f"📖 [API] 检索到相关上下文，长度: {len(relevant_context)}")
 
             # 如果没有足够的上下文，尝试从消息中提取实体
@@ -1683,7 +1693,7 @@ async def process_tavern_message(request: TavernMessageRequest):
                                 entity_info.append(f"• {entity_name} ({entity_type}): 新发现的实体")
 
                     if entity_info:
-                        enhanced_context = f"[ChronoForge Entity Context]\n" + "\n".join(entity_info) + f"\n\n[User Message]\n{request.message}"
+                        enhanced_context = f"[EchoGraph Entity Context]\n" + "\n".join(entity_info) + f"\n\n[User Message]\n{request.message}"
 
             # 异步更新知识图谱（不阻塞响应）
             if request.message and len(request.message.strip()) > 10:
@@ -1717,7 +1727,7 @@ async def process_tavern_message(request: TavernMessageRequest):
         except Exception as context_error:
             logger.warning(f"⚠️ [API] 上下文增强失败: {context_error}")
             # 即使增强失败，也返回基本响应
-            enhanced_context = f"[ChronoForge Basic Context]\n{request.message}"
+            enhanced_context = f"[EchoGraph Basic Context]\n{request.message}"
 
         response = TavernMessageResponse(
             enhanced_context=enhanced_context if enhanced_context else None,
@@ -1778,7 +1788,7 @@ async def export_session_graph(session_id: str):
             io.BytesIO(json_bytes),
             media_type="application/json; charset=utf-8",
             headers={
-                "Content-Disposition": "attachment; filename=chronoforge-graph-export.json"
+                "Content-Disposition": "attachment; filename=echograph-graph-export.json"
             }
         )
 
@@ -2310,7 +2320,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
         # 发送连接确认消息
         await websocket.send_json({
             "type": "connection_established",
-            "message": f"Successfully connected to ChronoForge for session {session_id}.",
+            "message": f"Successfully connected to EchoGraph for session {session_id}.",
             "session_id": session_id
         })
 
@@ -2343,7 +2353,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 import argparse
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="ChronoForge API Server")
+    parser = argparse.ArgumentParser(description="EchoGraph API Server")
 
     # 从环境变量获取默认端口
     from src.utils.config import config
@@ -2352,5 +2362,5 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=default_port, help="Port to run the API server on")
     args = parser.parse_args()
 
-    logger.info(f"Starting ChronoForge API server on port {args.port}...")
+    logger.info(f"Starting EchoGraph API server on port {args.port}...")
     uvicorn.run(app, host="127.0.0.1", port=args.port)

@@ -1,5 +1,5 @@
 /**
- * ChronoForge 知识图谱可视化核心 JavaScript
+ * EchoGraph 知识图谱可视化核心 JavaScript
  */
 
 // 全局变量

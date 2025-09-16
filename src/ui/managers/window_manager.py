@@ -14,14 +14,26 @@ class WindowManager:
     @staticmethod
     def setup_window(main_window):
         """设置窗口属性"""
-        main_window.setWindowTitle("ChronoForge - 智能角色扮演助手")
+        main_window.setWindowTitle("EchoGraph - 智能角色扮演助手")
         main_window.setMinimumSize(1200, 800)
         main_window.resize(1400, 900)
         
         # 设置应用图标
-        icon_path = Path(__file__).parent.parent.parent / "assets" / "icons" / "chronoforge.png"
+        # 从 src/ui/managers/window_manager.py 到项目根目录需要回退3级
+        icon_path = Path(__file__).parent.parent.parent.parent / "assets" / "icons" / "OIG1.png"
         if icon_path.exists():
             main_window.setWindowIcon(QIcon(str(icon_path)))
+            logger.debug(f"✅ 窗口图标已设置: {icon_path}")
+        else:
+            logger.warning(f"⚠️ 图标文件不存在: {icon_path}")
+            # 尝试使用系统默认图标
+            try:
+                from PySide6.QtWidgets import QStyle
+                default_icon = main_window.style().standardIcon(QStyle.SP_ComputerIcon)
+                main_window.setWindowIcon(default_icon)
+                logger.debug("✅ 使用系统默认图标")
+            except Exception as e:
+                logger.error(f"❌ 设置默认图标失败: {e}")
         
         # 居中显示
         WindowManager.center_window(main_window)

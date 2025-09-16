@@ -1,5 +1,5 @@
 /**
- * ChronoForge 知识图谱 JavaScript 逻辑
+ * EchoGraph 知识图谱 JavaScript 逻辑
  * 基于 D3.js 的交互式图谱
  */
 

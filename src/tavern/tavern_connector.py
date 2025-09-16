@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 SillyTavern 连接管理器
-负责ChronoForge主动连接和管理与SillyTavern的双向通信
+负责EchoGraph主动连接和管理与SillyTavern的双向通信
 """
 
 import requests
@@ -288,20 +288,20 @@ class SillyTavernConnector:
         pass
     
     def notify_plugin_connection(self, session_id: str = None) -> bool:
-        """通知SillyTavern插件ChronoForge已连接并提供会话ID"""
+        """通知SillyTavern插件EchoGraph已连接并提供会话ID"""
         try:
-            logger.info("📢 尝试通知SillyTavern插件ChronoForge已连接...")
+            logger.info("📢 尝试通知SillyTavern插件EchoGraph已连接...")
             # 尝试向插件发送连接通知，包含会话ID
             notify_endpoints = [
-                "/api/plugins/chronoforge/connect",
-                "/api/extensions/chronoforge/connect", 
-                "/chronoforge/connect"
+                "/api/plugins/EchoGraph/connect",
+                "/api/extensions/EchoGraph/connect", 
+                "/EchoGraph/connect"
             ]
             
             notification_data = {
                 "status": "connected",
                 "version": "1.0.0",
-                "message": "ChronoForge已进入酒馆模式",
+                "message": "EchoGraph已进入酒馆模式",
                 "session_id": session_id,  # 关键：传递会话ID
                 "api_base_url": "http://127.0.0.1:9543"
             }
@@ -342,8 +342,8 @@ class SillyTavernConnector:
 class TavernModeManager:
     """酒馆模式管理器 - 整合所有酒馆相关功能"""
     
-    def __init__(self, chronoforge_engine):
-        self.engine = chronoforge_engine
+    def __init__(self, EchoGraph_engine):
+        self.engine = EchoGraph_engine
         self.connector: Optional[SillyTavernConnector] = None
         self.is_tavern_mode = False
         self.saved_session_data = None
@@ -424,7 +424,7 @@ class TavernModeManager:
             logger.error(f"保存会话失败: {e}")
     
     def initialize_knowledge_graph_from_character(self, character: CharacterInfo) -> Dict[str, Any]:
-        """根据角色信息通过ChronoForge API初始化知识图谱"""
+        """根据角色信息通过EchoGraph API初始化知识图谱"""
         logger.info("🧠 ========== 开始智能初始化知识图谱 ==========")
         try:
             logger.info(f"🎭 目标角色信息:")
@@ -534,7 +534,7 @@ class TavernModeManager:
             
             logger.info(f"🌍 世界书构建完成: {len(world_info_text)} 字符")
             
-            # 调用ChronoForge API进行异步初始化
+            # 调用EchoGraph API进行异步初始化
             api_url = f"{api_base_url}/initialize_async"
             
             payload = {
@@ -668,7 +668,7 @@ class TavernModeManager:
             logger.error(f"📋 连接错误: {e}")
             return {
                 "success": False,
-                "error": "无法连接到ChronoForge API服务器，请确保服务器正在运行"
+                "error": "无法连接到EchoGraph API服务器，请确保服务器正在运行"
             }
         except requests.exceptions.Timeout as e:
             logger.error("❌ ========== API调用超时 ==========")

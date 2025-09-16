@@ -1,5 +1,5 @@
 """
-ChronoForge 主UI程序
+EchoGraph 主UI程序
 智能角色扮演助手 - 集成对话系统和关系图谱
 """
 import sys
@@ -16,9 +16,9 @@ from PySide6.QtWidgets import (
     QFormLayout, QLineEdit, QPushButton, QCheckBox, QTabWidget,
     QMessageBox, QSplitter, QListWidget, QListWidgetItem, QLabel, QTextEdit,
     QGroupBox, QComboBox, QInputDialog, QStyle, QDialog, QFileDialog,
-    QRadioButton, QButtonGroup, QScrollArea, QFrame
+    QRadioButton, QButtonGroup, QScrollArea, QFrame, QSpinBox, QDoubleSpinBox
 )
-from PySide6.QtCore import Qt, QObject, Signal as pyqtSignal, QUrl, Slot, QTimer, QPropertyAnimation, QRect, QThread
+from PySide6.QtCore import Qt, QObject, Signal as pyqtSignal, QUrl, Slot, QTimer, QPropertyAnimation, QRect, QThread, QEvent
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtGui import QIcon, QFont, QColor, QIntValidator, QTextCursor, QPainter, QPen, QBrush
@@ -61,7 +61,7 @@ class TavernInitWorker(QThread):
             # 检查插件是否已经提供角色信息
             character_data = self._wait_for_character_from_plugin()
             if not character_data:
-                self.error_occurred.emit("插件未能获取到角色信息，请确保：\n1. 已在SillyTavern中选择了角色\n2. ChronoForge插件正常运行\n3. 刷新页面后重试\n\n⚠️ 如果持续无法获取角色信息，将自动切换回本地测试模式")
+                self.error_occurred.emit("插件未能获取到角色信息，请确保：\n1. 已在SillyTavern中选择了角色\n2. EchoGraph插件正常运行\n3. 刷新页面后重试\n\n⚠️ 如果持续无法获取角色信息，将自动切换回本地测试模式")
                 return
 
             # 步骤3: 检查现有会话
@@ -119,7 +119,8 @@ class TavernInitWorker(QThread):
                 api_base_url = "http://127.0.0.1:9543"
                 available_chars_url = f"{api_base_url}/tavern/available_characters"
 
-                response = requests.get(available_chars_url, timeout=3)
+                api_timeout = int(os.getenv("API_TIMEOUT", "15"))
+                response = requests.get(available_chars_url, timeout=api_timeout)
 
                 if response.status_code == 200:
                     characters_data = response.json()
@@ -137,7 +138,7 @@ class TavernInitWorker(QThread):
 
                         # 获取完整的角色数据
                         char_data_url = f"{api_base_url}/tavern/get_character/{character_id}"
-                        char_response = requests.get(char_data_url, timeout=3)
+                        char_response = requests.get(char_data_url, timeout=api_timeout)
 
                         if char_response.status_code == 200:
                             character_info = char_response.json()
@@ -189,7 +190,8 @@ class TavernInitWorker(QThread):
                 character_hash = hashlib.md5(character_name.encode('utf-8')).hexdigest()[:8]
                 session_id = f"tavern_{character_name}_{character_hash}"
                 try:
-                    stats_resp = requests.get(f"{api_base_url}/sessions/{session_id}/stats", timeout=10)
+                    health_timeout = int(os.getenv("HEALTH_CHECK_TIMEOUT", "10"))
+                    stats_resp = requests.get(f"{api_base_url}/sessions/{session_id}/stats", timeout=health_timeout)
                     if stats_resp.status_code == 200:
                         stats = stats_resp.json() if hasattr(stats_resp, 'json') else {}
                         return {
@@ -202,7 +204,7 @@ class TavernInitWorker(QThread):
                     pass  # 精确查询失败则回退到全局最新会话
 
             # 回退：查询最新的酒馆会话（可能与当前角色不一致，谨慎使用）
-            response = requests.get(f"{api_base_url}/tavern/current_session", timeout=10)
+            response = requests.get(f"{api_base_url}/tavern/current_session", timeout=health_timeout)
             if response.status_code == 200:
                 session_data = response.json()
                 if session_data.get("has_session"):
@@ -273,10 +275,10 @@ class TavernInitWorker(QThread):
                 "enable_agent": False,  # 禁用Agent避免超时
                 "session_config": {
                     "sliding_window": {
-                        "window_size": 4,
-                        "processing_delay": 1,
-                        "enable_enhanced_agent": True,
-                        "enable_conflict_resolution": True
+                        "window_size": int(os.getenv("SLIDING_WINDOW_SIZE", "4")),
+                        "processing_delay": int(os.getenv("PROCESSING_DELAY", "1")),
+                        "enable_enhanced_agent": os.getenv("ENABLE_ENHANCED_AGENT", "true").lower() in ('true', '1', 't'),
+                        "enable_conflict_resolution": os.getenv("ENABLE_CONFLICT_RESOLUTION", "true").lower() in ('true', '1', 't')
                     }
                 }
             }
@@ -287,7 +289,8 @@ class TavernInitWorker(QThread):
                 health_url = f"{api_base_url}/health"
                 logger.info(f"📡 健康检查URL: {health_url}")
 
-                health_response = requests.get(health_url, timeout=10)
+                health_check_timeout = int(os.getenv("HEALTH_CHECK_TIMEOUT", "10"))
+                health_response = requests.get(health_url, timeout=health_check_timeout)
                 logger.info(f"📨 健康检查响应:")
                 logger.info(f"  - HTTP状态: {health_response.status_code}")
                 logger.info(f"  - 响应时间: {health_response.elapsed.total_seconds():.2f}秒")
@@ -317,7 +320,7 @@ class TavernInitWorker(QThread):
             response = requests.post(
                 async_url,
                 json=payload,
-                timeout=15,
+                timeout=int(os.getenv("API_TIMEOUT", "15")),
                 headers={'Content-Type': 'application/json'}
             )
             request_time = time.time() - start_time
@@ -369,7 +372,7 @@ class TavernInitWorker(QThread):
             logger.error("❌ ========== API连接失败 ==========")
             logger.error(f"❌ 连接错误: {e}")
             logger.error("❌ 请检查:")
-            logger.error("   1. ChronoForge API服务器是否在运行")
+            logger.error("   1. EchoGraph API服务器是否在运行")
             logger.error("   2. 端口9543是否被占用")
             logger.error("   3. 防火墙设置")
             self.error_occurred.emit(f"API连接失败: {e}")
@@ -438,10 +441,10 @@ class TavernInitWorker(QThread):
                 "enable_agent": False,  # 禁用Agent避免超时
                 "session_config": {
                     "sliding_window": {
-                        "window_size": 4,
-                        "processing_delay": 1,
-                        "enable_enhanced_agent": True,
-                        "enable_conflict_resolution": True
+                        "window_size": int(os.getenv("SLIDING_WINDOW_SIZE", "4")),
+                        "processing_delay": int(os.getenv("PROCESSING_DELAY", "1")),
+                        "enable_enhanced_agent": os.getenv("ENABLE_ENHANCED_AGENT", "true").lower() in ('true', '1', 't'),
+                        "enable_conflict_resolution": os.getenv("ENABLE_CONFLICT_RESOLUTION", "true").lower() in ('true', '1', 't')
                     }
                 }
             }
@@ -452,7 +455,8 @@ class TavernInitWorker(QThread):
                 health_url = f"{api_base_url}/health"
                 logger.info(f"📡 健康检查URL: {health_url}")
 
-                health_response = requests.get(health_url, timeout=10)
+                health_check_timeout = int(os.getenv("HEALTH_CHECK_TIMEOUT", "10"))
+                health_response = requests.get(health_url, timeout=health_check_timeout)
                 logger.info(f"📨 健康检查响应:")
                 logger.info(f"  - HTTP状态: {health_response.status_code}")
                 logger.info(f"  - 响应时间: {health_response.elapsed.total_seconds():.2f}秒")
@@ -479,10 +483,11 @@ class TavernInitWorker(QThread):
             logger.info(f"  - 请求大小: {len(str(payload))} 字符")
 
             start_time = time.time()
+            api_timeout = int(os.getenv("API_TIMEOUT", "15"))
             response = requests.post(
                 async_url,
                 json=payload,
-                timeout=15,  # 增加到15秒
+                timeout=api_timeout,
                 headers={'Content-Type': 'application/json'}
             )
             request_time = time.time() - start_time
@@ -534,7 +539,7 @@ class TavernInitWorker(QThread):
             logger.error("❌ ========== API连接失败 ==========")
             logger.error(f"❌ 连接错误: {e}")
             logger.error("❌ 请检查:")
-            logger.error("   1. ChronoForge API服务器是否在运行")
+            logger.error("   1. EchoGraph API服务器是否在运行")
             logger.error("   2. 端口9543是否被占用")
             logger.error("   3. 防火墙设置")
             self.error_occurred.emit(f"API连接失败: {e}")
@@ -570,7 +575,8 @@ class TavernInitWorker(QThread):
                         self.error_occurred.emit("用户取消了初始化任务")
                         return
 
-                    status_response = requests.get(status_url, timeout=10)
+                    health_check_timeout = int(os.getenv("HEALTH_CHECK_TIMEOUT", "10"))
+                    status_response = requests.get(status_url, timeout=health_check_timeout)
 
                     if status_response.status_code == 200:
                         status_data = status_response.json()
@@ -773,7 +779,8 @@ class LoadingBubble(QFrame):
         # 设置定时器来更新动画
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_animation)
-        self.timer.start(500)  # 每500ms更新一次
+        animation_interval = int(os.getenv("ANIMATION_INTERVAL", "500"))
+        self.timer.start(animation_interval)  # 从配置读取动画间隔
 
     def setup_ui(self):
         layout = QHBoxLayout(self)
@@ -870,7 +877,7 @@ class ChatDisplayWidget(QScrollArea):
 
     def add_message(self, message: str, is_user: bool, color: str = None):
         # 限制消息历史大小，防止内存泄漏
-        MAX_MESSAGES = 1000  # 最多保留1000条消息
+        MAX_MESSAGES = int(os.getenv("MAX_MESSAGES", "1000"))  # 从配置读取最大消息数
 
         # 如果超过限制，删除最旧的消息
         if len(self.message_widgets) >= MAX_MESSAGES:
@@ -878,7 +885,7 @@ class ChatDisplayWidget(QScrollArea):
             old_widget = old_msg_info['widget']
             self.messages_layout.removeWidget(old_widget)
             old_widget.deleteLater()
-            logger.info(f"🧹 [UI] 删除旧消息以防止内存泄漏，当前消息数: {len(self.message_widgets)}")
+            logger.debug(f"🧹 [UI] 删除旧消息以防止内存泄漏，当前消息数: {len(self.message_widgets)}")
 
         bubble = ChatBubble(message, is_user, color)
         bubble.message_clicked.connect(self.on_message_clicked)  # 连接点击信号
@@ -1203,14 +1210,14 @@ class IntegratedPlayPage(QWidget):
     def load_existing_conversations(self):
         """加载现有对话到下拉框"""
         try:
-            logger.info("📥 [UI] 开始加载现有对话...")
+            logger.debug("📥 [UI] 开始加载现有对话...")
 
             # 触发对话管理器加载对话
             self.conversation_manager.load_conversations()
 
             # 获取排序后的对话列表
             conversations = list(self.conversation_manager.conversations.values())
-            logger.info(f"📋 [UI] 找到 {len(conversations)} 个对话")
+            logger.debug(f"📋 [UI] 找到 {len(conversations)} 个对话")
 
             if conversations:
                 # 按最后修改时间排序
@@ -1221,20 +1228,20 @@ class IntegratedPlayPage(QWidget):
                 )
 
                 for i, conv in enumerate(sorted_conversations):
-                    logger.info(f"📄 [UI] 对话{i+1}: {conv['name']} (ID: {conv['id']})")
+                    logger.debug(f"📄 [UI] 对话{i+1}: {conv['name']} (ID: {conv['id']})")
 
                 self.update_conversation_combo(sorted_conversations)
 
                 # 如果有对话，自动选择第一个并加载其内容
                 if sorted_conversations:
                     first_conv = sorted_conversations[0]
-                    logger.info(f"🎯 [UI] 自动选择第一个对话: {first_conv['name']}")
+                    logger.debug(f"🎯 [UI] 自动选择第一个对话: {first_conv['name']}")
 
                     self.conversation_manager.current_conversation_id = first_conv['id']
                     self.load_conversation(first_conv['id'])
-                    logger.info(f"✅ [UI] 自动加载对话: {first_conv['name']}")
+                    logger.debug(f"✅ [UI] 自动加载对话: {first_conv['name']}")
             else:
-                logger.info("📭 [UI] 没有找到现有对话")
+                logger.debug("📭 [UI] 没有找到现有对话")
         except Exception as e:
             logger.error(f"❌ [UI] 加载现有对话失败: {e}")
             import traceback
@@ -1514,7 +1521,7 @@ class IntegratedPlayPage(QWidget):
         main_window = None
         widget = self.parent()
         while widget is not None:
-            if isinstance(widget, ChronoForgeMainWindow):
+            if isinstance(widget, EchoGraphMainWindow):
                 main_window = widget
                 break
             widget = widget.parent()
@@ -1594,7 +1601,7 @@ class IntegratedPlayPage(QWidget):
                     if not r.ok:
                         self.update_status_display("❌ 会话初始化失败：后端未启动")
                         from PySide6.QtWidgets import QMessageBox
-                        QMessageBox.warning(self, "ChronoForge", "会话初始化失败: 后端无法访问，请先启动Python服务器。")
+                        QMessageBox.warning(self, "EchoGraph", "会话初始化失败: 后端无法访问，请先启动Python服务器。")
 
                         # 确保后端处于本地隔离（关闭酒馆模式 + 快速清理）
                         try:
@@ -1701,7 +1708,7 @@ class IntegratedPlayPage(QWidget):
             # 获取主窗口实例
             main_window = None
             for widget in QApplication.topLevelWidgets():
-                if isinstance(widget, ChronoForgeMainWindow):
+                if isinstance(widget, EchoGraphMainWindow):
                     main_window = widget
                     break
             if not main_window:
@@ -1719,10 +1726,11 @@ class IntegratedPlayPage(QWidget):
             logger.info(f"  - 主机: {host}")
             logger.info(f"  - 端口: {port}")
 
+            tavern_timeout = int(os.getenv("SILLYTAVERN_TIMEOUT", "10"))
             tavern_config = TavernConfig(
                 host=host,
                 port=port,
-                timeout=10
+                timeout=tavern_timeout
             )
 
             logger.info("📋 步骤3: 启动后台初始化线程...")
@@ -1778,7 +1786,7 @@ class IntegratedPlayPage(QWidget):
             # 获取主窗口实例
             main_window = None
             for widget in QApplication.topLevelWidgets():
-                if isinstance(widget, ChronoForgeMainWindow):
+                if isinstance(widget, EchoGraphMainWindow):
                     main_window = widget
                     break
             if hasattr(main_window, 'graph_page'):
@@ -1819,7 +1827,8 @@ class IntegratedPlayPage(QWidget):
             try:
                 self._tavern_poll_attempts += 1
                 import requests
-                r = requests.get(f"{self.api_base_url}/tavern/current_session", timeout=2)
+                poll_interval = int(os.getenv("POLL_INTERVAL", "3"))
+                r = requests.get(f"{self.api_base_url}/tavern/current_session", timeout=poll_interval)
                 if r.status_code == 200:
                     data = r.json()
                     if data.get("has_session") and data.get("session_id"):
@@ -1898,7 +1907,7 @@ class IntegratedPlayPage(QWidget):
                     main_window = None
                     widget = self.parent()
                     while widget is not None:
-                        if isinstance(widget, ChronoForgeMainWindow):
+                        if isinstance(widget, EchoGraphMainWindow):
                             main_window = widget
                             break
                         widget = widget.parent()
@@ -1946,7 +1955,7 @@ class IntegratedPlayPage(QWidget):
         # 获取主窗口实例
         main_window = None
         for widget in QApplication.topLevelWidgets():
-            if isinstance(widget, ChronoForgeMainWindow):
+            if isinstance(widget, EchoGraphMainWindow):
                 main_window = widget
                 break
         if main_window:
@@ -1968,7 +1977,7 @@ class IntegratedPlayPage(QWidget):
             main_window = None
             widget = self.parent()
             while widget is not None:
-                if isinstance(widget, ChronoForgeMainWindow):
+                if isinstance(widget, EchoGraphMainWindow):
                     main_window = widget
                     logger.info("✅ 成功获取主窗口实例")
                     break
@@ -2024,10 +2033,11 @@ class IntegratedPlayPage(QWidget):
             logger.info(f"  - 配置文件: {env_path}")
             logger.info(f"  - 配置存在: {env_path.exists()}")
 
+            tavern_timeout = int(os.getenv("SILLYTAVERN_TIMEOUT", "10"))
             tavern_config = TavernConfig(
                 host=host,
                 port=port,
-                timeout=10
+                timeout=tavern_timeout
             )
 
             # 使用酒馆管理器进入酒馆模式
@@ -2084,7 +2094,7 @@ class IntegratedPlayPage(QWidget):
                     f"成功连接到SillyTavern！\n\n"
                     f"当前角色: {character_name}\n"
                     f"已初始化 {nodes_created} 个知识图谱节点\n\n"
-                    f"现在可以在SillyTavern中进行对话，ChronoForge将提供智能增强。"
+                    f"现在可以在SillyTavern中进行对话，EchoGraph将提供智能增强。"
                 )
 
                 logger.info(f"🎉 酒馆模式启用成功 - 角色: {character_name}, 节点: {nodes_created}")
@@ -2111,7 +2121,7 @@ class IntegratedPlayPage(QWidget):
                     f"请确保：\n"
                     f"1. SillyTavern正在运行 (http://localhost:8000)\n"
                     f"2. 已选择一个角色\n"
-                    f"3. ChronoForge插件已安装并启用"
+                    f"3. EchoGraph插件已安装并启用"
                 )
 
                 logger.error(f"❌ 酒馆模式切换失败: {error_msg}")
@@ -2229,7 +2239,7 @@ class IntegratedPlayPage(QWidget):
                     main_window = None
                     widget = self.parent()
                     while widget is not None:
-                        if isinstance(widget, ChronoForgeMainWindow):
+                        if isinstance(widget, EchoGraphMainWindow):
                             main_window = widget
                             break
                         widget = widget.parent()
@@ -2267,7 +2277,7 @@ class IntegratedPlayPage(QWidget):
 
     def switch_conversation(self, conv_name: str):
         """切换对话"""
-        logger.info(f"🔄 [UI] 尝试切换对话: {conv_name}")
+        logger.debug(f"🔄 [UI] 尝试切换对话: {conv_name}")
 
         if not conv_name or not conv_name.strip():
             logger.warning(f"❌ [UI] 对话名称为空，忽略切换")
@@ -2281,36 +2291,36 @@ class IntegratedPlayPage(QWidget):
                 break
 
         if found_conv_id:
-            logger.info(f"✅ [UI] 找到对话ID: {found_conv_id}，开始切换")
+            logger.debug(f"✅ [UI] 找到对话ID: {found_conv_id}，开始切换")
             self.conversation_manager.switch_conversation(found_conv_id)
         else:
             logger.error(f"❌ [UI] 未找到对话: {conv_name}")
-            logger.info(f"📋 [UI] 可用对话: {list(self.conversation_manager.conversations.keys())}")
+            logger.debug(f"📋 [UI] 可用对话: {list(self.conversation_manager.conversations.keys())}")
 
     def update_conversation_combo(self, conversations: List[Dict]):
         """更新对话下拉框"""
-        logger.info(f"🔄 [UI] 更新对话下拉框，{len(conversations)} 个对话")
+        logger.debug(f"🔄 [UI] 更新对话下拉框，{len(conversations)} 个对话")
 
         try:
             # 临时断开信号，避免在更新过程中触发切换
             self.conversation_combo.currentTextChanged.disconnect()
-            logger.info("🔌 [UI] 临时断开下拉框信号")
+            logger.debug("🔌 [UI] 临时断开下拉框信号")
         except Exception as e:
             logger.warning(f"⚠️ [UI] 断开信号失败（可能还没连接）: {e}")
 
         self.conversation_combo.clear()
         for conv in conversations:
             self.conversation_combo.addItem(conv['name'])
-            logger.info(f"📝 [UI] 添加对话到下拉框: {conv['name']}")
+            logger.debug(f"📝 [UI] 添加对话到下拉框: {conv['name']}")
 
         # 选中当前对话
         current_conv = self.conversation_manager.get_current_conversation()
         if current_conv:
-            logger.info(f"🎯 [UI] 当前对话: {current_conv['name']}")
+            logger.debug(f"🎯 [UI] 当前对话: {current_conv['name']}")
             index = self.conversation_combo.findText(current_conv['name'])
             if index >= 0:
                 self.conversation_combo.setCurrentIndex(index)
-                logger.info(f"✅ [UI] 设置下拉框选中索引: {index}")
+                logger.debug(f"✅ [UI] 设置下拉框选中索引: {index}")
             else:
                 logger.error(f"❌ [UI] 在下拉框中找不到对话: {current_conv['name']}")
         else:
@@ -2318,13 +2328,13 @@ class IntegratedPlayPage(QWidget):
 
         # 重新连接信号
         self.conversation_combo.currentTextChanged.connect(self.switch_conversation)
-        logger.info("🔌 [UI] 重新连接下拉框信号")
+        logger.debug("🔌 [UI] 重新连接下拉框信号")
 
-        logger.info(f"✅ [UI] 下拉框更新完成，当前项目: {self.conversation_combo.currentText()}")
+        logger.debug(f"✅ [UI] 下拉框更新完成，当前项目: {self.conversation_combo.currentText()}")
 
     def load_conversation(self, conv_id: str):
         """加载对话内容"""
-        logger.info(f"📖 [UI] 开始加载对话内容: {conv_id}")
+        logger.debug(f"📖 [UI] 开始加载对话内容: {conv_id}")
 
         self.chat_display.clear_messages()
 
@@ -2337,9 +2347,9 @@ class IntegratedPlayPage(QWidget):
             logger.warning(f"❌ [UI] 找不到对话: {conv_id}")
             return
 
-        logger.info(f"📄 [UI] 找到对话: {conv['name']}")
+        logger.debug(f"📄 [UI] 找到对话: {conv['name']}")
         messages = conv.get('messages', [])
-        logger.info(f"💬 [UI] 对话包含 {len(messages)} 条消息")
+        logger.debug(f"💬 [UI] 对话包含 {len(messages)} 条消息")
 
         # 显示消息历史
         loaded_messages = 0
@@ -2354,7 +2364,7 @@ class IntegratedPlayPage(QWidget):
                 self.append_message(f"系统: {msg['content']}", is_user=False)
                 loaded_messages += 1
 
-        logger.info(f"✅ [UI] 成功加载 {loaded_messages} 条消息到聊天界面")
+        logger.debug(f"✅ [UI] 成功加载 {loaded_messages} 条消息到聊天界面")
 
     def append_message(self, message: str, is_user: bool = None, color: str = None):
         """添加消息到显示区域"""
@@ -2420,7 +2430,7 @@ class IntegratedPlayPage(QWidget):
             # 清理之前的线程
             if hasattr(self, 'llm_worker') and self.llm_worker is not None:
                 if self.llm_worker.isRunning():
-                    logger.info("🔄 [UI] 停止之前的LLM工作线程")
+                    logger.debug("🔄 [UI] 停止之前的LLM工作线程")
                     self.llm_worker.terminate()
                     self.llm_worker.wait(1000)  # 等待最多1秒
                 self.llm_worker.deleteLater()
@@ -2435,7 +2445,7 @@ class IntegratedPlayPage(QWidget):
             self.llm_worker.finished.connect(self.on_llm_worker_finished)  # 新增：线程完成清理
 
             # 启动线程
-            logger.info(f"🚀 [UI] 启动LLM工作线程处理消息: {message}")
+            logger.debug(f"🚀 [UI] 启动LLM工作线程处理消息: {message}")
             self.llm_worker.start()
 
         except Exception as e:
@@ -2446,12 +2456,12 @@ class IntegratedPlayPage(QWidget):
 
     def on_grag_data_ready(self, grag_data: dict):
         """GRAG数据准备完成的回调"""
-        logger.info(f"📊 [UI] 收到GRAG数据 - 实体: {grag_data['entities']}, 上下文长度: {grag_data['context_length']}")
+        logger.debug(f"📊 [UI] 收到GRAG数据 - 实体: {grag_data['entities']}, 上下文长度: {grag_data['context_length']}")
 
     def on_llm_response_ready(self, llm_response: str):
         """LLM回复准备完成的回调"""
         try:
-            logger.info(f"✅ [UI] 收到LLM回复，开始处理UI更新")
+            logger.debug(f"✅ [UI] 收到LLM回复，开始处理UI更新")
 
             # 移除加载动画并显示回复
             self.remove_loading_animation()
@@ -2479,7 +2489,7 @@ class IntegratedPlayPage(QWidget):
                     main_window = None
                     widget = self.parent()
                     while widget is not None:
-                        if isinstance(widget, ChronoForgeMainWindow):
+                        if isinstance(widget, EchoGraphMainWindow):
                             main_window = widget
                             break
                         widget = widget.parent()
@@ -2509,7 +2519,7 @@ class IntegratedPlayPage(QWidget):
 
     def on_llm_worker_finished(self):
         """LLM工作线程完成时的清理回调"""
-        logger.info("🧹 [UI] LLM工作线程已完成，进行清理")
+        logger.debug("🧹 [UI] LLM工作线程已完成，进行清理")
         if hasattr(self, 'llm_worker') and self.llm_worker is not None:
             self.llm_worker.deleteLater()
             self.llm_worker = None
@@ -2529,7 +2539,7 @@ class IntegratedPlayPage(QWidget):
                 main_window = None
                 widget = self.parent()
                 while widget is not None:
-                    if isinstance(widget, ChronoForgeMainWindow):
+                    if isinstance(widget, EchoGraphMainWindow):
                         main_window = widget
                         break
                     widget = widget.parent()
@@ -2542,7 +2552,7 @@ class IntegratedPlayPage(QWidget):
                 logger.warning("酒馆模式会话ID未知，无法处理消息")
                 return {'status': 'no_session'}
 
-            # 发送到ChronoForge API服务器进行处理
+            # 发送到EchoGraph API服务器进行处理
             response = requests.post(
                 f"{self.api_base_url}/tavern/process_message",
                 json={
@@ -2551,7 +2561,7 @@ class IntegratedPlayPage(QWidget):
                     'mode': 'tavern_integration',
                     'timestamp': time.time()
                 },
-                timeout=10
+                timeout=int(os.getenv("API_TIMEOUT", "15"))
             )
 
             if response.status_code == 200:
@@ -2569,7 +2579,7 @@ class IntegratedPlayPage(QWidget):
                         main_window = None
                         widget = self.parent()
                         while widget is not None:
-                            if isinstance(widget, ChronoForgeMainWindow):
+                            if isinstance(widget, EchoGraphMainWindow):
                                 main_window = widget
                                 break
                             widget = widget.parent()
@@ -2669,7 +2679,7 @@ class IntegratedPlayPage(QWidget):
                 main_window = None
                 widget = self.parent()
                 while widget is not None:
-                    if isinstance(widget, ChronoForgeMainWindow):
+                    if isinstance(widget, EchoGraphMainWindow):
                         main_window = widget
                         break
                     widget = widget.parent()
@@ -2705,10 +2715,10 @@ class GraphPage(QWidget):
         # 将输出HTML写到模板目录，保证相对assets路径能加载
         try:
             self.graph_file_path = self.html_generator.template_path.parent / "graph.html"
-            logger.info(f"[Graph] HTML输出路径: {self.graph_file_path}")
+            logger.debug(f"[Graph] HTML输出路径: {self.graph_file_path}")
             from pathlib import Path as _P
             _assets_root = _P(__file__).resolve().parent / 'assets'
-            logger.info(f"[Graph] 资源基路径: {_assets_root}")
+            logger.debug(f"[Graph] 资源基路径: {_assets_root}")
         except Exception as _e:
             logger.warning(f"[Graph] 设定HTML输出路径失败，退回默认: {_e}")
 
@@ -2802,12 +2812,12 @@ class GraphPage(QWidget):
 
             if dev_attr is not None:
                 settings.setAttribute(dev_attr, True)
-                logger.info("开发者工具已启用")
+                logger.debug("开发者工具已启用")
             else:
                 # 尝试直接设置常见的开发者工具属性
                 try:
                     settings.setAttribute(settings.DeveloperExtrasEnabled, True)
-                    logger.info("开发者工具已启用(直接属性)")
+                    logger.debug("开发者工具已启用(直接属性)")
                 except:
                     logger.warning("无法启用开发者工具，但程序继续运行")
         except Exception as e:
@@ -2972,12 +2982,12 @@ class GraphPage(QWidget):
         """刷新关系图谱（自动根据模式选择数据源）"""
         try:
             if getattr(self, 'tavern_mode', False) and getattr(self, 'tavern_session_id', None):
-                logger.info(f"[Graph] 酒馆模式刷新，session={self.tavern_session_id}")
+                logger.debug(f"[Graph] 酒馆模式刷新，session={self.tavern_session_id}")
                 # 使用API服务器的数据刷新，并直接返回，避免覆盖占位页流程
                 self.refresh_from_api_server(self.tavern_session_id)
                 return
 
-            logger.info("[Graph] 本地模式刷新知识关系图谱...")
+            logger.debug("[Graph] 本地模式刷新知识关系图谱...")
             # 重新加载实体和关系到知识图谱（确保同步，现在包含关系）
             self.memory.reload_entities_from_json()
 
@@ -3125,7 +3135,8 @@ class GraphPage(QWidget):
                     api_base_url = "http://127.0.0.1:9543"
                     export_url = f"{api_base_url}/sessions/{self.tavern_session_id}/export"
 
-                    response = requests.get(export_url, timeout=10)
+                    api_timeout = int(os.getenv("API_TIMEOUT", "15"))
+                    response = requests.get(export_url, timeout=api_timeout)
                     if response.status_code == 200:
                         graph_data = response.json()
                         graph_json = graph_data.get('graph_data', {})
@@ -3270,7 +3281,8 @@ class GraphPage(QWidget):
                     api_base_url = "http://127.0.0.1:9543"
                     export_url = f"{api_base_url}/sessions/{self.tavern_session_id}/export"
 
-                    response = requests.get(export_url, timeout=10)
+                    api_timeout = int(os.getenv("API_TIMEOUT", "15"))
+                    response = requests.get(export_url, timeout=api_timeout)
                     if response.status_code == 200:
                         graph_data = response.json()
                         graph_json = graph_data.get('graph_data', {})
@@ -3929,7 +3941,7 @@ class GraphPage(QWidget):
                     main_window = None
                     widget = self.parent()
                     while widget is not None:
-                        if isinstance(widget, ChronoForgeMainWindow):
+                        if isinstance(widget, EchoGraphMainWindow):
                             main_window = widget
                             break
                         widget = widget.parent()
@@ -4035,8 +4047,8 @@ class GraphPage(QWidget):
             # 构建导出数据
             export_data = {
                 'metadata': {
-                    'title': 'ChronoForge Knowledge Graph',
-                    'created_by': 'ChronoForge',
+                    'title': 'EchoGraph Knowledge Graph',
+                    'created_by': 'EchoGraph',
                     'export_time': time.time(),
                     'version': '1.0.0'
                 },
@@ -4101,7 +4113,8 @@ class GraphPage(QWidget):
                     # 酒馆模式下：通过API清空当前会话的图谱
                     import requests
                     api_url = f"http://127.0.0.1:9543/sessions/{self.tavern_session_id}/clear"
-                    response = requests.post(api_url, timeout=10)
+                    api_timeout = int(os.getenv("API_TIMEOUT", "15"))
+                    response = requests.post(api_url, timeout=api_timeout)
                     if response.status_code == 200:
                         logger.info("通过API成功清空酒馆会话知识图谱")
                         # 刷新显示
@@ -4139,13 +4152,14 @@ class GraphPage(QWidget):
                 return
 
             try:
-                logger.info(f"🚀 [UI] Starting tavern graph initialization for session: {self.tavern_session_id}")
+                logger.debug(f"🚀 [UI] Starting tavern graph initialization for session: {self.tavern_session_id}")
 
                 # 直接调用重新初始化API
-                logger.info(f"🔄 [UI] Calling coordinated re-initialization API for session: {self.tavern_session_id}")
+                logger.debug(f"🔄 [UI] Calling coordinated re-initialization API for session: {self.tavern_session_id}")
                 api_url = f"http://127.0.0.1:9543/tavern/sessions/{self.tavern_session_id}/request_reinitialize"
 
-                response = requests.post(api_url, timeout=5)
+                api_timeout = int(os.getenv("API_TIMEOUT", "15"))
+                response = requests.post(api_url, timeout=api_timeout)
 
                 if response.status_code == 200:
                     result = response.json()
@@ -4165,7 +4179,7 @@ class GraphPage(QWidget):
 
             except Exception as api_error:
                 logger.error(f"❌ [UI] API call failed: {api_error}")
-                QMessageBox.warning(self, "网络问题", f"无法连接到服务器，请检查ChronoForge服务是否运行")
+                QMessageBox.warning(self, "网络问题", f"无法连接到服务器，请检查EchoGraph服务是否运行")
 
         else:
             # --- 本地模式下的初始化 ---
@@ -4189,7 +4203,7 @@ class GraphPage(QWidget):
             main_window = None
             widget = self.parent()
             while widget is not None:
-                if isinstance(widget, ChronoForgeMainWindow):
+                if isinstance(widget, EchoGraphMainWindow):
                     main_window = widget
                     break
                 widget = widget.parent()
@@ -4256,7 +4270,7 @@ class GraphPage(QWidget):
             main_window = None
             widget = self.parent()
             while widget is not None:
-                if isinstance(widget, ChronoForgeMainWindow):
+                if isinstance(widget, EchoGraphMainWindow):
                     main_window = widget
                     break
                 widget = widget.parent()
@@ -4286,7 +4300,7 @@ class GraphPage(QWidget):
             # 创建开发者工具窗口
             if not hasattr(self, 'dev_view'):
                 self.dev_view = QWebEngineView()
-                self.dev_view.setWindowTitle("开发者工具 - ChronoForge Graph")
+                self.dev_view.setWindowTitle("开发者工具 - EchoGraph Graph")
                 self.dev_view.resize(1000, 600)
 
             # 设置开发者工具页面
@@ -4409,7 +4423,8 @@ class GraphPage(QWidget):
             api_base_url = "http://127.0.0.1:9543"  # TODO: 从配置获取
             stats_url = f"{api_base_url}/sessions/{session_id}/stats"
 
-            response = requests.get(stats_url, timeout=10)
+            health_check_timeout = int(os.getenv("HEALTH_CHECK_TIMEOUT", "10"))
+            response = requests.get(stats_url, timeout=health_check_timeout)
             if response.status_code == 200:
                 stats = response.json()
                 logger.info(f"成功获取会话统计: 节点={stats.get('graph_nodes', 0)}, 边={stats.get('graph_edges', 0)}")
@@ -4574,7 +4589,7 @@ class GraphPage(QWidget):
             <!DOCTYPE html>
             <html>
             <head>
-                <title>ChronoForge - 酒馆模式</title>
+                <title>EchoGraph - 酒馆模式</title>
                 <style>
                     body {{
                         font-family: 'Microsoft YaHei', Arial, sans-serif;
@@ -4623,7 +4638,7 @@ class GraphPage(QWidget):
             <body>
                 <div class="container">
                     <h1>🍺 酒馆模式已激活</h1>
-                    <p>ChronoForge正在与SillyTavern协作，提供智能对话增强服务</p>
+                    <p>EchoGraph正在与SillyTavern协作，提供智能对话增强服务</p>
 
                     <h2>📊 当前会话统计</h2>
                     <div class="stats">
@@ -4650,9 +4665,9 @@ class GraphPage(QWidget):
 
                     <div class="info">
                         <h3>ℹ️ 使用说明</h3>
-                        <p>• 在SillyTavern中进行对话，ChronoForge会自动提供智能增强</p>
+                        <p>• 在SillyTavern中进行对话，EchoGraph会自动提供智能增强</p>
                         <p>• 知识图谱会根据对话内容动态更新</p>
-                        <p>• 可以随时在ChronoForge主界面切换回本地模式</p>
+                        <p>• 可以随时在EchoGraph主界面切换回本地模式</p>
                     </div>
                 </div>
             </body>
@@ -4672,28 +4687,138 @@ class GraphPage(QWidget):
             logger.error(f"显示酒馆模式占位页面失败: {e}")
 
 
+
 class ConfigPage(QWidget):
     """系统配置页面"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("configPage")
         self.env_path = Path(__file__).parent / '.env'
         self.init_ui()
         self.load_config()
 
-    def init_ui(self):
-        layout = QFormLayout(self)
+    def load_config_styles(self):
+        """加载配置页面的QSS样式（来自 assets/css/graph.css 中的片段）"""
+        try:
+            css_path = Path(__file__).parent / "assets" / "css" / "graph.css"
+            if css_path.exists():
+                with open(css_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                start_marker = "/* QSS_CONFIG_START */"
+                end_marker = "/* QSS_CONFIG_END */"
+                start = content.find(start_marker)
+                end = content.find(end_marker)
+                if start != -1 and end != -1 and end > start:
+                    qss = content[start + len(start_marker): end].strip()
+                    self.setStyleSheet(qss)
+                else:
+                    logger.warning("未找到配置页面QSS片段，使用内置最小样式")
+                    self.setStyleSheet(
+                        "#configPage QSpinBox::up-button, #configPage QDoubleSpinBox::up-button, "
+                        "#configPage QSpinBox::down-button, #configPage QDoubleSpinBox::down-button { "
+                        "width:0px; height:0px; border:none; background:transparent; } "
+                        "#configPage QLabel { background-color: transparent; }"
+                    )
+            else:
+                logger.warning(f"CSS文件不存在: {css_path}")
+        except Exception as e:
+            logger.error(f"加载CSS样式失败: {e}")
 
-        # LLM配置
+    def init_ui(self):
+        # 创建滚动区域
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+        # 创建主容器
+        main_widget = QWidget()
+        layout = QVBoxLayout(main_widget)
+
+        # 加载配置页面样式
+        self.load_config_styles()
+
+        # LLM配置组
+        llm_group = QGroupBox("LLM模型配置")
+        llm_layout = QFormLayout(llm_group)
+
         self.api_base_url_input = QLineEdit()
         self.api_key_input = QLineEdit()
         self.api_key_input.setEchoMode(QLineEdit.Password)
         self.model_input = QLineEdit()
         self.stream_checkbox = QCheckBox("启用流式输出")
 
-        # 服务器配置
+        # LLM参数配置
+        self.max_tokens_input = QSpinBox()
+        self.max_tokens_input.setRange(100, 32000)
+        self.max_tokens_input.setValue(4000)
+        self.max_tokens_input.setSuffix(" tokens")
+
+        self.temperature_input = QDoubleSpinBox()
+        self.temperature_input.setRange(0.0, 2.0)
+        self.temperature_input.setSingleStep(0.1)
+        self.temperature_input.setDecimals(1)
+        self.temperature_input.setValue(0.8)
+
+        self.request_timeout_input = QSpinBox()
+        self.request_timeout_input.setRange(30, 600)
+        self.request_timeout_input.setValue(180)
+        self.request_timeout_input.setSuffix(" 秒")
+
+        llm_layout.addRow("API接口地址:", self.api_base_url_input)
+        llm_layout.addRow("API密钥:", self.api_key_input)
+        llm_layout.addRow("默认模型:", self.model_input)
+        llm_layout.addRow("最大Token数:", self.max_tokens_input)
+        llm_layout.addRow("温度参数:", self.temperature_input)
+        llm_layout.addRow("请求超时:", self.request_timeout_input)
+        llm_layout.addRow("", self.stream_checkbox)
+
+        # 滑动窗口配置组
+        window_group = QGroupBox("滑动窗口配置")
+        window_layout = QFormLayout(window_group)
+
+        self.window_size_input = QSpinBox()
+        self.window_size_input.setRange(2, 20)
+        self.window_size_input.setValue(4)
+        self.window_size_input.setSuffix(" 轮对话")
+
+        self.processing_delay_input = QSpinBox()
+        self.processing_delay_input.setRange(0, 10)
+        self.processing_delay_input.setValue(1)
+        self.processing_delay_input.setSuffix(" 轮延迟")
+
+        self.enable_enhanced_agent_checkbox = QCheckBox("启用增强Agent")
+        self.enable_enhanced_agent_checkbox.setChecked(True)
+
+        self.enable_conflict_resolution_checkbox = QCheckBox("启用冲突解决")
+        self.enable_conflict_resolution_checkbox.setChecked(True)
+
+        window_layout.addRow("窗口大小:", self.window_size_input)
+        window_layout.addRow("处理延迟:", self.processing_delay_input)
+        window_layout.addRow("", self.enable_enhanced_agent_checkbox)
+        window_layout.addRow("", self.enable_conflict_resolution_checkbox)
+
+        # 服务器配置组
+        server_group = QGroupBox("服务器配置")
+        server_layout = QFormLayout(server_group)
+
         self.api_server_port_input = QLineEdit()
         self.api_server_port_input.setValidator(QIntValidator(1024, 65535, self))
+
+        self.api_timeout_input = QSpinBox()
+        self.api_timeout_input.setRange(5, 60)
+        self.api_timeout_input.setValue(15)
+        self.api_timeout_input.setSuffix(" 秒")
+
+        self.health_check_timeout_input = QSpinBox()
+        self.health_check_timeout_input.setRange(3, 30)
+        self.health_check_timeout_input.setValue(10)
+        self.health_check_timeout_input.setSuffix(" 秒")
+
+        server_layout.addRow("API服务器端口:", self.api_server_port_input)
+        server_layout.addRow("API请求超时:", self.api_timeout_input)
+        server_layout.addRow("健康检查超时:", self.health_check_timeout_input)
 
         # 酒馆连接配置组
         tavern_group = QGroupBox("SillyTavern连接配置")
@@ -4702,6 +4827,11 @@ class ConfigPage(QWidget):
         self.tavern_host_input = QLineEdit()
         self.tavern_port_input = QLineEdit()
         self.tavern_port_input.setValidator(QIntValidator(1024, 65535, self))
+
+        self.tavern_timeout_input = QSpinBox()
+        self.tavern_timeout_input.setRange(3, 30)
+        self.tavern_timeout_input.setValue(10)
+        self.tavern_timeout_input.setSuffix(" 秒")
 
         # 测试连接按钮
         self.test_tavern_btn = QPushButton("测试酒馆连接")
@@ -4713,21 +4843,64 @@ class ConfigPage(QWidget):
 
         tavern_layout.addRow("酒馆地址:", self.tavern_host_input)
         tavern_layout.addRow("酒馆端口:", self.tavern_port_input)
+        tavern_layout.addRow("连接超时:", self.tavern_timeout_input)
         tavern_layout.addRow("连接状态:", self.tavern_status_label)
         tavern_layout.addRow("", self.test_tavern_btn)
+
+        # UI配置组
+        ui_group = QGroupBox("界面配置")
+        ui_layout = QFormLayout(ui_group)
+
+        self.max_messages_input = QSpinBox()
+        self.max_messages_input.setRange(100, 5000)
+        self.max_messages_input.setValue(1000)
+        self.max_messages_input.setSuffix(" 条消息")
+
+        self.animation_interval_input = QSpinBox()
+        self.animation_interval_input.setRange(100, 2000)
+        self.animation_interval_input.setValue(500)
+        self.animation_interval_input.setSuffix(" 毫秒")
+
+        self.poll_interval_input = QSpinBox()
+        self.poll_interval_input.setRange(1, 10)
+        self.poll_interval_input.setValue(3)
+        self.poll_interval_input.setSuffix(" 秒")
+
+        ui_layout.addRow("最大消息数:", self.max_messages_input)
+        ui_layout.addRow("动画间隔:", self.animation_interval_input)
+        ui_layout.addRow("轮询间隔:", self.poll_interval_input)
+
+        # 系统配置组
+        system_group = QGroupBox("系统配置")
+        system_layout = QFormLayout(system_group)
+
+        self.log_level_combo = QComboBox()
+        self.log_level_combo.addItems(["DEBUG", "INFO", "WARNING", "ERROR"])
+        self.log_level_combo.setCurrentText("INFO")
+        system_layout.addRow("日志等级:", self.log_level_combo)
 
         # 保存按钮
         self.save_button = QPushButton("保存配置")
         self.save_button.clicked.connect(self.save_config)
 
+
+
         # 添加到布局
-        layout.addRow("API接口地址:", self.api_base_url_input)
-        layout.addRow("API密钥:", self.api_key_input)
-        layout.addRow("默认模型:", self.model_input)
-        layout.addRow("", self.stream_checkbox)
-        layout.addRow("API服务器端口:", self.api_server_port_input)
-        layout.addWidget(tavern_group)  # 添加酒馆配置组
-        layout.addRow("", self.save_button)
+        layout.addWidget(llm_group)
+        layout.addWidget(window_group)
+        layout.addWidget(server_group)
+        layout.addWidget(tavern_group)
+        layout.addWidget(ui_group)
+        layout.addWidget(system_group)
+        layout.addWidget(self.save_button)
+        layout.addStretch()
+
+        # 设置滚动区域
+        scroll_area.setWidget(main_widget)
+
+        # 设置主布局
+        main_layout = QVBoxLayout(self)
+        main_layout.addWidget(scroll_area)
 
     def load_config(self):
         """加载配置"""
@@ -4735,33 +4908,87 @@ class ConfigPage(QWidget):
             self.env_path.touch()
 
         config = dotenv_values(self.env_path)
+
+        # LLM配置
         self.api_base_url_input.setText(config.get("OPENAI_API_BASE_URL", ""))
         self.api_key_input.setText(config.get("OPENAI_API_KEY", ""))
         self.model_input.setText(config.get("DEFAULT_MODEL", "deepseek-v3.1"))
 
+        # LLM参数配置
+        self.max_tokens_input.setValue(int(config.get("MAX_TOKENS", "4000")))
+        self.temperature_input.setValue(float(config.get("TEMPERATURE", "0.8")))
+        self.request_timeout_input.setValue(int(config.get("REQUEST_TIMEOUT", "180")))
+
         stream_val = config.get("LLM_STREAM_OUTPUT", "false").lower()
         self.stream_checkbox.setChecked(stream_val in ('true', '1', 't'))
 
-        self.api_server_port_input.setText(config.get("API_SERVER_PORT", "9543"))
+        # 滑动窗口配置
+        self.window_size_input.setValue(int(config.get("SLIDING_WINDOW_SIZE", "4")))
+        self.processing_delay_input.setValue(int(config.get("PROCESSING_DELAY", "1")))
 
-        # 加载酒馆配置
+        enhanced_agent_val = config.get("ENABLE_ENHANCED_AGENT", "true").lower()
+        self.enable_enhanced_agent_checkbox.setChecked(enhanced_agent_val in ('true', '1', 't'))
+
+        conflict_resolution_val = config.get("ENABLE_CONFLICT_RESOLUTION", "true").lower()
+        self.enable_conflict_resolution_checkbox.setChecked(conflict_resolution_val in ('true', '1', 't'))
+
+        # 服务器配置
+        self.api_server_port_input.setText(config.get("API_SERVER_PORT", "9543"))
+        self.api_timeout_input.setValue(int(config.get("API_TIMEOUT", "15")))
+        self.health_check_timeout_input.setValue(int(config.get("HEALTH_CHECK_TIMEOUT", "10")))
+
+        # 酒馆配置
         self.tavern_host_input.setText(config.get("SILLYTAVERN_HOST", "localhost"))
         self.tavern_port_input.setText(config.get("SILLYTAVERN_PORT", "8000"))
+        self.tavern_timeout_input.setValue(int(config.get("SILLYTAVERN_TIMEOUT", "10")))
+
+        # UI配置
+        self.max_messages_input.setValue(int(config.get("MAX_MESSAGES", "1000")))
+        self.animation_interval_input.setValue(int(config.get("ANIMATION_INTERVAL", "500")))
+        self.poll_interval_input.setValue(int(config.get("POLL_INTERVAL", "3")))
+
+        # 系统配置
+        self.log_level_combo.setCurrentText(config.get("LOG_LEVEL", "INFO"))
 
     def save_config(self):
         """保存配置"""
         try:
+            # LLM配置
             set_key(self.env_path, "OPENAI_API_BASE_URL", self.api_base_url_input.text())
             set_key(self.env_path, "OPENAI_API_KEY", self.api_key_input.text())
             set_key(self.env_path, "DEFAULT_MODEL", self.model_input.text())
             set_key(self.env_path, "LLM_STREAM_OUTPUT", str(self.stream_checkbox.isChecked()).lower())
-            set_key(self.env_path, "API_SERVER_PORT", self.api_server_port_input.text())
 
-            # 保存酒馆配置
+            # LLM参数配置
+            set_key(self.env_path, "MAX_TOKENS", str(self.max_tokens_input.value()))
+            set_key(self.env_path, "TEMPERATURE", str(self.temperature_input.value()))
+            set_key(self.env_path, "REQUEST_TIMEOUT", str(self.request_timeout_input.value()))
+
+            # 滑动窗口配置
+            set_key(self.env_path, "SLIDING_WINDOW_SIZE", str(self.window_size_input.value()))
+            set_key(self.env_path, "PROCESSING_DELAY", str(self.processing_delay_input.value()))
+            set_key(self.env_path, "ENABLE_ENHANCED_AGENT", str(self.enable_enhanced_agent_checkbox.isChecked()).lower())
+            set_key(self.env_path, "ENABLE_CONFLICT_RESOLUTION", str(self.enable_conflict_resolution_checkbox.isChecked()).lower())
+
+            # 服务器配置
+            set_key(self.env_path, "API_SERVER_PORT", self.api_server_port_input.text())
+            set_key(self.env_path, "API_TIMEOUT", str(self.api_timeout_input.value()))
+            set_key(self.env_path, "HEALTH_CHECK_TIMEOUT", str(self.health_check_timeout_input.value()))
+
+            # 酒馆配置
             set_key(self.env_path, "SILLYTAVERN_HOST", self.tavern_host_input.text())
             set_key(self.env_path, "SILLYTAVERN_PORT", self.tavern_port_input.text())
+            set_key(self.env_path, "SILLYTAVERN_TIMEOUT", str(self.tavern_timeout_input.value()))
 
-            QMessageBox.information(self, "成功", "配置保存成功")
+            # UI配置
+            set_key(self.env_path, "MAX_MESSAGES", str(self.max_messages_input.value()))
+            set_key(self.env_path, "ANIMATION_INTERVAL", str(self.animation_interval_input.value()))
+            set_key(self.env_path, "POLL_INTERVAL", str(self.poll_interval_input.value()))
+
+            # 系统配置
+            set_key(self.env_path, "LOG_LEVEL", self.log_level_combo.currentText())
+
+            QMessageBox.information(self, "成功", "配置保存成功！\n\n注意：某些配置需要重启应用程序才能生效。")
 
         except Exception as e:
             QMessageBox.critical(self, "错误", f"配置保存失败：{str(e)}")
@@ -4780,7 +5007,8 @@ class ConfigPage(QWidget):
             # 创建临时连接器进行测试
             from src.tavern.tavern_connector import SillyTavernConnector, TavernConfig
 
-            config = TavernConfig(host=host, port=int(port), timeout=5)
+            timeout = self.tavern_timeout_input.value()
+            config = TavernConfig(host=host, port=int(port), timeout=timeout)
             connector = SillyTavernConnector(config)
 
             result = connector.test_connection()
@@ -4824,8 +5052,8 @@ class ConfigPage(QWidget):
             self.test_tavern_btn.setEnabled(True)
 
 
-class ChronoForgeMainWindow(QMainWindow):
-    """ChronoForge主窗口"""
+class EchoGraphMainWindow(QMainWindow):
+    """EchoGraph主窗口"""
 
     def __init__(self):
         super().__init__()
@@ -4862,7 +5090,7 @@ class ChronoForgeMainWindow(QMainWindow):
 
     def init_components(self):
         """初始化核心组件"""
-        logger.info("初始化ChronoForge核心组件...")
+        logger.info("初始化EchoGraph核心组件...")
 
         try:
             # 初始化核心系统 - 本地模式使用独立目录
@@ -5105,25 +5333,36 @@ class ChronoForgeMainWindow(QMainWindow):
 
 def main():
     """主函数"""
+    # 导入配置
+    from src.utils.config import config
+    from dotenv import load_dotenv
+    import os
+
+    # 加载环境变量
+    load_dotenv()
+
     # 配置详细日志系统
     from loguru import logger
 
     # 清除默认配置
     logger.remove()
 
-    # 添加控制台输出（显示所有级别）
+    # 从环境变量或配置文件获取日志级别，优先使用环境变量
+    log_level = os.getenv("LOG_LEVEL", config.logging.level).upper()
+
+    # 添加控制台输出（使用配置的日志级别）
     logger.add(
         sys.stderr,
         format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
-        level="DEBUG",
+        level=log_level,
         colorize=True
     )
 
     # 添加文件输出（详细记录）
     logger.add(
-        "logs/chronoforge_ui_{time:YYYY-MM-DD}.log",
+        "logs/echograph_ui_{time:YYYY-MM-DD}.log",
         format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} | {message}",
-        level="DEBUG",
+        level="DEBUG",  # 文件保留DEBUG级别以便调试
         rotation="10 MB",
         retention="7 days",
         compression="zip"
@@ -5139,7 +5378,7 @@ def main():
         retention="7 days"
     )
 
-    logger.info("🚀 ========== ChronoForge UI 启动 ==========")
+    logger.info("🚀 ========== EchoGraph UI 启动 ==========")
     logger.info(f"📋 Python版本: {sys.version}")
     logger.info(f"📋 启动参数: {sys.argv}")
 
@@ -5149,8 +5388,16 @@ def main():
 
     # 创建应用
     app = QApplication(sys.argv)
-    app.setApplicationName("ChronoForge")
+    app.setApplicationName("EchoGraph")
     app.setApplicationVersion("1.0.0")
+
+    # 设置应用程序图标（用于任务栏）
+    icon_path = Path(__file__).parent / "assets" / "icons" / "OIG1.png"
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
+        logger.info(f"✅ 应用程序图标已设置: {icon_path}")
+    else:
+        logger.warning(f"⚠️ 应用程序图标文件不存在: {icon_path}")
 
     # 设置深色主题
     logger.info("🎨 应用深色主题...")
@@ -5159,26 +5406,26 @@ def main():
     # 创建主窗口
     try:
         logger.info("🏗️ 创建主窗口...")
-        window = ChronoForgeMainWindow()
+        window = EchoGraphMainWindow()
         window.show()
 
-        logger.info("✅ ChronoForge UI 启动完成")
+        logger.info("✅ EchoGraph UI 启动完成")
         logger.info("🍺 ========== 准备就绪，等待用户操作 ==========")
 
         # 运行应用
         exit_code = app.exec()
 
-        logger.info("🏁 ========== ChronoForge UI 退出 ==========")
-        logger.info(f"📋 退出代码: {exit_code}")
+        logger.info("🏁 ========== EchoGraph UI 退出 ==========")
+        logger.debug(f"📋 退出代码: {exit_code}")
 
         sys.exit(exit_code)
 
     except Exception as e:
-        logger.error("💥 ========== ChronoForge UI 启动失败 ==========")
+        logger.error("💥 ========== EchoGraph UI 启动失败 ==========")
         logger.error(f"📋 异常详情: {e}")
         logger.error(f"📋 完整堆栈: {traceback.format_exc()}")
 
-        QMessageBox.critical(None, "启动错误", f"ChronoForge启动失败：\n{e}")
+        QMessageBox.critical(None, "启动错误", f"EchoGraph启动失败：\n{e}")
         sys.exit(1)
 
 

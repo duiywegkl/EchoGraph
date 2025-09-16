@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from src.core.grag_update_agent import GRAGUpdateAgent
 
 class GameEngine:
-    """ChronoForge 核心游戏引擎，适配 SillyTavern 插件后端"""
+    """EchoGraph 核心游戏引擎，适配 SillyTavern 插件后端"""
     
     def __init__(self, memory: GRAGMemory, perception: PerceptionModule, rpg_processor: RPGTextProcessor, validation_layer: ValidationLayer, grag_agent: 'GRAGUpdateAgent' = None):
         self.memory = memory

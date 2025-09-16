@@ -31,9 +31,12 @@ class GameConfig(BaseModel):
     character_name: str = "系统"
 
 class SystemConfig(BaseModel):
-    name: str = "ChronoForge"
-    version: str = "0.1.0"
+    name: str = "EchoGraph"
+    version: str = "1.0.0"
     debug: bool = True
+
+class LoggingConfig(BaseModel):
+    level: str = "INFO"
 
 class Config:
     def __init__(self, config_path: str = "config.yaml"):
@@ -64,6 +67,7 @@ class Config:
             llm_config['stream'] = True
         
         self.system = SystemConfig(**config_data.get('system', {}))
+        self.logging = LoggingConfig(**config_data.get('logging', {}))
         self.llm = LLMConfig(**llm_config)
         self.memory = MemoryConfig(**config_data.get('memory', {}))
         self.game = GameConfig(**config_data.get('game', {}))

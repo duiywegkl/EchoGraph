@@ -24,7 +24,7 @@ class ResourceCleanupManager:
             # 保存数据
             self.save_application_data()
             
-            logger.info("🎯 ChronoForge已安全关闭")
+            logger.info("🎯 EchoGraph已安全关闭")
             return True
             
         except Exception as e:

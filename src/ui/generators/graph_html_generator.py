@@ -63,7 +63,7 @@ class GraphHTMLGenerator:
         html_content = f"""<!DOCTYPE html>
 <html>
 <head>
-    <title>ChronoForge Knowledge Graph</title>
+    <title>EchoGraph Knowledge Graph</title>
     <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
     <link rel="stylesheet" href="assets/css/graph.css">
 </head>
@@ -145,7 +145,7 @@ class GraphHTMLGenerator:
         <!DOCTYPE html>
         <html>
         <head>
-            <title>ChronoForge Knowledge Graph</title>
+            <title>EchoGraph Knowledge Graph</title>
             <style>
                 body { background-color: #2d2d2d; color: white; font-family: Arial, sans-serif; }
                 .graph-container { display: flex; justify-content: center; align-items: center; height: 100vh; }

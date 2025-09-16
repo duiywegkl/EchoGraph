@@ -1,6 +1,9 @@
 system:
-  name: "ChronoForge"
-  version: "0.1.0"
+  name: "EchoGraph"
+  version: "1.0.0"
+
+logging:
+  level: "INFO"  # 可选值: DEBUG, INFO, WARNING, ERROR
   
 llm:
   provider: "openai"

@@ -18,7 +18,7 @@ def setup_logger():
 
 def run_chinese_test_demo():
     """运行一个完整的游戏回合，测试中文实体的感知能力。"""
-    logger.info("--- ChronoForge 中文感知能力测试 ---")
+    logger.info("--- EchoGraph 中文感知能力测试 ---")
 
     # 1. 初始化所有核心组件
     logger.info("[1/4] 初始化核心组件...")

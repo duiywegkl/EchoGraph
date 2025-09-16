@@ -1,4 +1,4 @@
-# ChronoForge SillyTavern 插件测试指南
+# EchoGraph SillyTavern 插件测试指南
 
 ## 🚀 快速开始
 
@@ -10,7 +10,7 @@ python deploy_to_sillytavern.py
 
 ### 2. 启动后端服务
 ```bash
-# 启动ChronoForge UI（推荐，包含管理界面）
+# 启动EchoGraph UI（推荐，包含管理界面）
 python run_ui.py
 
 # 或者直接启动API服务器
@@ -20,7 +20,7 @@ python api_server.py --port 8000
 ### 3. 配置SillyTavern
 1. 启动SillyTavern
 2. 进入设置 → 插件管理
-3. 启用 "ChronoForge RAG Enhancer" 插件
+3. 启用 "EchoGraph RAG Enhancer" 插件
 4. 检查插件设置（API地址默认: `http://127.0.0.1:8000`）
 
 ## 🧪 测试流程
@@ -30,8 +30,8 @@ python api_server.py --port 8000
 2. 开始新对话
 3. 观察控制台日志，应该看到初始化信息：
    ```
-   [ChronoForge] Initializing session for character: [角色名]
-   [ChronoForge] Knowledge graph created with X nodes, Y edges
+   [EchoGraph] Initializing session for character: [角色名]
+   [EchoGraph] Knowledge graph created with X nodes, Y edges
    ```
 
 ### 对话测试（上下文增强）
@@ -48,10 +48,10 @@ python api_server.py --port 8000
 ### 记忆更新测试
 1. AI回复后，观察日志中的记忆更新：
    ```
-   [ChronoForge] Memory updated: X nodes, Y edges added
+   [EchoGraph] Memory updated: X nodes, Y edges added
    ```
 
-2. 在ChronoForge UI的"管理"页面：
+2. 在EchoGraph UI的"管理"页面：
    - 查看会话列表
    - 测试RPG文本解析功能
    - 检查系统状态
@@ -59,23 +59,23 @@ python api_server.py --port 8000
 ## 🔍 调试功能
 
 ### 插件调试面板
-- 在SillyTavern中按 `Ctrl+Shift+D` 打开ChronoForge调试面板
+- 在SillyTavern中按 `Ctrl+Shift+D` 打开EchoGraph调试面板
 - 查看实时处理状态和错误信息
 
-### ChronoForge管理界面
+### EchoGraph管理界面
 - **会话管理**：查看当前活跃会话
 - **角色管理**：管理SillyTavern角色数据
 - **测试工具**：实时测试RPG文本解析
 
 ### 日志监控
-- **ChronoForge UI**：查看完整的后端日志
+- **EchoGraph UI**：查看完整的后端日志
 - **浏览器控制台**：查看插件前端日志
 - **SillyTavern控制台**：查看整体系统日志
 
 ## ⚠️ 常见问题
 
 ### 连接失败
-- 确保ChronoForge API服务器已启动（默认端口8000）
+- 确保EchoGraph API服务器已启动（默认端口8000）
 - 检查防火墙设置
 - 验证插件配置中的API地址
 

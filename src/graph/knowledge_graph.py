@@ -12,7 +12,7 @@ class KnowledgeGraph:
     def __init__(self):
         """初始化一个有向图。"""
         self.graph = nx.DiGraph()
-        logger.info("KnowledgeGraph initialized with a directed graph.")
+        logger.debug("KnowledgeGraph initialized with a directed graph.")
 
     def add_or_update_node(self, node_id: str, node_type: str, **kwargs):
         """
@@ -29,10 +29,10 @@ class KnowledgeGraph:
 
         if self.graph.has_node(node_id):
             self.graph.nodes[node_id].update(attributes)
-            logger.info(f"Node '{node_id}' updated with attributes: {attributes}")
+            logger.debug(f"Node '{node_id}' updated with attributes: {attributes}")
         else:
             self.graph.add_node(node_id, **attributes)
-            logger.info(f"Node '{node_id}' added with attributes: {attributes}")
+            logger.debug(f"Node '{node_id}' added with attributes: {attributes}")
 
     def add_edge(self, source_node: str, target_node: str, relationship: str, **kwargs):
         """
@@ -52,7 +52,7 @@ class KnowledgeGraph:
             return
 
         self.graph.add_edge(source_node, target_node, relationship=relationship, **kwargs)
-        logger.info(f"Edge added from '{source_node}' to '{target_node}' with relationship '{relationship}'.")
+        logger.debug(f"Edge added from '{source_node}' to '{target_node}' with relationship '{relationship}'.")
 
     def get_node(self, node_id: str) -> Optional[Dict[str, Any]]:
         """
@@ -178,7 +178,7 @@ class KnowledgeGraph:
                         except json.JSONDecodeError:
                             # 如果解析失败，则保持原样
                             pass
-            logger.info(f"Graph loaded from {file_path} and attributes deserialized.")
+            logger.debug(f"Graph loaded from {file_path} and attributes deserialized.")
         except FileNotFoundError:
             logger.warning(f"Graph file not found at {file_path}. Starting with an empty graph.")
         except Exception as e:
@@ -316,7 +316,7 @@ class KnowledgeGraph:
         else:
             # 新节点，直接添加
             self.graph.add_node(node_id, **attributes)
-            logger.info(f"Node '{node_id}' added with attributes: {attributes}")
+            logger.debug(f"Node '{node_id}' added with attributes: {attributes}")
 
     def get_node_history(self, node_id: str) -> Optional[List[Dict[str, Any]]]:
         """
