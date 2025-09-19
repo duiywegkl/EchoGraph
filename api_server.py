@@ -24,6 +24,10 @@ load_dotenv()
 
 # --- Configure file logging for API server ---
 os.makedirs("logs", exist_ok=True)
+
+# 💡 修复：移除默认的控制台sink，避免重复输出
+logger.remove()
+
 logger.add(
     "logs/api_server_{time:YYYY-MM-DD}.log",
     format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {message}",
@@ -39,6 +43,13 @@ logger.add(
     filter=lambda record: any(tag in record["message"] for tag in ("[LLM]", "[GRAG]", "[LLM KG Gen]")),
     rotation="10 MB",
     retention="7 days"
+)
+
+# 重新添加一个控制台sink（可选，如果需要控制台输出的话）
+logger.add(
+    lambda msg: print(msg, end=""),
+    format="{time:HH:mm:ss} | {level: <8} | {message}",
+    level=os.getenv("LOG_LEVEL", config.logging.level).upper()
 )
 
 

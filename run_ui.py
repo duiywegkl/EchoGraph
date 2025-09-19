@@ -1793,7 +1793,7 @@ class IntegratedPlayPage(QWidget):
                 try:
                     logger.info("🔄 更新图谱页面显示...")
                     main_window.graph_page.enter_tavern_mode(session_id)
-                    main_window.graph_page.refresh_from_api_server(session_id)
+                    # enter_tavern_mode 中已经包含了刷新逻辑，这里不需要重复调用
                     logger.info("✅ 图谱页面更新完成")
                 except Exception as e:
                     logger.warning(f"⚠️ 图谱页面更新失败: {e}")
@@ -1832,7 +1832,7 @@ class IntegratedPlayPage(QWidget):
                 if r.status_code == 200:
                     data = r.json()
                     if data.get("has_session") and data.get("session_id"):
-                        session_id = data.get("session_id")
+                        new_session_id = data.get("session_id")
                         try:
                             # 找到主窗口
                             main_window = None
@@ -1842,21 +1842,29 @@ class IntegratedPlayPage(QWidget):
                                     main_window = w
                                     break
                                 w = w.parent()
-                            if main_window and hasattr(main_window, 'graph_page'):
-                                main_window.graph_page.enter_tavern_mode(session_id)
-                                main_window.graph_page.refresh_from_api_server(session_id)
-                            self.update_status_display("🍺 酒馆会话已就绪")
-                        except Exception as ui_err:
 
+                            if main_window and hasattr(main_window, 'graph_page'):
+                                # 💡 关键修复：检查session是否真的变化了
+                                current_session_id = getattr(main_window.graph_page, 'tavern_session_id', None)
+                                if current_session_id != new_session_id:
+                                    logger.info(f"🔄 [轮询] 检测到session变化: {current_session_id} -> {new_session_id}")
+                                    main_window.graph_page.enter_tavern_mode(new_session_id)
+                                    self.update_status_display(f"🍺 已切换到新角色会话")
+                                else:
+                                    logger.debug(f"[轮询] Session未变化，继续监听: {new_session_id}")
+
+                            # 💡 关键修复：不要停止轮询，继续监听session变化
+                            # 注释掉原来的停止逻辑：self._stop_tavern_session_polling()
+
+                        except Exception as ui_err:
                             logger.warning(f"⚠️ 切换图谱为酒馆会话失败: {ui_err}")
-                        finally:
-                            self._stop_tavern_session_polling()
+                        # 💡 移除finally中的停止逻辑，保持持续轮询
                         return
             except Exception as poll_err:
                 logger.debug(f"轮询当前会话异常: {poll_err}")
-            # 超过 30 次（约 30s）则停止
-            if getattr(self, "_tavern_poll_attempts", 0) >= 30:
-                self._stop_tavern_session_polling()
+            # 💡 修复：移除轮询次数限制，保持持续监听
+            # 注释掉：if getattr(self, "_tavern_poll_attempts", 0) >= 30:
+            #     self._stop_tavern_session_polling()
 
         self._tavern_session_poll_timer.timeout.connect(_tick)
         self._tavern_session_poll_timer.start()
@@ -2071,9 +2079,7 @@ class IntegratedPlayPage(QWidget):
                         # 通知图谱页面进入酒馆模式，使用API服务器的数据
                         main_window.graph_page.enter_tavern_mode(session_id)
 
-                        logger.info("🔃 从API服务器刷新图谱...")
-                        main_window.graph_page.refresh_from_api_server(session_id)
-
+                        # enter_tavern_mode 中已经包含了刷新逻辑，但这里可能需要更新实体列表
                         logger.info("📊 更新实体列表和统计...")
                         main_window.graph_page.update_entity_list()
                         main_window.graph_page.update_stats()
@@ -4351,6 +4357,7 @@ class GraphPage(QWidget):
 
     def enter_tavern_mode(self, session_id: str):
         """进入酒馆模式，切换到使用API服务器的数据源"""
+        old_session_id = getattr(self, 'tavern_session_id', None)
         self.tavern_mode = True
         self.tavern_session_id = session_id
 
@@ -4358,6 +4365,15 @@ class GraphPage(QWidget):
         self.clear_graph_display()
 
         logger.info(f"GraphPage进入酒馆模式，会话ID: {session_id}")
+
+        # 💡 修复：只有当session_id变化时才刷新，避免无脑初始化
+        # 这样可以保持现有数据的显示，而不是每次都重新加载
+        if old_session_id != session_id:
+            logger.info(f"检测到session变化: {old_session_id} -> {session_id}, 刷新知识图谱")
+            # 使用QTimer延迟刷新，确保UI状态更新完成
+            QTimer.singleShot(100, lambda: self.refresh_from_api_server(session_id))
+        else:
+            logger.info(f"Session未变化，保持当前显示: {session_id}")
 
     def exit_tavern_mode(self):
         """退出酒馆模式，切换回本地数据源"""
@@ -5313,6 +5329,69 @@ class EchoGraphMainWindow(QMainWindow):
             self.scenario_manager.show_scenario_error_message(self, e)
 
 
+    def auto_detect_tavern_session(self):
+        """UI启动时自动检测当前活跃的酒馆session"""
+        try:
+            logger.info("🔍 [启动检测] 检测当前活跃的酒馆session...")
+
+            import requests
+            api_base_url = "http://127.0.0.1:9543"
+
+            try:
+                # 检查API服务器是否可用
+                health_response = requests.get(f"{api_base_url}/health", timeout=3)
+                if health_response.status_code != 200:
+                    logger.info("⚠️ [启动检测] API服务器不可用，跳过检测")
+                    return
+
+                # 获取当前活跃的酒馆session
+                current_session_response = requests.get(f"{api_base_url}/tavern/current_session", timeout=5)
+                if current_session_response.status_code == 200:
+                    session_data = current_session_response.json()
+                    if session_data.get('has_session'):
+                        session_id = session_data.get('session_id')
+                        character_name = session_data.get('character_name', 'Unknown')
+                        nodes = session_data.get('graph_nodes', 0)
+                        edges = session_data.get('graph_edges', 0)
+
+                        logger.info(f"✅ [启动检测] 发现活跃酒馆session: {session_id}")
+                        logger.info(f"📊 [启动检测] 角色: {character_name}, 节点: {nodes}, 边: {edges}")
+
+                        # 自动切换到酒馆模式并同步这个session
+                        self.on_mode_change(tavern_mode=True)
+
+                        # 延迟更新图谱，确保酒馆模式已经激活
+                        QTimer.singleShot(500, lambda: self._sync_detected_session(session_id, character_name))
+
+                    else:
+                        logger.info("ℹ️ [启动检测] 没有活跃的酒馆session")
+                else:
+                    logger.info("⚠️ [启动检测] 无法获取当前酒馆session信息")
+
+            except requests.exceptions.RequestException as e:
+                logger.info(f"⚠️ [启动检测] API请求失败: {e}")
+
+        except Exception as e:
+            logger.error(f"❌ [启动检测] 自动检测异常: {e}")
+
+    def _sync_detected_session(self, session_id: str, character_name: str):
+        """同步检测到的酒馆session"""
+        try:
+            logger.info(f"🔄 [启动同步] 同步到检测的session: {session_id}")
+
+            # 直接通知图谱页面进入酒馆模式
+            if hasattr(self, 'graph_page'):
+                self.graph_page.enter_tavern_mode(session_id)
+                logger.info(f"✅ [启动同步] 已同步到角色: {character_name}")
+
+                # 可选：显示通知
+                if hasattr(self, 'show_status_message'):
+                    self.show_status_message(f"🔄 已自动同步到酒馆角色: {character_name}")
+
+        except Exception as e:
+            logger.error(f"❌ [启动同步] 同步session失败: {e}")
+
+
     def closeEvent(self, event):
         """关闭事件处理"""
         # 关闭API日志文件
@@ -5411,6 +5490,9 @@ def main():
 
         logger.info("✅ EchoGraph UI 启动完成")
         logger.info("🍺 ========== 准备就绪，等待用户操作 ==========")
+
+        # 💡 修复：UI启动时自动检测当前活跃的酒馆session
+        QTimer.singleShot(1000, window.auto_detect_tavern_session)
 
         # 运行应用
         exit_code = app.exec()
