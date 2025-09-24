@@ -29,11 +29,13 @@ except Exception:
 # Import configuration
 from src.utils.config import config
 from loguru import logger
+from version import get_version_info
 
 # High-DPI settings must be set BEFORE creating QApplication
 from PySide6.QtCore import Qt, QCoreApplication
 
 from PySide6.QtWidgets import QApplication
+from PySide6.QtGui import QIcon
 from src.ui.windows.main_window import MainWindow
 from src.ui.managers.window_manager import WindowManager
 
@@ -91,6 +93,45 @@ def setup_logging():
     )
 
 
+def set_application_icon(app):
+    """设置应用程序图标"""
+    try:
+        # 尝试多个可能的图标路径，优先使用ICO格式（Windows兼容性更好）
+        icon_paths = [
+            REPO_ROOT / "assets/icon.ico",
+            REPO_ROOT / "assets/icons/OIG1.png",
+            REPO_ROOT / "assets/icon.png",
+            REPO_ROOT / "icon.ico",
+            REPO_ROOT / "icon.png"
+        ]
+
+        for icon_path in icon_paths:
+            if icon_path.exists():
+                logger.info(f"🎨 尝试设置应用程序图标: {icon_path}")
+                try:
+                    # 先测试文件是否可读
+                    with open(icon_path, 'rb') as f:
+                        f.read(10)  # 读取前10字节测试
+
+                    icon = QIcon(str(icon_path.resolve()))  # 使用绝对路径
+                    if not icon.isNull():
+                        app.setWindowIcon(icon)
+                        logger.info(f"✅ 应用程序图标设置成功: {icon_path}")
+                        return True
+                    else:
+                        logger.warning(f"⚠️ 图标文件无法解析: {icon_path}")
+                except Exception as e:
+                    logger.warning(f"⚠️ 加载图标失败 {icon_path}: {e}")
+                    continue
+
+        logger.warning("⚠️ 未找到有效的应用程序图标文件")
+        return False
+
+    except Exception as e:
+        logger.error(f"❌ 设置应用程序图标失败: {e}")
+        return False
+
+
 def main() -> int:
     """主函数（与原版逻辑一致）"""
     # 全局变量用于信号处理
@@ -122,15 +163,24 @@ def main() -> int:
     # 配置日志系统
     setup_logging()
 
+    # Get version information
+    version_info = get_version_info()
+
     # 记录启动信息
-    logger.info("🚀 启动 EchoGraph UI (模块化版本)")
+    logger.info(f"🚀 启动 EchoGraph UI v{version_info['version']} ({version_info['codename']})")
     logger.info(f"📂 工作目录: {REPO_ROOT}")
     logger.info(f"📝 日志级别: {os.getenv('LOG_LEVEL', config.logging.level)}")
+    logger.info(f"📅 发布日期: {version_info['release_date']}")
 
     try:
+
         app = QApplication(sys.argv)
         app.setApplicationName("EchoGraph")
+        app.setApplicationVersion(version_info["version"])
         app.setOrganizationName("EchoGraph")
+
+        # 设置应用程序图标
+        set_application_icon(app)
 
         # Apply consistent dark theme (matches original UI appearance)
         WindowManager.apply_dark_theme(app)
@@ -139,6 +189,9 @@ def main() -> int:
 
         window = MainWindow()
         window.show()
+
+        # 强制刷新图标显示
+        app.processEvents()
 
         logger.info("✅ 主窗口已显示，进入事件循环")
 

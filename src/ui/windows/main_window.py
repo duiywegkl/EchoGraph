@@ -18,6 +18,7 @@ from PySide6.QtGui import QIcon, QAction
 from loguru import logger
 from dotenv import dotenv_values
 import requests
+from version import get_version_info
 
 from ..components import (
     ComponentManager
@@ -133,13 +134,13 @@ class MainWindow(QMainWindow):
 
     def setup_ui(self):
         """设置UI界面"""
-        self.setWindowTitle("EchoGraph - 智能角色扮演助手")
+        # 获取版本信息并设置窗口标题
+        version_info = get_version_info()
+        self.setWindowTitle(f"EchoGraph v{version_info['version']} - 智能角色扮演助手")
         self.setGeometry(100, 100, 1200, 800)
 
         # 设置图标（如果存在）
-        icon_path = Path("assets/icon.ico")
-        if icon_path.exists():
-            self.setWindowIcon(QIcon(str(icon_path)))
+        self._set_application_icon()
 
         # 原始布局不包含顶部菜单栏，此处不创建菜单栏
 
@@ -157,6 +158,49 @@ class MainWindow(QMainWindow):
 
         # 注册组件
         self._register_components()
+
+    def _set_application_icon(self):
+        """设置应用程序图标"""
+        try:
+            # 尝试多个可能的图标路径，优先使用ICO格式（Windows兼容性更好）
+            icon_paths = [
+                Path("assets/icon.ico"),
+                Path("assets/icons/OIG1.png"),
+                Path("assets/icon.png"),
+                Path("icon.ico"),
+                Path("icon.png")
+            ]
+
+            for icon_path in icon_paths:
+                if icon_path.exists():
+                    logger.info(f"🎨 尝试加载应用图标: {icon_path}")
+                    try:
+                        # 先测试文件是否可读
+                        with open(icon_path, 'rb') as f:
+                            f.read(10)  # 读取前10字节测试
+
+                        icon = QIcon(str(icon_path.resolve()))  # 使用绝对路径
+                        if not icon.isNull():
+                            self.setWindowIcon(icon)
+                            # 同时设置应用程序级别的图标
+                            from PySide6.QtWidgets import QApplication
+                            app = QApplication.instance()
+                            if app:
+                                app.setWindowIcon(icon)
+                            logger.info(f"✅ 应用图标设置成功: {icon_path}")
+                            return True
+                        else:
+                            logger.warning(f"⚠️ 图标文件无法解析: {icon_path}")
+                    except Exception as e:
+                        logger.warning(f"⚠️ 加载图标失败 {icon_path}: {e}")
+                        continue
+
+            logger.warning("⚠️ 未找到有效的应用图标文件")
+            return False
+
+        except Exception as e:
+            logger.error(f"❌ 设置应用图标失败: {e}")
+            return False
 
     def _create_menu_bar(self):
         """创建菜单栏"""
@@ -258,8 +302,9 @@ class MainWindow(QMainWindow):
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
 
-        # 默认状态消息
-        self.status_bar.showMessage("EchoGraph 已启动")
+        # 获取版本信息并显示在状态栏
+        version_info = get_version_info()
+        self.status_bar.showMessage(f"EchoGraph v{version_info['version']} ({version_info['codename']}) - 已启动")
 
         # 定时更新状态
         self.status_timer = QTimer()
@@ -374,22 +419,25 @@ CPU使用率: {psutil.cpu_percent()}%
 
     def _show_about(self):
         """显示关于信息"""
-        about_text = """
+        version_info = get_version_info()
+        about_text = f"""
 EchoGraph - 智能角色扮演助手
 
-版本: 2.0.0
+版本: {version_info['version']} ({version_info['codename']})
+发布日期: {version_info['release_date']}
+发布类型: {version_info['release_type']}
 开发者: EchoGraph Team
 
-EchoGraph是一个集成对话系统和关系图谱的
-智能角色扮演助手，支持与SillyTavern集成。
+{version_info['description']}
 
 © 2024 EchoGraph Team. All rights reserved.
 """
-        QMessageBox.about(self, "关于 EchoGraph", about_text.strip())
+        QMessageBox.about(self, f"关于 EchoGraph v{version_info['version']}", about_text.strip())
 
     def _update_status_bar(self):
         """更新状态栏（简化）"""
-        self.status_bar.showMessage("EchoGraph 运行中")
+        version_info = get_version_info()
+        self.status_bar.showMessage(f"EchoGraph v{version_info['version']} ({version_info['codename']}) - 运行中")
 
     def closeEvent(self, event):
         """关闭事件处理 - 完整的资源清理流程"""
