@@ -142,6 +142,12 @@ class GraphPage(QWidget):
         self.reset_view_btn = QPushButton("重置视图")
         self.reset_view_btn.setIcon(self.style().standardIcon(QStyle.SP_ComputerIcon))
 
+        # 注意力机制按钮
+        self.attention_analysis_btn = QPushButton("注意力分析")
+        self.attention_analysis_btn.setIcon(self.style().standardIcon(QStyle.SP_FileDialogDetailedView))
+        self.attention_analysis_btn.setStyleSheet("QPushButton { background-color: #ff6b35; color: white; font-weight: bold; }")
+        self.attention_analysis_btn.setToolTip("分析实体重要性，优化上下文以解决注意力分散问题")
+
         header.addWidget(title)
         header.addStretch()
         header.addWidget(self.refresh_btn)
@@ -150,6 +156,7 @@ class GraphPage(QWidget):
         header.addWidget(self.init_graph_btn)
         header.addWidget(self.clear_graph_btn)
         header.addWidget(self.reset_view_btn)
+        header.addWidget(self.attention_analysis_btn)
 
         v.addLayout(header)
 
@@ -245,6 +252,7 @@ class GraphPage(QWidget):
         self.init_graph_btn.clicked.connect(self.initialize_graph)
         self.clear_graph_btn.clicked.connect(self.clear_graph)
         self.reset_view_btn.clicked.connect(self.reset_view)
+        self.attention_analysis_btn.clicked.connect(self.show_attention_analysis)
         self.search_btn.clicked.connect(self.search_nodes)
         self.clear_search_btn.clicked.connect(self.clear_search)
         self.search_input.returnPressed.connect(self.search_nodes)
@@ -1519,3 +1527,384 @@ class GraphPage(QWidget):
 
         except Exception as e:
             logger.error(f"清理图谱显示失败: {e}")
+
+    def show_attention_analysis(self):
+        """显示注意力机制分析对话框"""
+        try:
+            from loguru import logger
+            logger.info("🧠 开始注意力机制分析...")
+
+            if not self.memory:
+                QMessageBox.warning(self, "错误", "记忆系统未初始化，无法进行注意力分析")
+                return
+
+            # 检查是否有注意力机制功能
+            if not hasattr(self.memory, 'get_entity_importance_report'):
+                QMessageBox.warning(self, "功能不可用", "当前记忆系统不支持注意力机制分析")
+                return
+
+            # 创建分析对话框
+            dialog = QDialog(self)
+            dialog.setWindowTitle("🧠 注意力机制分析报告")
+            dialog.setMinimumSize(900, 700)
+            dialog.setModal(True)
+            dialog.setStyleSheet("""
+                QDialog {
+                    background-color: #2b2b2b;
+                    color: #ffffff;
+                }
+                QLabel {
+                    color: #ffffff;
+                }
+                QComboBox {
+                    background-color: #3c3c3c;
+                    color: #ffffff;
+                    border: 1px solid #555555;
+                    border-radius: 4px;
+                    padding: 5px;
+                    min-height: 20px;
+                }
+                QComboBox::drop-down {
+                    border: none;
+                }
+                QComboBox::down-arrow {
+                    image: none;
+                    border-left: 5px solid transparent;
+                    border-right: 5px solid transparent;
+                    border-top: 5px solid #ffffff;
+                    margin-right: 5px;
+                }
+                QComboBox QAbstractItemView {
+                    background-color: #3c3c3c;
+                    color: #ffffff;
+                    selection-background-color: #ff6b35;
+                }
+            """)
+
+            layout = QVBoxLayout(dialog)
+
+            # 标题
+            title_label = QLabel("EchoGraph 注意力机制分析")
+            title_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #ff6b35; margin: 10px;")
+            title_label.setAlignment(Qt.AlignCenter)
+            layout.addWidget(title_label)
+
+            # 说明文本
+            desc_label = QLabel("此功能分析知识图谱中实体的重要性，帮助解决LLM注意力分散问题。\n"
+                              "通过过滤低重要性实体，可以显著提升对话质量和响应准确性。")
+            desc_label.setStyleSheet("""
+                color: #cccccc;
+                margin: 10px;
+                padding: 15px;
+                background-color: #3c3c3c;
+                border-radius: 8px;
+                border-left: 4px solid #ff6b35;
+                font-size: 14px;
+                line-height: 1.4;
+            """)
+            desc_label.setWordWrap(True)
+            layout.addWidget(desc_label)
+
+            # 角色选择
+            character_layout = QHBoxLayout()
+            character_layout.addWidget(QLabel("分析角色:"))
+            character_combo = QComboBox()
+
+            # 获取可用角色列表
+            try:
+                entities_data = {}
+                if hasattr(self.memory, 'entities_json_path') and os.path.exists(self.memory.entities_json_path):
+                    with open(self.memory.entities_json_path, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                        for entity in data.get('entities', []):
+                            if entity.get('type') == 'character':
+                                character_combo.addItem(entity.get('name', ''))
+
+                if character_combo.count() == 0:
+                    character_combo.addItem("未找到角色")
+
+            except Exception as e:
+                character_combo.addItem("加载角色失败")
+                logger.error(f"加载角色列表失败: {e}")
+
+            character_layout.addWidget(character_combo)
+            character_layout.addStretch()
+            layout.addLayout(character_layout)
+
+            # 分析结果显示区域
+            result_text = QTextEdit()
+            result_text.setReadOnly(True)
+            result_text.setMinimumHeight(300)
+            result_text.setStyleSheet("""
+                QTextEdit {
+                    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+                    font-size: 13px;
+                    background-color: #1e1e1e;
+                    color: #d4d4d4;
+                    border: 2px solid #404040;
+                    border-radius: 8px;
+                    padding: 15px;
+                    selection-background-color: #264f78;
+                    selection-color: #ffffff;
+                }
+                QTextEdit:focus {
+                    border-color: #ff6b35;
+                }
+            """)
+            layout.addWidget(result_text)
+
+            # 按钮区域
+            button_layout = QHBoxLayout()
+
+            analyze_btn = QPushButton("🔍 开始分析")
+            analyze_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #ff6b35;
+                    color: white;
+                    font-weight: bold;
+                    padding: 10px 20px;
+                    border: none;
+                    border-radius: 6px;
+                    font-size: 14px;
+                }
+                QPushButton:hover {
+                    background-color: #e55a2b;
+                }
+                QPushButton:pressed {
+                    background-color: #d14d20;
+                }
+            """)
+
+            optimize_btn = QPushButton("⚡ 获取优化上下文")
+            optimize_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #28a745;
+                    color: white;
+                    font-weight: bold;
+                    padding: 10px 20px;
+                    border: none;
+                    border-radius: 6px;
+                    font-size: 14px;
+                }
+                QPushButton:hover {
+                    background-color: #218838;
+                }
+                QPushButton:pressed {
+                    background-color: #1e7e34;
+                }
+            """)
+
+            close_btn = QPushButton("关闭")
+            close_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #6c757d;
+                    color: white;
+                    font-weight: bold;
+                    padding: 10px 20px;
+                    border: none;
+                    border-radius: 6px;
+                    font-size: 14px;
+                }
+                QPushButton:hover {
+                    background-color: #5a6268;
+                }
+                QPushButton:pressed {
+                    background-color: #545b62;
+                }
+            """)
+            close_btn.clicked.connect(dialog.accept)
+
+            button_layout.addWidget(analyze_btn)
+            button_layout.addWidget(optimize_btn)
+            button_layout.addStretch()
+            button_layout.addWidget(close_btn)
+            layout.addLayout(button_layout)
+
+            def run_analysis():
+                """运行注意力分析"""
+                try:
+                    character_name = character_combo.currentText()
+                    if not character_name or character_name in ["未找到角色", "加载角色失败"]:
+                        result_text.setText("❌ 请选择有效的角色进行分析")
+                        return
+
+                    result_text.setText("🔄 正在分析中，请稍候...")
+                    dialog.repaint()  # 强制刷新界面
+
+                    # 为测试添加一些模拟对话历史（如果当前没有对话历史）
+                    if len(self.memory.basic_memory.conversation_history) == 0:
+                        logger.info("添加模拟对话历史用于注意力分析测试")
+                        self.memory.add_conversation(
+                            f"告诉我关于{character_name}的信息",
+                            f"{character_name}是一个复杂的角色，有很多相关的背景信息"
+                        )
+                        self.memory.add_conversation(
+                            "还有什么特别的地方吗？",
+                            "确实有很多独特的特征和关联实体"
+                        )
+
+                    # 获取分析报告
+                    report = self.memory.get_entity_importance_report(character_name)
+
+                    if "error" in report:
+                        result_text.setText(f"❌ 分析失败: {report['error']}")
+                        return
+
+                    # 格式化显示结果 - 使用HTML格式以支持颜色
+                    result_html = []
+                    result_html.append('<div style="font-family: Consolas, Monaco, monospace; font-size: 13px; line-height: 1.4;">')
+                    result_html.append('<div style="color: #ff6b35; font-weight: bold; font-size: 16px; text-align: center; margin-bottom: 15px;">')
+                    result_html.append('🧠 EchoGraph 注意力机制分析报告')
+                    result_html.append('</div>')
+
+                    result_html.append('<div style="color: #4fc3f7; font-weight: bold; margin-bottom: 10px;">📊 基本统计</div>')
+                    result_html.append(f'<div style="color: #81c784;">🎯 分析角色: <span style="color: #ffb74d;">{report["character_name"]}</span></div>')
+                    result_html.append(f'<div style="color: #81c784;">📊 总实体数: <span style="color: #ffb74d;">{report["total_entities"]}</span></div>')
+                    result_html.append(f'<div style="color: #81c784;">✨ 重要实体数: <span style="color: #ffb74d;">{report["entities_above_threshold"]}</span></div>')
+                    result_html.append(f'<div style="color: #81c784;">🔥 过滤比例: <span style="color: #f48fb1;">{report["filter_ratio"]:.1%}</span></div>')
+                    result_html.append(f'<div style="color: #81c784;">⚡ 重要性阈值: <span style="color: #ffb74d;">{report["threshold"]}</span></div>')
+                    result_html.append(f'<div style="color: #81c784;">📝 最大上下文实体数: <span style="color: #ffb74d;">{report["max_context_entities"]}</span></div>')
+                    result_html.append('<br>')
+
+                    result_html.append('<div style="color: #4fc3f7; font-weight: bold; margin-bottom: 10px;">🏆 实体重要性排序 (前15个)</div>')
+                    result_html.append('<table style="width: 100%; border-collapse: collapse; margin-bottom: 15px;">')
+                    result_html.append('<tr style="background-color: #404040; color: #ffffff; font-weight: bold;">')
+                    result_html.append('<td style="padding: 8px; border: 1px solid #555;">实体名称</td>')
+                    result_html.append('<td style="padding: 8px; border: 1px solid #555;">类型</td>')
+                    result_html.append('<td style="padding: 8px; border: 1px solid #555;">总分</td>')
+                    result_html.append('<td style="padding: 8px; border: 1px solid #555;">集体</td>')
+                    result_html.append('<td style="padding: 8px; border: 1px solid #555;">整体</td>')
+                    result_html.append('<td style="padding: 8px; border: 1px solid #555;">通过</td>')
+                    result_html.append('</tr>')
+
+                    for i, entity in enumerate(report['entity_scores'][:15]):
+                        name = entity['name'][:30]
+                        entity_type = entity['type']
+                        importance = entity['importance_score']
+                        collective = entity['collective_score']
+                        holistic = entity['holistic_score']
+                        passed = "✅" if entity['above_threshold'] else "❌"
+
+                        # 交替行颜色
+                        bg_color = "#3c3c3c" if i % 2 == 0 else "#2b2b2b"
+
+                        # 根据重要性评分设置颜色
+                        if importance >= 0.7:
+                            score_color = "#4caf50"  # 绿色 - 高重要性
+                        elif importance >= 0.4:
+                            score_color = "#ff9800"  # 橙色 - 中等重要性
+                        else:
+                            score_color = "#f44336"  # 红色 - 低重要性
+
+                        result_html.append(f'<tr style="background-color: {bg_color};">')
+                        result_html.append(f'<td style="padding: 6px; border: 1px solid #555; color: #e0e0e0;">{name}</td>')
+                        result_html.append(f'<td style="padding: 6px; border: 1px solid #555; color: #81c784;">{entity_type}</td>')
+                        result_html.append(f'<td style="padding: 6px; border: 1px solid #555; color: {score_color}; font-weight: bold;">{importance:.3f}</td>')
+                        result_html.append(f'<td style="padding: 6px; border: 1px solid #555; color: #90caf9;">{collective:.3f}</td>')
+                        result_html.append(f'<td style="padding: 6px; border: 1px solid #555; color: #ce93d8;">{holistic:.3f}</td>')
+                        result_html.append(f'<td style="padding: 6px; border: 1px solid #555; text-align: center;">{passed}</td>')
+                        result_html.append('</tr>')
+
+                    result_html.append('</table>')
+
+                    result_html.append('<div style="color: #4fc3f7; font-weight: bold; margin-bottom: 10px;">📈 配置参数</div>')
+                    config = report['config']
+                    result_html.append(f'<div style="color: #81c784; margin-left: 15px;">集体重要性权重: <span style="color: #ffb74d;">{config["collective_weight"]}</span></div>')
+                    result_html.append(f'<div style="color: #81c784; margin-left: 15px;">整体重要性权重: <span style="color: #ffb74d;">{config["holistic_weight"]}</span></div>')
+                    result_html.append(f'<div style="color: #81c784; margin-left: 15px;">重要性阈值: <span style="color: #ffb74d;">{config["importance_threshold"]}</span></div>')
+                    result_html.append(f'<div style="color: #81c784; margin-left: 15px;">最大上下文实体数: <span style="color: #ffb74d;">{config["max_context_entities"]}</span></div>')
+                    result_html.append('<br>')
+
+                    result_html.append('<div style="color: #4fc3f7; font-weight: bold; margin-bottom: 10px;">💡 分析说明</div>')
+                    result_html.append('<div style="color: #b0bec5; margin-left: 15px; line-height: 1.6;">')
+                    result_html.append('• <span style="color: #81c784;">总分</span> = 集体重要性 × 权重 + 整体重要性 × 权重<br>')
+                    result_html.append('• <span style="color: #90caf9;">集体重要性</span>基于对话历史中的提及频率和相关性<br>')
+                    result_html.append('• <span style="color: #ce93d8;">整体重要性</span>基于实体类型、关系数量和质量<br>')
+                    result_html.append('• 只有通过阈值的实体才会包含在优化上下文中')
+                    result_html.append('</div>')
+                    result_html.append('</div>')
+
+                    result_text.setHtml("".join(result_html))
+                    logger.info(f"✅ 注意力分析完成: {character_name}")
+
+                except Exception as e:
+                    result_text.setText(f"❌ 分析过程中发生错误:\n{str(e)}")
+                    logger.error(f"注意力分析失败: {e}")
+
+            def get_optimized_context():
+                """获取优化后的上下文"""
+                try:
+                    character_name = character_combo.currentText()
+                    if not character_name or character_name in ["未找到角色", "加载角色失败"]:
+                        result_text.setText("❌ 请选择有效的角色获取优化上下文")
+                        return
+
+                    result_text.setText("⚡ 正在生成优化上下文...")
+                    dialog.repaint()
+
+                    # 确保有对话历史用于上下文优化
+                    if len(self.memory.basic_memory.conversation_history) == 0:
+                        logger.info("添加模拟对话历史用于上下文优化")
+                        self.memory.add_conversation(
+                            f"我想了解{character_name}",
+                            f"让我为你介绍{character_name}的相关信息"
+                        )
+
+                    # 获取优化上下文
+                    optimized_context = self.memory.get_optimized_character_context(character_name)
+
+                    # 显示优化上下文 - 使用HTML格式
+                    context_html = []
+                    context_html.append('<div style="font-family: Consolas, Monaco, monospace; font-size: 13px; line-height: 1.4;">')
+
+                    context_html.append('<div style="color: #ff6b35; font-weight: bold; font-size: 16px; text-align: center; margin-bottom: 15px;">')
+                    context_html.append('⚡ 优化后的角色上下文')
+                    context_html.append('</div>')
+
+                    context_html.append('<div style="color: #4fc3f7; font-weight: bold; margin-bottom: 10px;">📊 上下文统计</div>')
+                    context_html.append(f'<div style="color: #81c784;">角色: <span style="color: #ffb74d;">{character_name}</span></div>')
+                    context_html.append(f'<div style="color: #81c784;">字符数: <span style="color: #ffb74d;">{len(optimized_context)}</span></div>')
+                    context_html.append(f'<div style="color: #81c784;">行数: <span style="color: #ffb74d;">{optimized_context.count(chr(10)) + 1}</span></div>')
+                    context_html.append('<br>')
+
+                    context_html.append('<div style="color: #4fc3f7; font-weight: bold; margin-bottom: 10px;">� 优化上下文内容</div>')
+                    context_html.append('<div style="background-color: #1a1a1a; border: 2px solid #404040; border-radius: 8px; padding: 15px; margin: 10px 0; white-space: pre-wrap; font-family: Consolas, Monaco, monospace;">')
+
+                    # 处理上下文内容，添加基本的语法高亮
+                    import html
+                    escaped_context = html.escape(optimized_context)
+
+                    # 简单的语法高亮
+                    highlighted_context = escaped_context
+                    highlighted_context = highlighted_context.replace('【', '<span style="color: #ff6b35; font-weight: bold;">【')
+                    highlighted_context = highlighted_context.replace('】', '】</span>')
+                    highlighted_context = highlighted_context.replace('- ', '<span style="color: #81c784;">- </span>')
+
+                    context_html.append(f'<span style="color: #e0e0e0;">{highlighted_context}</span>')
+                    context_html.append('</div>')
+
+                    context_html.append('<div style="color: #4fc3f7; font-weight: bold; margin-bottom: 10px;">💡 使用说明</div>')
+                    context_html.append('<div style="color: #b0bec5; margin-left: 15px; line-height: 1.6;">')
+                    context_html.append('• 此上下文已通过<span style="color: #ff6b35;">注意力机制</span>优化，过滤了低重要性实体<br>')
+                    context_html.append('• 可直接用于<span style="color: #81c784;">LLM对话</span>，提升响应质量和准确性<br>')
+                    context_html.append('• 保留了角色的<span style="color: #90caf9;">核心特征</span>和<span style="color: #ce93d8;">重要关联</span>')
+                    context_html.append('</div>')
+                    context_html.append('</div>')
+
+                    result_text.setHtml("".join(context_html))
+                    logger.info(f"✅ 优化上下文生成完成: {character_name}")
+
+                except Exception as e:
+                    result_text.setText(f"❌ 生成优化上下文时发生错误:\n{str(e)}")
+                    logger.error(f"生成优化上下文失败: {e}")
+
+            # 连接按钮事件
+            analyze_btn.clicked.connect(run_analysis)
+            optimize_btn.clicked.connect(get_optimized_context)
+
+            # 显示对话框
+            dialog.exec()
+
+        except Exception as e:
+            logger.error(f"显示注意力分析对话框失败: {e}")
+            QMessageBox.critical(self, "错误", f"无法显示注意力分析对话框:\n{str(e)}")

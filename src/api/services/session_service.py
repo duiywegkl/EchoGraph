@@ -520,10 +520,19 @@ class SessionService:
             entities_json_path = str(Path(graph_path).parent / "entities.json")
 
             # 初始化核心组件
+            # 注意力机制配置
+            attention_config = {
+                'collective_weight': 0.6,
+                'holistic_weight': 0.4,
+                'importance_threshold': 0.3,
+                'max_context_entities': 15
+            }
+
             memory = GRAGMemory(
                 graph_save_path=graph_path,
                 entities_json_path=entities_json_path,
-                auto_load_entities=True
+                auto_load_entities=True,
+                attention_config=attention_config
             )
             perception = PerceptionModule()
             rpg_processor = RPGTextProcessor()

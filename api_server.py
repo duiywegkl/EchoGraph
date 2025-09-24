@@ -259,10 +259,20 @@ def get_or_create_session_engine(session_id: str, is_test: bool = False, enable_
         logger.debug("🧠 [ThreadPool] Initializing core components...")
         # 生成entities.json路径
         entities_json_path = str(Path(graph_path).parent / "entities.json")
+
+        # 注意力机制配置 - 酒馆模式也需要
+        attention_config = {
+            'collective_weight': 0.6,      # 集体重要性权重
+            'holistic_weight': 0.4,        # 整体重要性权重
+            'importance_threshold': 0.3,   # 重要性阈值
+            'max_context_entities': 15     # 最大上下文实体数
+        }
+
         memory = GRAGMemory(
             graph_save_path=graph_path,
             entities_json_path=entities_json_path,
-            auto_load_entities=True  # 酒馆模式需要加载现有数据
+            auto_load_entities=True,  # 酒馆模式需要加载现有数据
+            attention_config=attention_config  # 添加注意力机制配置
         )
         logger.debug("✅ [ThreadPool] GRAGMemory initialized.")
 
@@ -1962,10 +1972,20 @@ async def process_tavern_message(request: TavernMessageRequest):
             # 初始化核心组件 - 使用本地模式目录
             base_data_path = Path(__file__).parent / "data" / "local_mode"
             base_data_path.mkdir(exist_ok=True)  # 确保目录存在
+
+            # 注意力机制配置
+            attention_config = {
+                'collective_weight': 0.6,
+                'holistic_weight': 0.4,
+                'importance_threshold': 0.3,
+                'max_context_entities': 15
+            }
+
             memory = GRAGMemory(
                 graph_save_path=str(base_data_path / "knowledge_graph.graphml"),
                 entities_json_path=str(base_data_path / "entities.json"),
-                auto_load_entities=True  # 本地模式也需要加载已有数据
+                auto_load_entities=True,  # 本地模式也需要加载已有数据
+                attention_config=attention_config
             )
             perception = PerceptionModule()
             rpg_processor = RPGTextProcessor()
@@ -2850,10 +2870,20 @@ async def auto_load_character_session(session_id: str, character_name: str, char
 
         # 初始化核心组件
         logger.info(f"📂 [AutoLoad] Loading data from: {character_data_path}")
+
+        # 注意力机制配置
+        attention_config = {
+            'collective_weight': 0.6,
+            'holistic_weight': 0.4,
+            'importance_threshold': 0.3,
+            'max_context_entities': 15
+        }
+
         memory = GRAGMemory(
             graph_save_path=graph_path,
             entities_json_path=entities_json_path,
-            auto_load_entities=True  # 自动加载现有数据
+            auto_load_entities=True,  # 自动加载现有数据
+            attention_config=attention_config
         )
         perception = PerceptionModule()
         rpg_processor = RPGTextProcessor()

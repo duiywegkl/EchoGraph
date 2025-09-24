@@ -23,7 +23,16 @@ def run_chinese_test_demo():
     # 1. 初始化所有核心组件
     logger.info("[1/4] 初始化核心组件...")
     graph_path = "data/memory/world_graph.graphml"
-    memory = GRAGMemory(graph_save_path=graph_path)
+
+    # 注意力机制配置
+    attention_config = {
+        'collective_weight': 0.6,
+        'holistic_weight': 0.4,
+        'importance_threshold': 0.3,
+        'max_context_entities': 15
+    }
+
+    memory = GRAGMemory(graph_save_path=graph_path, attention_config=attention_config)
     perception = PerceptionModule()
     llm_client = LLMClient()
     # 假设ValidationLayer已存在且可用

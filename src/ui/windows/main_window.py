@@ -74,11 +74,20 @@ class MainWindow(QMainWindow):
             local_mode_path = base_path / "local_mode"  # 本地模式专用目录
             local_mode_path.mkdir(exist_ok=True, parents=True)
 
+            # 注意力机制配置
+            attention_config = {
+                'collective_weight': 0.6,      # 集体重要性权重
+                'holistic_weight': 0.4,        # 整体重要性权重
+                'importance_threshold': 0.3,   # 重要性阈值
+                'max_context_entities': 15     # 最大上下文实体数
+            }
+
             self.memory = GRAGMemory(
                 hot_memory_size=10,
                 graph_save_path=str(local_mode_path / "knowledge_graph.graphml"),
                 entities_json_path=str(local_mode_path / "entities.json"),  # 本地模式专用路径
-                auto_load_entities=True  # 本地模式需要加载已有的对话数据
+                auto_load_entities=True,  # 本地模式需要加载已有的对话数据
+                attention_config=attention_config  # 添加注意力机制配置
             )
 
             # 初始化其他核心组件
