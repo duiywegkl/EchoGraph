@@ -1,0 +1,51 @@
+# EchoGraph开发环境配置
+
+system:
+  name: "EchoGraph"
+  version: "1.1.0"
+  debug: true
+  environment: "development"
+  allowed_origins: "http://localhost:3000,http://127.0.0.1:3000,http://localhost:8080"
+
+llm:
+  provider: "openai"
+  model: "deepseek-v3.1"
+  stream: false
+  max_tokens: 16000
+  temperature: 0.8
+  request_timeout: 180
+
+memory:
+  max_hot_memory: 10
+  max_context_length: 4000
+  enable_auto_save: true
+  save_interval: 300
+
+game:
+  world_name: "开发世界"
+  character_name: "系统"
+  enable_sliding_window: true
+  sliding_window_size: 4
+  processing_delay: 1
+
+logging:
+  level: "DEBUG"
+  enable_file_logging: true
+  log_rotation: "5 MB"
+  log_retention: "7 days"
+  enable_console_logging: true
+
+security:
+  enable_rate_limiting: false  # 开发环境关闭限流
+  max_requests_per_minute: 1000
+  enable_input_sanitization: true
+  max_input_length: 50000
+  enable_https_only: false
+  session_timeout: 7200  # 2小时
+
+database:
+  type: "sqlite"
+  host: "localhost"
+  port: 5432
+  database: "echograph_dev"
+  connection_pool_size: 3

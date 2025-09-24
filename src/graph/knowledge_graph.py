@@ -356,12 +356,60 @@ class KnowledgeGraph:
     def get_active_nodes(self) -> List[str]:
         """
         获取所有未被标记为删除的节点。
-        
+
         Returns:
             List[str]: 活跃节点ID列表
         """
-        return [node_id for node_id, data in self.graph.nodes(data=True) 
+        return [node_id for node_id, data in self.graph.nodes(data=True)
                 if not data.get('_deleted', False)]
+
+    def rename_node(self, old_node_id: str, new_node_id: str) -> bool:
+        """
+        重命名节点，保持所有关系不变。
+
+        Args:
+            old_node_id (str): 旧节点ID
+            new_node_id (str): 新节点ID
+
+        Returns:
+            bool: 重命名成功返回True，失败返回False
+        """
+        if not self.graph.has_node(old_node_id):
+            logger.warning(f"Node '{old_node_id}' not found. Cannot rename.")
+            return False
+
+        if self.graph.has_node(new_node_id):
+            logger.warning(f"Node '{new_node_id}' already exists. Cannot rename.")
+            return False
+
+        # 获取旧节点的所有属性
+        old_attributes = self.graph.nodes[old_node_id].copy()
+
+        # 获取所有相关的边
+        incoming_edges = []  # 指向旧节点的边
+        outgoing_edges = []  # 从旧节点出发的边
+
+        for source, target, edge_data in self.graph.edges(data=True):
+            if target == old_node_id:
+                incoming_edges.append((source, edge_data.copy()))
+            if source == old_node_id:
+                outgoing_edges.append((target, edge_data.copy()))
+
+        # 创建新节点
+        self.graph.add_node(new_node_id, **old_attributes)
+
+        # 重建所有关系
+        for source, edge_data in incoming_edges:
+            self.graph.add_edge(source, new_node_id, **edge_data)
+
+        for target, edge_data in outgoing_edges:
+            self.graph.add_edge(new_node_id, target, **edge_data)
+
+        # 删除旧节点（这会自动删除所有相关的边）
+        self.graph.remove_node(old_node_id)
+
+        logger.info(f"Node renamed: '{old_node_id}' -> '{new_node_id}' with {len(incoming_edges) + len(outgoing_edges)} relationships preserved")
+        return True
 
     def cleanup_deleted_nodes(self, days_threshold: int = 30):
         """

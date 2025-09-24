@@ -52,7 +52,7 @@ class GRAGUpdateAgent:
             )
             
             # 3. 请求LLM进行分析（记录prompt与响应预览）
-            logger.info("🧠 [GRAG] 请求LLM进行更新分析...")
+            logger.info("[AI] [GRAG] 请求LLM进行更新分析...")
             try:
                 logger.info(f"[GRAG] Prompt preview (first 600 chars):\n---\n{analysis_prompt[:600]}\n---")
                 logger.debug(f"[GRAG] Full analysis prompt:\n{analysis_prompt}")

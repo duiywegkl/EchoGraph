@@ -23,15 +23,15 @@ class WindowManager:
         icon_path = Path(__file__).parent.parent.parent.parent / "assets" / "icons" / "OIG1.png"
         if icon_path.exists():
             main_window.setWindowIcon(QIcon(str(icon_path)))
-            logger.debug(f"✅ 窗口图标已设置: {icon_path}")
+            logger.debug(f"[OK] 窗口图标已设置: {icon_path}")
         else:
-            logger.warning(f"⚠️ 图标文件不存在: {icon_path}")
+            logger.warning(f"[WARN] 图标文件不存在: {icon_path}")
             # 尝试使用系统默认图标
             try:
                 from PySide6.QtWidgets import QStyle
                 default_icon = main_window.style().standardIcon(QStyle.SP_ComputerIcon)
                 main_window.setWindowIcon(default_icon)
-                logger.debug("✅ 使用系统默认图标")
+                logger.debug("[OK] 使用系统默认图标")
             except Exception as e:
                 logger.error(f"❌ 设置默认图标失败: {e}")
         

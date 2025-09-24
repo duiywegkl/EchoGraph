@@ -28,7 +28,7 @@ class GameEngine:
         使用LLM智能解析角色卡和世界书，生成知识图谱初始化数据。
         如果LLM不可用，则自动回退到简化初始化模式。
         """
-        logger.info("🧠 开始初始化角色卡和世界书...")
+        logger.info("[AI] 开始初始化角色卡和世界书...")
 
         try:
             # 1. 准备角色卡数据
@@ -39,9 +39,9 @@ class GameEngine:
             char_first_mes = character_card.get('first_mes', '')
             char_example = character_card.get('mes_example', '')
             
-            logger.info(f"📊 角色信息: {char_name}")
-            logger.info(f"📊 描述长度: {len(char_description)} 字符")
-            logger.info(f"📊 世界书长度: {len(world_info or '')} 字符")
+            logger.info(f"[CHART] 角色信息: {char_name}")
+            logger.info(f"[CHART] 描述长度: {len(char_description)} 字符")
+            logger.info(f"[CHART] 世界书长度: {len(world_info or '')} 字符")
             
             # 2. 检查LLM是否可用且正确配置
             if not self._is_llm_available():
@@ -59,14 +59,14 @@ class GameEngine:
                 )
                 
                 if analysis_result:
-                    logger.info("✅ LLM分析成功完成")
+                    logger.info("[OK] LLM分析成功完成")
                     return analysis_result
                 else:
-                    logger.warning("⚠️ LLM分析返回空结果，使用简化初始化")
+                    logger.warning("[WARN] LLM分析返回空结果，使用简化初始化")
                     return self._fallback_simple_initialization(char_name, char_description)
                     
             except Exception as llm_error:
-                logger.warning(f"⚠️ LLM分析失败: {llm_error}")
+                logger.warning(f"[WARN] LLM分析失败: {llm_error}")
                 logger.info("🔄 回退到简化初始化模式...")
                 return self._fallback_simple_initialization(char_name, char_description)
             
@@ -95,11 +95,11 @@ class GameEngine:
                 logger.info("📝 LLM API密钥未配置，LLM不可用")
                 return False
             
-            logger.info("✅ LLM检查通过，可以使用智能分析")
+            logger.info("[OK] LLM检查通过，可以使用智能分析")
             return True
             
         except Exception as e:
-            logger.warning(f"⚠️ LLM可用性检查失败: {e}")
+            logger.warning(f"[WARN] LLM可用性检查失败: {e}")
             return False
     
     def _perform_llm_analysis(self, name: str, description: str, personality: str, 
@@ -116,8 +116,8 @@ class GameEngine:
             logger.info("="*50)
             logger.info("📜 [LLM KG Gen] Preparing to call LLM for Knowledge Graph generation.")
             logger.info(f"角色名称: {name}")
-            logger.info(f"角色描述:\n---\n{description}\n---")
-            logger.info(f"世界书:\n---\n{world_info}\n---")
+            logger.debug(f"角色描述:\n---\n{description}\n---")
+            logger.debug(f"世界书:\n---\n{world_info}\n---")
             logger.info("Full prompt sent to LLM will be logged at DEBUG level.")
             logger.debug(f"Full LLM Prompt:\n{analysis_prompt}")
             logger.info("="*50)
@@ -135,7 +135,7 @@ class GameEngine:
             # --- 详细日志 ---
             duration = end_time - start_time
             logger.info("="*50)
-            logger.info(f"✅ [LLM KG Gen] LLM call completed in {duration:.2f} seconds.")
+            logger.info(f"[OK] [LLM KG Gen] LLM call completed in {duration:.2f} seconds.")
             logger.info(f"LLM Raw Response:\n---\n{analysis_result}\n---")
             logger.info("="*50)
             
@@ -180,7 +180,7 @@ class GameEngine:
 
             # 同步实体数据到JSON文件，供UI使用
             self.memory.sync_entities_to_json()
-            logger.info("✅ 实体数据已同步到 entities.json")
+            logger.info("[OK] 实体数据已同步到 entities.json")
 
             return {
                 "nodes_added": nodes_added,
@@ -405,7 +405,7 @@ class GameEngine:
             
             self.memory.add_or_update_node(character_id, "character", **attributes)
             
-            logger.info(f"✅ 简化初始化完成: 1 个主角色实体")
+            logger.info(f"[OK] 简化初始化完成: 1 个主角色实体")
             
             # 保存图谱到GraphML格式
             if self.memory.graph_save_path:
@@ -413,7 +413,7 @@ class GameEngine:
 
             # 同步实体数据到JSON文件，供UI使用
             self.memory.sync_entities_to_json()
-            logger.info("✅ 简化模式实体数据已同步到 entities.json")
+            logger.info("[OK] 简化模式实体数据已同步到 entities.json")
 
             return {
                 "nodes_added": 1,
@@ -554,7 +554,7 @@ class GameEngine:
 
         # 同步实体数据到JSON文件，供UI使用
         self.memory.sync_entities_to_json()
-        logger.info("✅ 实体数据已同步到 entities.json")
+        logger.info("[OK] 实体数据已同步到 entities.json")
 
         return {
             "nodes_updated": nodes_updated_count,

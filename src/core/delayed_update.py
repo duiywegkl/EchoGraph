@@ -237,38 +237,47 @@ class DelayedUpdateManager:
             return 0
         
         update_count = 0
-        
-        # 应用节点更新
+
+        # 先应用“新增节点”，确保后续边关系的目标存在
+        for node_add in execution_format.get("nodes_to_add", []):
+            try:
+                node_id = node_add.get("node_id")
+                node_type = node_add.get("type", "unknown")
+                attributes = node_add.get("attributes", {})
+                self.memory.add_or_update_node(node_id, node_type, **attributes)
+                update_count += 1
+                logger.debug(f"新增节点: {node_id}")
+            except Exception as e:
+                logger.warning(f"节点新增失败: {e}")
+
+        # 应用节点更新（存在则更新，不存在也会被创建）
         for node_update in execution_format.get("nodes_to_update", []):
             try:
                 node_id = node_update.get("node_id")
                 node_type = node_update.get("type", "unknown")
                 attributes = node_update.get("attributes", {})
-                
                 self.memory.add_or_update_node(node_id, node_type, **attributes)
                 update_count += 1
                 logger.debug(f"应用节点更新: {node_id}")
-                
             except Exception as e:
                 logger.warning(f"节点更新失败: {e}")
-        
-        # 应用边更新
+
+        # 最后应用边更新（携带属性）
         for edge_add in execution_format.get("edges_to_add", []):
             try:
                 source = edge_add.get("source")
                 target = edge_add.get("target")
                 relationship = edge_add.get("relationship")
-                
-                self.memory.add_edge(source, target, relationship)
+                edge_attrs = edge_add.get("attributes", {})
+                self.memory.add_edge(source, target, relationship, **edge_attrs)
                 update_count += 1
                 logger.debug(f"应用边更新: {source} -> {target}")
-                
             except Exception as e:
                 logger.warning(f"边更新失败: {e}")
-        
+
         logger.info(f"共应用 {update_count} 个更新")
         return update_count
-    
+
     def handle_conversation_modification(self, turn_id: str, user_input: str = None, llm_response: str = None) -> Dict[str, Any]:
         """
         处理对话修改（来自SillyTavern的编辑操作）

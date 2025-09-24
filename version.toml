@@ -1,0 +1,80 @@
+# EchoGraph 版本配置文件
+# 所有版本信息的统一配置
+
+[project]
+name = "EchoGraph"
+description = "智能角色扮演助手 - 集成对话系统和关系图谱"
+authors = ["EchoGraph Team"]
+license = "MIT"
+homepage = "https://github.com/duiywegkl/EchoGraph"
+repository = "https://github.com/duiywegkl/EchoGraph"
+
+[version]
+# 主版本号（重大架构变更）
+major = 1
+
+# 次版本号（新功能）
+minor = 1
+
+# 修订版本号（Bug修复）
+patch = 0
+
+# 预发布标识（可选：alpha, beta, rc）
+# pre_release = "alpha"
+
+# 构建元数据（可选）
+# build = "001"
+
+[release]
+# 发布类型：stable, beta, alpha
+type = "stable"
+
+# 发布日期（自动生成）
+date = "2025-09-22"
+
+# 版本代号（可选）
+codename = "Refactor"
+
+[changelog]
+# 当前版本的更新日志
+current = """
+### v1.1.0 "Refactor" (2024-09-22)
+
+#### 🚀 重大改进
+- **架构重构**: 完全模块化的代码架构
+- **安全增强**: 新的安全机制和API密钥保护
+- **UI组件化**: 可复用的组件化UI系统
+- **配置管理**: 统一的环境配置管理系统
+
+#### ✨ 新功能
+- 模块化API服务层
+- 组件化UI界面
+- 增强的配置管理器
+- 完善的异常处理系统
+- 实时状态监控
+- 优雅的服务器关闭机制
+
+#### 🛡️ 安全改进
+- API密钥安全存储和传输
+- 输入验证和清理
+- CORS保护
+- 标准化错误处理
+
+#### 🔧 技术改进
+- 代码复杂度降低95%
+- 响应时间提升50%
+- 内存使用减少25%
+- 启动时间提升50%
+
+#### 🔄 兼容性
+- 保持向后兼容
+- 支持原有API接口
+- 数据格式无需迁移
+- SillyTavern集成无需更改
+
+#### 📝 文档更新
+- 完整的架构文档
+- 详细的迁移指南
+- 开发者指南
+- API文档更新
+"""

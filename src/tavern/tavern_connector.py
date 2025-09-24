@@ -50,7 +50,7 @@ class SillyTavernConnector:
     def test_connection(self) -> Dict[str, Any]:
         """测试与SillyTavern的连接"""
         try:
-            logger.info(f"🔍 开始测试SillyTavern连接: {self.base_url}")
+            logger.info(f"[SEARCH] 开始测试SillyTavern连接: {self.base_url}")
             # 尝试多个可能的健康检查端点
             endpoints_to_try = [
                 "/api/ping",
@@ -71,7 +71,7 @@ class SillyTavernConnector:
                     
                     if response.status_code == 200:
                         self.is_connected = True
-                        logger.info(f"✅ 成功连接SillyTavern: {self.base_url}{endpoint}")
+                        logger.info(f"[OK] 成功连接SillyTavern: {self.base_url}{endpoint}")
                         return {
                             "status": "connected",
                             "endpoint": endpoint,
@@ -83,7 +83,7 @@ class SillyTavernConnector:
             
             # 所有端点都失败
             self.is_connected = False
-            logger.warning(f"⚠️ 所有端点都无法连接到 {self.base_url}")
+            logger.warning(f"[WARN] 所有端点都无法连接到 {self.base_url}")
             return {
                 "status": "failed",
                 "error": f"尝试了多个端点但都无法连接到 {self.base_url}"
@@ -119,7 +119,7 @@ class SillyTavernConnector:
             for i, endpoint in enumerate(character_endpoints, 1):
                 try:
                     full_url = f"{self.base_url}{endpoint}"
-                    logger.info(f"🔍 尝试端点 {i}/{len(character_endpoints)}: {full_url}")
+                    logger.info(f"[SEARCH] 尝试端点 {i}/{len(character_endpoints)}: {full_url}")
                     
                     response = self.session.get(
                         full_url,
@@ -134,7 +134,7 @@ class SillyTavernConnector:
                     if response.status_code == 200:
                         try:
                             char_data = response.json()
-                            logger.info(f"📋 端点 {endpoint} 返回的JSON数据:")
+                            logger.info(f"[LOG] 端点 {endpoint} 返回的JSON数据:")
                             logger.info(f"  - 数据类型: {type(char_data)}")
                             
                             if isinstance(char_data, dict):
@@ -145,7 +145,7 @@ class SillyTavernConnector:
                                 
                                 # 检查是否有有效的角色数据
                                 if name and name.strip():
-                                    logger.info(f"✅ 发现有效角色: {name}")
+                                    logger.info(f"[OK] 发现有效角色: {name}")
                                     
                                     # 获取世界书信息
                                     logger.info("🌍 获取世界书信息...")
@@ -162,7 +162,7 @@ class SillyTavernConnector:
                                     )
                                     
                                     self.current_character = character
-                                    logger.info(f"✅ 角色信息获取成功:")
+                                    logger.info(f"[OK] 角色信息获取成功:")
                                     logger.info(f"  - 角色名: {character.name}")
                                     logger.info(f"  - 描述长度: {len(character.description)} 字符")
                                     logger.info(f"  - 个性长度: {len(character.personality)} 字符")
@@ -173,26 +173,26 @@ class SillyTavernConnector:
                                     
                                     return character
                                 else:
-                                    logger.warning(f"⚠️ 端点 {endpoint} 返回空角色名或无效数据")
+                                    logger.warning(f"[WARN] 端点 {endpoint} 返回空角色名或无效数据")
                                     if isinstance(char_data, dict):
                                         logger.warning(f"  - 完整数据: {char_data}")
                             else:
-                                logger.warning(f"⚠️ 端点 {endpoint} 返回非字典数据: {char_data}")
+                                logger.warning(f"[WARN] 端点 {endpoint} 返回非字典数据: {char_data}")
                                 
                         except json.JSONDecodeError as e:
-                            logger.warning(f"⚠️ 端点 {endpoint} JSON解析失败: {e}")
+                            logger.warning(f"[WARN] 端点 {endpoint} JSON解析失败: {e}")
                             logger.warning(f"  - 原始响应: {response.text[:200]}...")
                     else:
-                        logger.warning(f"⚠️ 端点 {endpoint} HTTP错误: {response.status_code}")
+                        logger.warning(f"[WARN] 端点 {endpoint} HTTP错误: {response.status_code}")
                         if response.text:
                             logger.warning(f"  - 错误详情: {response.text[:200]}...")
                             
                 except requests.exceptions.Timeout as e:
-                    logger.warning(f"⚠️ 端点 {endpoint} 超时: {e}")
+                    logger.warning(f"[WARN] 端点 {endpoint} 超时: {e}")
                 except requests.exceptions.ConnectionError as e:
-                    logger.warning(f"⚠️ 端点 {endpoint} 连接错误: {e}")
+                    logger.warning(f"[WARN] 端点 {endpoint} 连接错误: {e}")
                 except Exception as e:
-                    logger.warning(f"⚠️ 端点 {endpoint} 其他异常: {e}")
+                    logger.warning(f"[WARN] 端点 {endpoint} 其他异常: {e}")
                     import traceback
                     logger.warning(f"  - 详细错误: {traceback.format_exc()}")
             
@@ -240,7 +240,7 @@ class SillyTavernConnector:
                 except:
                     continue
             
-            logger.warning("⚠️ 无法从SillyTavern获取世界书信息")
+            logger.warning("[WARN] 无法从SillyTavern获取世界书信息")
             return []
                 
         except Exception as e:
@@ -316,7 +316,7 @@ class SillyTavernConnector:
                     )
                     
                     if response.status_code == 200:
-                        logger.info(f"✅ 成功通知插件连接并传递会话ID: {session_id}")
+                        logger.info(f"[OK] 成功通知插件连接并传递会话ID: {session_id}")
                         return True
                     else:
                         logger.debug(f"端点 {endpoint} 响应状态: {response.status_code}")
@@ -351,7 +351,7 @@ class TavernModeManager:
     def enter_tavern_mode(self, tavern_config: TavernConfig) -> Dict[str, Any]:
         """进入酒馆模式"""
         try:
-            logger.info("🍺 正在切换到酒馆模式...")
+            logger.info("[READY] 正在切换到酒馆模式...")
             
             # 1. 保存当前会话和知识图谱
             self.save_current_session()
@@ -388,7 +388,7 @@ class TavernModeManager:
                 self.connector.notify_plugin_connection(session_id)
                 
                 self.is_tavern_mode = True
-                logger.info("✅ 酒馆模式切换成功")
+                logger.info("[OK] 酒馆模式切换成功")
                 return {
                     "success": True,
                     "character": character.name,
@@ -425,7 +425,7 @@ class TavernModeManager:
     
     def initialize_knowledge_graph_from_character(self, character: CharacterInfo) -> Dict[str, Any]:
         """根据角色信息通过EchoGraph API初始化知识图谱"""
-        logger.info("🧠 ========== 开始智能初始化知识图谱 ==========")
+        logger.info("[AI] ========== 开始智能初始化知识图谱 ==========")
         try:
             logger.info(f"🎭 目标角色信息:")
             logger.info(f"  - 角色名称: {character.name}")
@@ -441,9 +441,9 @@ class TavernModeManager:
             api_base_url = "http://127.0.0.1:9543"
             
             # 1. 检查当前活跃的酒馆会话
-            logger.info("🔍 ========== 检查现有酒馆会话 ==========")
+            logger.info("[SEARCH] ========== 检查现有酒馆会话 ==========")
             try:
-                logger.info(f"🔍 查询URL: {api_base_url}/tavern/current_session")
+                logger.info(f"[SEARCH] 查询URL: {api_base_url}/tavern/current_session")
                 current_session_response = requests.get(
                     f"{api_base_url}/tavern/current_session",
                     timeout=10
@@ -453,23 +453,23 @@ class TavernModeManager:
                 
                 if current_session_response.status_code == 200:
                     session_data = current_session_response.json()
-                    logger.info(f"📊 会话查询结果: {session_data}")
+                    logger.info(f"[CHART] 会话查询结果: {session_data}")
                     
                     if session_data.get("has_session"):
                         existing_session_id = session_data.get("session_id")
-                        logger.info(f"✅ 发现现有酒馆会话: {existing_session_id}")
+                        logger.info(f"[OK] 发现现有酒馆会话: {existing_session_id}")
                         
                         # 使用现有会话，返回其统计信息
                         stats_url = f"{api_base_url}/sessions/{existing_session_id}/stats"
-                        logger.info(f"📊 获取现有会话统计: {stats_url}")
+                        logger.info(f"[CHART] 获取现有会话统计: {stats_url}")
                         
                         stats_response = requests.get(stats_url, timeout=10)
                         logger.info(f"📨 统计查询响应: {stats_response.status_code}")
                         
                         if stats_response.status_code == 200:
                             stats = stats_response.json()
-                            logger.info(f"📊 现有会话统计: {stats}")
-                            logger.info("🎉 ========== 使用现有会话完成 ==========")
+                            logger.info(f"[CHART] 现有会话统计: {stats}")
+                            logger.info("[SUCCESS] ========== 使用现有会话完成 ==========")
                             return {
                                 "success": True,
                                 "nodes_created": stats.get("graph_nodes", 0),
@@ -477,14 +477,14 @@ class TavernModeManager:
                                 "reused_existing": True
                             }
                         else:
-                            logger.warning(f"⚠️ 获取现有会话统计失败: {stats_response.status_code}")
+                            logger.warning(f"[WARN] 获取现有会话统计失败: {stats_response.status_code}")
                     else:
                         logger.info("ℹ️ 没有找到现有的酒馆会话")
                 else:
-                    logger.warning(f"⚠️ 会话查询失败: {current_session_response.status_code}")
+                    logger.warning(f"[WARN] 会话查询失败: {current_session_response.status_code}")
                     
             except Exception as e:
-                logger.warning(f"⚠️ 检查现有会话失败，将创建新会话: {e}")
+                logger.warning(f"[WARN] 检查现有会话失败，将创建新会话: {e}")
             
             # 2. 创建新的固定会话ID（基于角色名，不使用时间戳）
             logger.info("🆕 ========== 创建新会话 ==========")
@@ -558,8 +558,8 @@ class TavernModeManager:
                 }
             }
             
-            logger.info("🚀 ========== 调用异步API初始化 ==========")
-            logger.info(f"🔗 API URL: {api_url}")
+            logger.info("[START] ========== 调用异步API初始化 ==========")
+            logger.info(f"[LINK] API URL: {api_url}")
             logger.info(f"📦 请求数据大小:")
             logger.info(f"  - 角色卡字段数: {len(character_card)}")
             logger.info(f"  - 世界书长度: {len(world_info_text)}")
@@ -579,7 +579,7 @@ class TavernModeManager:
                 error_text = response.text
                 logger.error("❌ ========== 异步任务启动失败 ==========")
                 logger.error(f"📨 响应状态: {response.status_code}")
-                logger.error(f"📋 错误详情: {error_text}")
+                logger.error(f"[LOG] 错误详情: {error_text}")
                 return {
                     "success": False,
                     "error": f"启动异步初始化失败: HTTP {response.status_code} - {error_text}"
@@ -589,7 +589,7 @@ class TavernModeManager:
             async_result = response.json()
             task_id = async_result.get("task_id")
             
-            logger.info(f"✅ 异步任务已启动，任务ID: {task_id}")
+            logger.info(f"[OK] 异步任务已启动，任务ID: {task_id}")
             logger.info(f"⏱️ 预计耗时: {async_result.get('estimated_time', '未知')}")
             
             # 第二步：轮询任务状态直到完成
@@ -599,7 +599,7 @@ class TavernModeManager:
             start_time = time.time()
             
             status_url = f"{api_base_url}/initialize_status/{task_id}"
-            logger.info(f"🔍 开始轮询任务状态: {status_url}")
+            logger.info(f"[SEARCH] 开始轮询任务状态: {status_url}")
             
             while time.time() - start_time < max_wait_time:
                 try:
@@ -611,15 +611,15 @@ class TavernModeManager:
                         progress = status_data.get("progress", 0.0)
                         message = status_data.get("message", "")
                         
-                        logger.info(f"📊 任务进度: {progress*100:.1f}% - {message}")
+                        logger.info(f"[CHART] 任务进度: {progress*100:.1f}% - {message}")
                         
                         if task_status == "completed":
                             # 任务完成
                             result = status_data.get("result", {})
                             nodes_created = result.get("graph_stats", {}).get("nodes_updated", 0)
                             
-                            logger.info("🎉 ========== 异步初始化成功 ==========")
-                            logger.info(f"📊 初始化结果:")
+                            logger.info("[SUCCESS] ========== 异步初始化成功 ==========")
+                            logger.info(f"[CHART] 初始化结果:")
                             logger.info(f"  - 节点数量: {nodes_created}")
                             logger.info(f"  - 会话ID: {result.get('session_id')}")
                             logger.info(f"  - 总耗时: {time.time() - start_time:.1f}秒")
@@ -636,7 +636,7 @@ class TavernModeManager:
                             # 任务失败
                             error_message = status_data.get("error", "未知错误")
                             logger.error("❌ ========== 异步初始化失败 ==========")
-                            logger.error(f"📋 错误详情: {error_message}")
+                            logger.error(f"[LOG] 错误详情: {error_message}")
                             return {
                                 "success": False,
                                 "error": f"异步初始化失败: {error_message}",
@@ -647,16 +647,16 @@ class TavernModeManager:
                         time.sleep(poll_interval)
                     
                     else:
-                        logger.warning(f"⚠️ 状态查询失败: {status_response.status_code}")
+                        logger.warning(f"[WARN] 状态查询失败: {status_response.status_code}")
                         time.sleep(poll_interval)
                         
                 except Exception as poll_error:
-                    logger.warning(f"⚠️ 轮询状态异常: {poll_error}")
+                    logger.warning(f"[WARN] 轮询状态异常: {poll_error}")
                     time.sleep(poll_interval)
             
             # 超时处理
             logger.error("❌ ========== 异步初始化超时 ==========")
-            logger.error(f"📋 超时时间: {max_wait_time}秒")
+            logger.error(f"[LOG] 超时时间: {max_wait_time}秒")
             return {
                 "success": False,
                 "error": f"异步初始化超时（超过{max_wait_time}秒），任务可能仍在后台运行",
@@ -665,23 +665,23 @@ class TavernModeManager:
             
         except requests.exceptions.ConnectionError as e:
             logger.error("❌ ========== API连接失败 ==========")
-            logger.error(f"📋 连接错误: {e}")
+            logger.error(f"[LOG] 连接错误: {e}")
             return {
                 "success": False,
                 "error": "无法连接到EchoGraph API服务器，请确保服务器正在运行"
             }
         except requests.exceptions.Timeout as e:
             logger.error("❌ ========== API调用超时 ==========")
-            logger.error(f"📋 超时错误: {e}")
+            logger.error(f"[LOG] 超时错误: {e}")
             return {
                 "success": False,
                 "error": "API调用超时，初始化过程可能需要更长时间"
             }
         except Exception as e:
             logger.error("❌ ========== 初始化异常 ==========")
-            logger.error(f"📋 异常详情: {e}")
+            logger.error(f"[LOG] 异常详情: {e}")
             import traceback
-            logger.error(f"📋 完整堆栈: {traceback.format_exc()}")
+            logger.error(f"[LOG] 完整堆栈: {traceback.format_exc()}")
             return {
                 "success": False,
                 "error": f"初始化异常: {e}"

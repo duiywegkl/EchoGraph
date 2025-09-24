@@ -30,7 +30,7 @@ logger.remove()
 
 logger.add(
     "logs/api_server_{time:YYYY-MM-DD}.log",
-    format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {message}",
+    format="{time:YYYY-MM-DD HH:mm:ss} | {level:<8} | {message}",
     level=os.getenv("LOG_LEVEL", config.logging.level).upper(),
     rotation="5 MB",
     retention="7 days"
@@ -38,17 +38,33 @@ logger.add(
 # Extra detailed LLM log sink (captures [LLM]/[GRAG] messages at DEBUG)
 logger.add(
     "logs/llm_{time:YYYY-MM-DD}.log",
-    format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {message}",
+    format="{time:YYYY-MM-DD HH:mm:ss} | {level:<8} | {message}",
     level="DEBUG",
     filter=lambda record: any(tag in record["message"] for tag in ("[LLM]", "[GRAG]", "[LLM KG Gen]")),
     rotation="10 MB",
     retention="7 days"
 )
 
-# 重新添加一个控制台sink（可选，如果需要控制台输出的话）
+# 重新添加一个控制台 sink：遵循日志级别显示（INFO 不含 DEBUG，DEBUG 显示全部），并在控制台做长度截断
+
+def _console_format(record):
+    try:
+        level_name = record["level"].name
+        msg = record["message"]
+        # 控制台按级别显示，做长度截断：DEBUG 更宽松
+        max_len = 500 if level_name == "DEBUG" else 300
+        if isinstance(msg, str) and len(msg) > max_len:
+            msg = msg[:max_len] + "... [truncated]"
+        # Escape braces to avoid being parsed as formatting tokens by Loguru
+        if isinstance(msg, str):
+            msg = msg.replace("{", "{{").replace("}", "}}")
+        return "{time:HH:mm:ss} | {level:<8} | " + msg + "\n"
+    except Exception:
+        return "{time:HH:mm:ss} | {level:<8} | {message}\n"
+
 logger.add(
-    lambda msg: print(msg, end=""),
-    format="{time:HH:mm:ss} | {level: <8} | {message}",
+    lambda m: print(m, end=""),
+    format=_console_format,
     level=os.getenv("LOG_LEVEL", config.logging.level).upper()
 )
 
@@ -79,6 +95,22 @@ class ConnectionManager:
             if websocket is None or self.active_connections.get(session_id) is websocket:
                 del self.active_connections[session_id]
                 logger.info(f"🔌 [WS] Plugin disconnected for session {session_id}. Total connections: {len(self.active_connections)}")
+
+                # 🔧 Clean up orphaned session if no engine exists
+                if session_id not in sessions and session_id.startswith('tavern_'):
+                    try:
+                        if hasattr(storage_manager, 'active_sessions') and session_id in storage_manager.active_sessions:
+                            del storage_manager.active_sessions[session_id]
+                            storage_manager._save_active_sessions()
+                            logger.info(f"🧹 [Cleanup] Removed orphaned session from active_sessions: {session_id}")
+
+                        # 🔧 CRITICAL: Also clean from any in-memory tracking that prevents proper cleanup
+                        # If this session appears in WebSocket logs but has no engine and no proper storage,
+                        # it's a phantom session that should not influence session selection
+                        logger.info(f"🧹 [Cleanup] Session {session_id} had WebSocket but no engine, preventing future phantom selections")
+
+                    except Exception as e:
+                        logger.error(f"❌ [Cleanup] Failed to clean up orphaned session {session_id}: {e}")
 
     async def send_message(self, session_id: str, message: Dict[str, Any]):
         if session_id in self.active_connections:
@@ -431,7 +463,7 @@ async def initialize_session(req: InitializeRequest):
             )
 
         # 详细记录角色卡数据
-        logger.info("📊 角色卡详细数据分析:")
+        logger.debug("📊 角色卡详细数据分析:")
         if req.character_card:
             logger.info(f"  角色卡键数量: {len(req.character_card.keys())}")
             logger.info(f"  角色卡键列表: {list(req.character_card.keys())}")
@@ -452,23 +484,23 @@ async def initialize_session(req: InitializeRequest):
             logger.info(f"  消息示例长度: {len(mes_example)} 字符")
 
             if description:
-                logger.info(f"  角色描述前200字符: {description[:200]}...")
+                logger.debug(f"  角色描述前200字符: {description[:200]}...")
             if personality:
-                logger.info(f"  性格描述前200字符: {personality[:200]}...")
+                logger.debug(f"  性格描述前200字符: {personality[:200]}...")
             if scenario:
-                logger.info(f"  场景描述前200字符: {scenario[:200]}...")
+                logger.debug(f"  场景描述前200字符: {scenario[:200]}...")
         else:
             logger.warning("  ⚠️ 角色卡数据为空！")
 
         # 详细记录世界书数据
-        logger.info("📚 世界书详细数据分析:")
+        logger.debug("📚 世界书详细数据分析:")
         if req.world_info:
             logger.info(f"  世界书总长度: {len(req.world_info)} 字符")
-            logger.info(f"  世界书前500字符: {req.world_info[:500]}...")
+            logger.debug(f"  世界书前500字符: {req.world_info[:500]}...")
 
             # 尝试检测世界书格式
             if req.world_info.startswith('[') and req.world_info.endswith(']'):
-                logger.info("  检测到JSON格式世界书")
+                logger.debug("  检测到JSON格式世界书")
                 try:
                     import json
                     world_data = json.loads(req.world_info)
@@ -483,11 +515,11 @@ async def initialize_session(req: InitializeRequest):
                 except Exception as e:
                     logger.warning(f"  解析JSON世界书失败: {e}")
             else:
-                logger.info("  检测到文本格式世界书")
+                logger.debug("  检测到文本格式世界书")
                 lines = req.world_info.split('\n')
-                logger.info(f"  世界书行数: {len(lines)}")
+                logger.debug(f"  世界书行数: {len(lines)}")
                 non_empty_lines = [line for line in lines if line.strip()]
-                logger.info(f"  非空行数: {len(non_empty_lines)}")
+                logger.debug(f"  非空行数: {len(non_empty_lines)}")
         else:
             logger.info("  世界书数据为空")
 
@@ -509,6 +541,9 @@ async def initialize_session(req: InitializeRequest):
         if existing_nodes > 0:
             logger.info(f"♻️ 知识图谱已有 {existing_nodes} 个节点，跳过整个初始化过程")
             existing_edges = len(engine.memory.knowledge_graph.graph.edges())
+
+            # 同步现有数据到JSON文件，确保UI能正确显示
+            engine.memory.sync_entities_to_json()
 
             return InitializeResponse(
                 success=True,
@@ -816,9 +851,9 @@ async def process_conversation(req: ProcessConversationRequest):
         try:
             logger.info(f"[SW] Inbound turn | session={req.session_id[:8]}... | user_input_len={len(req.user_input)} | llm_response_len={len(req.llm_response)}")
             if req.user_input:
-                logger.info(f"[SW] user_input preview (first 200):\n---\n{req.user_input[:200]}\n---")
+                logger.debug(f"[SW] user_input preview (first 200):\n---\n{req.user_input[:200]}\n---")
             if req.llm_response:
-                logger.info(f"[SW] llm_response preview (first 200):\n---\n{req.llm_response[:200]}\n---")
+                logger.debug(f"[SW] llm_response preview (first 200):\n---\n{req.llm_response[:200]}\n---")
         except Exception:
             pass
 
@@ -843,23 +878,31 @@ async def process_conversation(req: ProcessConversationRequest):
                 edges_added=update_results.get("edges_added", 0)
             )
 
-        # 使用滑动窗口系统处理对话
-        result = sliding_manager.process_new_conversation(req.user_input, req.llm_response)
+        # 使用滑动窗口系统处理对话（在线程池中执行，避免阻塞事件循环）
+        result = await run_in_threadpool(sliding_manager.process_new_conversation, req.user_input, req.llm_response)
 
         logger.info(f"Sliding window processed conversation for session {req.session_id[:8]}... | "
                    f"Turn: {result['new_turn_sequence']}, Target processed: {result['target_processed']}")
 
-        # 推送图谱更新通知
+        # 推送图谱更新通知（增加错误处理和重试机制）
         if result.get('target_processed'):
             engine = sessions[req.session_id]
-            await manager.send_message(req.session_id, {
+            update_message = {
                 "type": "graph_updated",
                 "session_id": req.session_id,
                 "nodes_updated": result.get('grag_updates', {}).get('nodes_updated', 0),
                 "edges_added": result.get('grag_updates', {}).get('edges_added', 0),
                 "total_nodes": len(engine.memory.knowledge_graph.graph.nodes()),
                 "total_edges": len(engine.memory.knowledge_graph.graph.edges())
-            })
+            }
+
+            try:
+                await manager.send_message(req.session_id, update_message)
+                logger.info(f"✅ [WS] Graph update notification sent successfully to {req.session_id}")
+            except Exception as ws_error:
+                logger.warning(f"⚠️ [WS] Failed to send graph update notification: {ws_error}")
+                # 即使WebSocket推送失败，也不影响主要功能
+                # 前端可以通过轮询或手动刷新获取最新状态
 
         return ProcessConversationResponse(
             message="Conversation processed successfully with sliding window",
@@ -913,9 +956,9 @@ async def sync_conversation(req: SyncConversationRequest):
             if hist_len > 0:
                 first = req.tavern_history[0]
                 last = req.tavern_history[-1]
-                logger.info(f"[SYNC] First turn preview: user='{(first.get('user','') or '')[:80]}' | assistant='{(first.get('assistant','') or '')[:80]}'")
+                logger.debug(f"[SYNC] First turn preview: user='{(first.get('user','') or '')[:80]}' | assistant='{(first.get('assistant','') or '')[:80]}'")
                 if hist_len > 1:
-                    logger.info(f"[SYNC] Last turn preview: user='{(last.get('user','') or '')[:80]}' | assistant='{(last.get('assistant','') or '')[:80]}'")
+                    logger.debug(f"[SYNC] Last turn preview: user='{(last.get('user','') or '')[:80]}' | assistant='{(last.get('assistant','') or '')[:80]}'")
         except Exception:
             pass
 
@@ -1001,6 +1044,290 @@ async def get_session_stats(session_id: str):
         logger.error(f"Error getting session stats: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to get session stats: {e}")
 
+@app.get("/sessions/{session_id}/graph_status")
+async def get_graph_status(session_id: str):
+    """获取知识图谱的最新状态，用于前端轮询更新"""
+    try:
+        if session_id not in sessions:
+            raise HTTPException(status_code=404, detail=f"Session {session_id} not found.")
+
+        engine = sessions[session_id]
+
+        # 获取图谱基本统计
+        total_nodes = len(engine.memory.knowledge_graph.graph.nodes())
+        total_edges = len(engine.memory.knowledge_graph.graph.edges())
+
+        # 获取最近更新的节点（如果有时间戳的话）
+        recent_nodes = []
+        try:
+            for node_id, node_data in list(engine.memory.knowledge_graph.graph.nodes(data=True))[-5:]:
+                recent_nodes.append({
+                    "id": node_id,
+                    "name": node_data.get("name", node_id),
+                    "type": node_data.get("type", "unknown")
+                })
+        except Exception:
+            pass
+
+        return {
+            "session_id": session_id,
+            "total_nodes": total_nodes,
+            "total_edges": total_edges,
+            "recent_nodes": recent_nodes,
+            "timestamp": time.time()
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting graph status: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get graph status: {e}")
+
+@app.post("/sessions/{session_id}/save")
+async def save_session_data(session_id: str):
+    """手动保存会话数据（知识图谱和记忆）"""
+    try:
+        if session_id not in sessions:
+            raise HTTPException(status_code=404, detail=f"Session {session_id} not found.")
+
+        engine = sessions[session_id]
+
+        # 保存所有数据
+        start_time = time.time()
+        engine.memory.save_all_memory()
+        save_time = time.time() - start_time
+
+        # 获取保存后的统计信息
+        total_nodes = len(engine.memory.knowledge_graph.graph.nodes())
+        total_edges = len(engine.memory.knowledge_graph.graph.edges())
+
+        # 调试信息：显示前几个节点
+        if total_nodes > 0:
+            node_names = list(engine.memory.knowledge_graph.graph.nodes())[:5]
+            logger.info(f"📊 [调试] 会话 {session_id} 中的节点示例: {node_names}")
+        else:
+            logger.warning(f"⚠️ [调试] 会话 {session_id} 中没有节点数据！")
+
+        logger.info(f"💾 手动保存会话 {session_id}: {total_nodes} 节点, {total_edges} 边, 耗时 {save_time:.2f}s")
+
+        return {
+            "success": True,
+            "session_id": session_id,
+            "total_nodes": total_nodes,
+            "total_edges": total_edges,
+            "save_time": save_time,
+            "message": f"成功保存 {total_nodes} 个节点和 {total_edges} 条边"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error saving session data: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to save session data: {e}")
+
+@app.put("/sessions/{session_id}/nodes/{old_node_name}")
+async def update_node(session_id: str, old_node_name: str, node_data: dict):
+    """更新节点（覆盖信息，支持重命名）"""
+    try:
+        if session_id not in sessions:
+            raise HTTPException(status_code=404, detail=f"Session {session_id} not found.")
+
+        engine = sessions[session_id]
+        if not engine:
+            raise HTTPException(status_code=404, detail="Session engine not found")
+
+        # URL解码节点名称
+        import urllib.parse
+        old_node_name = urllib.parse.unquote(old_node_name)
+        logger.info(f"🔍 [API] URL解码后的旧节点名: {old_node_name}")
+
+        # 提取节点数据
+        new_node_name = node_data.get('name', old_node_name)  # 支持重命名
+        node_type = node_data.get('type', 'concept')
+        description = node_data.get('description', '')
+        attributes = node_data.get('attributes', {})
+
+        logger.info(f"💾 [API] 更新节点: {old_node_name} -> {new_node_name} (类型: {node_type})")
+
+        # 如果节点名称变了，使用重命名功能保持关系
+        if old_node_name != new_node_name:
+            logger.info(f"🔄 [API] 检测到节点重命名: {old_node_name} -> {new_node_name}")
+
+            # 检查旧节点是否存在
+            if engine.memory.knowledge_graph.graph.has_node(old_node_name):
+                logger.info(f"✅ [API] 找到旧节点，执行重命名: {old_node_name}")
+                success = engine.memory.rename_node(old_node_name, new_node_name)
+                if not success:
+                    logger.error(f"❌ [API] 重命名失败: {old_node_name} -> {new_node_name}")
+                    raise HTTPException(status_code=500, detail=f"Failed to rename node from {old_node_name} to {new_node_name}")
+                else:
+                    logger.info(f"✅ [API] 重命名成功: {old_node_name} -> {new_node_name}")
+            else:
+                # 旧节点不存在，记录现有节点并直接创建新节点
+                existing_nodes = list(engine.memory.knowledge_graph.graph.nodes())
+                logger.warning(f"⚠️ [API] 旧节点不存在: {old_node_name}")
+                logger.warning(f"⚠️ [API] 当前图谱中的节点: {existing_nodes[:10]}...")  # 只显示前10个
+                logger.info(f"🆕 [API] 将直接创建新节点: {new_node_name}")
+        else:
+            logger.info(f"📝 [API] 节点名称未变化，直接更新属性: {new_node_name}")
+
+        # 更新节点属性（覆盖）
+        engine.memory.add_or_update_node(
+            new_node_name,
+            node_type,
+            description=description,
+            **attributes
+        )
+
+        # 强制标记数据已变化并保存
+        engine.memory._data_changed = True
+        engine.memory.save_all_memory()
+
+        # 获取统计信息
+        nodes_count = len(engine.memory.knowledge_graph.graph.nodes())
+        edges_count = len(engine.memory.knowledge_graph.graph.edges())
+
+        logger.info(f"✅ [API] 节点更新成功: {new_node_name}")
+
+        return {
+            "success": True,
+            "message": "Node updated successfully",
+            "node_name": new_node_name,
+            "node_type": node_type,
+            "total_nodes": nodes_count,
+            "total_edges": edges_count
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        logger.error(f"❌ [API] 更新节点失败: {e}")
+        logger.error(f"❌ 完整堆栈: {traceback.format_exc()}")
+        logger.error(f"❌ 请求参数: session_id={session_id}, old_node_name={old_node_name}")
+        logger.error(f"❌ 请求数据: {node_data}")
+        raise HTTPException(status_code=500, detail=f"Failed to update node: {e}\n\nStacktrace: {traceback.format_exc()}")
+
+
+@app.delete("/sessions/{session_id}/nodes/{node_name}")
+async def delete_node(session_id: str, node_name: str):
+    """删除节点"""
+    try:
+        if session_id not in sessions:
+            raise HTTPException(status_code=404, detail=f"Session {session_id} not found.")
+
+        engine = sessions[session_id]
+        if not engine:
+            raise HTTPException(status_code=404, detail="Session engine not found")
+
+        # URL解码节点名称
+        import urllib.parse
+        node_name = urllib.parse.unquote(node_name)
+        logger.info(f"🗑️ [API] 删除节点: {node_name} (URL解码后)")
+
+        # 检查节点是否存在
+        if not engine.memory.knowledge_graph.graph.has_node(node_name):
+            logger.warning(f"⚠️ [API] 节点不存在: {node_name}")
+            raise HTTPException(status_code=404, detail=f"Node '{node_name}' not found")
+
+        # 删除节点
+        success = engine.memory.delete_node(node_name)
+
+        if success:
+            # 强制标记数据已变化并保存
+            engine.memory._data_changed = True
+            engine.memory.save_all_memory()
+
+            # 获取删除后的统计信息
+            nodes_count = len(engine.memory.knowledge_graph.graph.nodes())
+            edges_count = len(engine.memory.knowledge_graph.graph.edges())
+
+            logger.info(f"✅ [API] 节点删除成功: {node_name}")
+
+            return {
+                "success": True,
+                "message": "Node deleted successfully",
+                "node_name": node_name,
+                "total_nodes": nodes_count,
+                "total_edges": edges_count
+            }
+        else:
+            logger.error(f"❌ [API] 节点删除失败: {node_name}")
+            raise HTTPException(status_code=500, detail=f"Failed to delete node: {node_name}")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ [API] 删除节点失败: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete node: {e}")
+
+
+
+
+@app.get("/characters/{character_name}/exists")
+async def check_character_data_exists(character_name: str):
+    """检查指定角色是否已有保存的数据"""
+    try:
+        import hashlib
+
+        # 生成与初始化时相同的会话ID
+        character_hash = hashlib.md5(character_name.encode('utf-8')).hexdigest()[:8]
+        session_id = f"tavern_{character_name}_{character_hash}"
+
+        # 检查存储管理器中是否有该角色的数据
+        try:
+            graph_path = storage_manager.get_graph_file_path(session_id, is_test=False)
+            entities_path = str(Path(graph_path).parent / "entities.json")
+
+            # 检查文件是否存在且有内容
+            graph_exists = Path(graph_path).exists() and Path(graph_path).stat().st_size > 0
+            entities_exists = Path(entities_path).exists() and Path(entities_path).stat().st_size > 0
+
+            if graph_exists or entities_exists:
+                # 尝试读取节点数量
+                node_count = 0
+                edge_count = 0
+
+                if entities_exists:
+                    try:
+                        import json
+                        with open(entities_path, 'r', encoding='utf-8') as f:
+                            data = json.load(f)
+                        node_count = len(data.get('entities', []))
+                        edge_count = len(data.get('relationships', []))
+                    except Exception:
+                        pass
+
+                return {
+                    "exists": True,
+                    "session_id": session_id,
+                    "character_name": character_name,
+                    "node_count": node_count,
+                    "edge_count": edge_count,
+                    "graph_file_exists": graph_exists,
+                    "entities_file_exists": entities_exists
+                }
+            else:
+                return {
+                    "exists": False,
+                    "session_id": session_id,
+                    "character_name": character_name,
+                    "message": "角色数据不存在，需要初始化"
+                }
+
+        except ValueError:
+            # 会话不在存储管理器中，说明没有数据
+            return {
+                "exists": False,
+                "session_id": session_id,
+                "character_name": character_name,
+                "message": "角色数据不存在，需要初始化"
+            }
+
+    except Exception as e:
+        logger.error(f"Error checking character data: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to check character data: {e}")
+
 @app.post("/sessions/{session_id}/reset")
 async def reset_session(session_id: str, req: ResetSessionRequest):
     """重置会话数据"""
@@ -1073,7 +1400,7 @@ async def reinitialize_session(session_id: str):
         logger.info(f"📊 清空前知识图谱状态: 节点={current_nodes}, 边={current_edges}")
 
         if current_nodes > 0:
-            logger.info("📋 当前图谱中的节点:")
+            logger.debug("📋 当前图谱中的节点:")
             for i, (node_id, attrs) in enumerate(engine.memory.knowledge_graph.graph.nodes(data=True)):
                 if i < 10:  # 只显示前10个节点
                     node_type = attrs.get('type', 'unknown')
@@ -1146,7 +1473,7 @@ async def reinitialize_session(session_id: str):
 
         # 显示最终的图谱内容
         if final_nodes > 0:
-            logger.info("📋 最终图谱内容:")
+            logger.debug("📋 最终图谱内容:")
             for i, (node_id, attrs) in enumerate(engine.memory.knowledge_graph.graph.nodes(data=True)):
                 node_type = attrs.get('type', 'unknown')
                 description = attrs.get('description', '')[:100]
@@ -1870,6 +2197,9 @@ async def get_current_tavern_session():
             if sid.startswith("tavern_") and engine is not None
         ]
 
+        logger.debug(f"[get_current_tavern_session] All sessions: {list(sessions.keys())}")
+        logger.debug(f"[get_current_tavern_session] Tavern sessions with engines: {tavern_sessions}")
+
         if not tavern_sessions:
             logger.info(f"[get_current_tavern_session] No active tavern sessions found")
             return {
@@ -1877,23 +2207,94 @@ async def get_current_tavern_session():
                 "message": "No active tavern session found"
             }
 
-        # 返回最新的酒馆会话（按时间戳排序）
-        latest_session = max(tavern_sessions)
-        engine = sessions[latest_session]
+        # 🔧 关键修复：优先返回最新的WebSocket连接会话，即使没有engine
+        # 这样可以正确反映用户当前选择的角色
+        ws_sessions_all = [
+            sid for sid in (manager.active_connections.keys())
+            if isinstance(sid, str) and sid.startswith("tavern_")
+        ]
+        logger.debug(f"[get_current_tavern_session] All WebSocket tavern sessions: {ws_sessions_all}")
+
+        latest_session = None
+        if ws_sessions_all:
+            # 选择最新的WebSocket连接（最后一个）
+            latest_session = list(ws_sessions_all)[-1]
+            logger.debug(f"[get_current_tavern_session] Selected latest WebSocket session: {latest_session}")
+
+            # 检查是否有engine
+            if latest_session in sessions:
+                logger.debug(f"[get_current_tavern_session] Latest session has engine: {latest_session}")
+            else:
+                logger.debug(f"[get_current_tavern_session] Latest session has no engine yet: {latest_session}")
+
+        if not latest_session:
+            # 返回"最近创建/活跃"的酒馆会话（按 active_sessions.created_at 排序，而不是按字符串）
+            from datetime import datetime
+            def _parse_iso(ts: str):
+                try:
+                    return datetime.fromisoformat(ts)
+                except Exception:
+                    return datetime.min
+            if hasattr(storage_manager, 'active_sessions') and storage_manager.active_sessions:
+                # 🔧 关键修复：不仅考虑有engine的会话，也考虑在active_sessions中但没有engine的会话
+                # 这样可以处理正在初始化的会话
+                all_tavern_candidates = []
+                for sid, info in storage_manager.active_sessions.items():
+                    if sid.startswith("tavern_"):
+                        created_at = _parse_iso(info.get('created_at', ''))
+                        all_tavern_candidates.append((created_at, sid))
+
+                if all_tavern_candidates:
+                    all_tavern_candidates.sort()
+                    latest_session = all_tavern_candidates[-1][1]
+                    logger.debug(f"[get_current_tavern_session] Selected most recent session from active_sessions: {latest_session}")
+
+            # 兜底：如果active_sessions中没有，从有engine的会话中选择
+            if not latest_session and tavern_sessions:
+                latest_session = max(tavern_sessions)
+
+        engine = sessions.get(latest_session)
+        if not engine:
+            # 🔧 获取会话信息，如果没有就从session_id提取角色名
+            session_info = storage_manager.active_sessions.get(latest_session, {})
+            character_name = session_info.get('character_name', 'Unknown')
+
+            # 如果character_name是Unknown，尝试从session_id提取
+            if character_name == 'Unknown' and latest_session.startswith("tavern_"):
+                try:
+                    parts = latest_session.split("_")
+                    if len(parts) >= 3:
+                        character_name = "_".join(parts[1:-1])
+                        logger.info(f"🔧 [get_current_tavern_session] Extracted character name from session_id: {character_name}")
+                except Exception as e:
+                    logger.warning(f"⚠️ [get_current_tavern_session] Failed to extract character name: {e}")
+
+            # 尚未完成初始化，但返回会话ID以便前端切换
+            logger.info(f"[get_current_tavern_session] Session has no engine yet: {latest_session}")
+            return {
+                "has_session": True,
+                "session_id": latest_session,
+                "character_name": character_name,
+                "graph_nodes": 0,
+                "graph_edges": 0,
+                "message": "Session detected (initializing)"
+            }
 
         # 获取图谱节点和边的数量
         nodes_count = len(engine.memory.knowledge_graph.graph.nodes())
         edges_count = len(engine.memory.knowledge_graph.graph.edges())
+        character_name = storage_manager.active_sessions.get(latest_session, {}).get('character_name', 'Unknown')
 
-        logger.info(f"[get_current_tavern_session] Found session: {latest_session}")
-        logger.info(f"[get_current_tavern_session] Graph stats: nodes={nodes_count}, edges={edges_count}")
+        logger.debug(f"[get_current_tavern_session] Found session: {latest_session}")
+        logger.debug(f"[get_current_tavern_session] Graph stats: nodes={nodes_count}, edges={edges_count}")
 
         return {
             "has_session": True,
             "session_id": latest_session,
+            "character_name": character_name,
             "graph_nodes": nodes_count,
             "graph_edges": edges_count,
-            "message": "Active tavern session found"
+            "message": "Active tavern session found" if nodes_count > 0 else "Session found but knowledge graph is empty"
         }
     except Exception as e:
         logger.error(f"Error getting current tavern session: {e}")
@@ -1901,6 +2302,56 @@ async def get_current_tavern_session():
             "has_session": False,
             "error": str(e)
         }
+
+@app.post("/tavern/cleanup_orphaned_sessions")
+async def cleanup_orphaned_sessions():
+    """清理无引擎的orphaned sessions"""
+    try:
+        if not hasattr(storage_manager, 'active_sessions'):
+            return {"cleaned_count": 0, "message": "No active_sessions found"}
+
+        from datetime import datetime, timedelta
+        cleaned_sessions = []
+
+        for session_id, session_info in list(storage_manager.active_sessions.items()):
+            if session_id not in sessions and session_id.startswith('tavern_'):
+                try:
+                    created_at_str = session_info.get('created_at', '')
+                    if created_at_str:
+                        created_at = datetime.fromisoformat(created_at_str)
+                        session_age = datetime.now() - created_at
+                        # Clean sessions older than 30 seconds
+                        if session_age > timedelta(seconds=30):
+                            del storage_manager.active_sessions[session_id]
+                            cleaned_sessions.append({
+                                "session_id": session_id,
+                                "character_name": session_info.get('character_name', 'Unknown'),
+                                "age_seconds": int(session_age.total_seconds())
+                            })
+                            logger.info(f"🧹 [Manual Cleanup] Removed orphaned session: {session_id}")
+                    else:
+                        # No timestamp, assume it's old
+                        del storage_manager.active_sessions[session_id]
+                        cleaned_sessions.append({
+                            "session_id": session_id,
+                            "character_name": session_info.get('character_name', 'Unknown'),
+                            "age_seconds": -1
+                        })
+                        logger.info(f"🧹 [Manual Cleanup] Removed timestampless session: {session_id}")
+                except Exception as e:
+                    logger.error(f"❌ [Manual Cleanup] Error processing session {session_id}: {e}")
+
+        if cleaned_sessions:
+            storage_manager._save_active_sessions()
+
+        return {
+            "cleaned_count": len(cleaned_sessions),
+            "cleaned_sessions": cleaned_sessions,
+            "message": f"Cleaned {len(cleaned_sessions)} orphaned sessions"
+        }
+    except Exception as e:
+        logger.error(f"Error cleaning orphaned sessions: {e}")
+        return {"error": str(e), "cleaned_count": 0}
 
 @app.get("/tavern/characters")
 async def list_characters():
@@ -2079,6 +2530,47 @@ async def reinitialize_session_from_plugin(session_id: str, background_tasks: Ba
         "session_id": session_id,
         "character_id": character_id
     }
+
+@app.post("/frontend/refresh_graph")
+async def refresh_frontend_graph(request: dict):
+    """
+    通知前端UI刷新图谱显示
+    用于角色切换后的图谱同步
+    """
+    try:
+        session_id = request.get("session_id")
+        character_name = request.get("character_name", "Unknown")
+        action = request.get("action", "manual_refresh")
+
+        logger.info(f"🔄 [Frontend Refresh] 收到前端图谱刷新请求: {session_id}, 角色: {character_name}, 动作: {action}")
+
+        if not session_id:
+            raise HTTPException(status_code=400, detail="session_id is required")
+
+        # 发送WebSocket通知给前端UI（如果有连接的话）
+        try:
+            await manager.send_message(session_id, {
+                "type": "frontend_graph_refresh",
+                "message": f"前端图谱刷新请求: {character_name}",
+                "session_id": session_id,
+                "character_name": character_name,
+                "action": action,
+                "timestamp": time.time()
+            })
+            logger.info(f"✅ [Frontend Refresh] 已发送WebSocket通知")
+        except Exception as ws_error:
+            logger.warning(f"⚠️ [Frontend Refresh] WebSocket通知失败: {ws_error}")
+
+        return {
+            "success": True,
+            "message": "Frontend graph refresh request processed",
+            "session_id": session_id,
+            "character_name": character_name
+        }
+
+    except Exception as e:
+        logger.error(f"❌ [Frontend Refresh] 处理前端刷新请求失败: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to process refresh request: {e}")
 
 @app.post("/system/full_reset")
 async def full_system_reset():
@@ -2279,7 +2771,7 @@ async def _handle_ws_request(session_id: str, message: Dict[str, Any]) -> Dict[s
                     "session_id": session_id,
                     "graph_nodes": nodes_count,
                     "graph_edges": edges_count,
-                    "message": "Active tavern session found"
+                    "message": "Active tavern session found" if nodes_count > 0 else "Session found but knowledge graph is empty"
                 }
             else:
                 logger.info(f"[WS] No session found for: {session_id}, waiting for frontend to send initialization data...")
@@ -2309,6 +2801,24 @@ async def _handle_ws_request(session_id: str, message: Dict[str, Any]) -> Dict[s
         elif action == "system.full_reset":
             data = await full_system_reset()
             return {"ok": True, "data": data}
+        # 图谱刷新显示请求
+        elif action == "graph.refresh_display":
+            logger.info(f"🔄 [Graph Refresh] 收到图谱刷新请求: {session_id}")
+            try:
+                # 发送图谱更新通知给前端UI
+                await manager.send_message(session_id, {
+                    "type": "graph_refresh_requested",
+                    "message": "请求刷新图谱显示",
+                    "session_id": session_id,
+                    "character_name": payload.get("character_name", "Unknown"),
+                    "reason": payload.get("reason", "manual_refresh"),
+                    "timestamp": time.time()
+                })
+                logger.info(f"✅ [Graph Refresh] 已发送图谱刷新通知")
+                return {"ok": True, "data": {"message": "Graph refresh notification sent"}}
+            except Exception as e:
+                logger.error(f"❌ [Graph Refresh] 发送图谱刷新通知失败: {e}")
+                return {"ok": False, "error": {"code": "refresh_failed", "message": str(e)}}
         else:
             return {"ok": False, "error": {"code": "unknown_action", "message": f"Unknown action: {action}"}}
     except HTTPException as he:
@@ -2317,18 +2827,137 @@ async def _handle_ws_request(session_id: str, message: Dict[str, Any]) -> Dict[s
         logger.exception(f"[WS] Error handling action '{action}' for session {session_id}: {e}")
         return {"ok": False, "error": {"code": "internal_error", "message": str(e)}}
 
+async def auto_load_character_session(session_id: str, character_name: str, character_data_path):
+    """自动加载角色的现有数据并创建engine"""
+    try:
+        logger.info(f"🔄 [AutoLoad] Starting auto-load for {character_name} (session: {session_id})")
+
+        # 检查会话是否已经存在
+        if session_id in sessions:
+            logger.info(f"✅ [AutoLoad] Session already exists: {session_id}")
+            return
+
+        # 创建GameEngine所需的组件
+        from src.core.game_engine import GameEngine
+        from src.memory.grag_memory import GRAGMemory
+        from src.core.perception import PerceptionModule
+        from src.core.rpg_text_processor import RPGTextProcessor
+        from src.core.validation import ValidationLayer
+
+        # 获取图谱和实体文件路径
+        graph_path = str(character_data_path / "knowledge_graph.graphml")
+        entities_json_path = str(character_data_path / "entities.json")
+
+        # 初始化核心组件
+        logger.info(f"📂 [AutoLoad] Loading data from: {character_data_path}")
+        memory = GRAGMemory(
+            graph_save_path=graph_path,
+            entities_json_path=entities_json_path,
+            auto_load_entities=True  # 自动加载现有数据
+        )
+        perception = PerceptionModule()
+        rpg_processor = RPGTextProcessor()
+        validation_layer = ValidationLayer()
+
+        # 创建GameEngine
+        engine = GameEngine(memory, perception, rpg_processor, validation_layer)
+
+        # 设置基本信息
+        engine.character_name = character_name
+        engine.session_id = session_id
+
+        # 注册engine
+        sessions[session_id] = engine
+
+        # 更新active_sessions状态
+        if session_id in storage_manager.active_sessions:
+            storage_manager.active_sessions[session_id]["status"] = "loaded"
+            storage_manager._save_active_sessions()
+
+        nodes_count = len(engine.memory.knowledge_graph.graph.nodes())
+        edges_count = len(engine.memory.knowledge_graph.graph.edges())
+
+        logger.info(f"✅ [AutoLoad] Successfully loaded {character_name}: {nodes_count} nodes, {edges_count} edges")
+
+        # 通知前端刷新
+        try:
+            await manager.send_to_session(session_id, {
+                "type": "session_loaded",
+                "session_id": session_id,
+                "character_name": character_name,
+                "graph_nodes": nodes_count,
+                "graph_edges": edges_count,
+                "message": f"Existing data loaded for {character_name}"
+            })
+        except Exception as notify_error:
+            logger.warning(f"⚠️ [AutoLoad] Failed to notify frontend: {notify_error}")
+
+    except Exception as e:
+        logger.error(f"❌ [AutoLoad] Failed to auto-load {character_name}: {e}")
+        # 清理可能的部分状态
+        if session_id in sessions:
+            del sessions[session_id]
 
 @app.websocket("/ws/tavern/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
     """WebSocket端点，供SillyTavern插件连接；支持请求-响应与服务端推送"""
+    logger.info(f"🔌 [WS] New WebSocket connection attempt for session: {session_id}")
+
     # Gate by tavern mode: refuse any WS when tavern mode is disabled
     if not TAVERN_MODE_ACTIVE:
+        logger.warning(f"🔌 [WS] Rejecting connection for {session_id}: Tavern mode disabled")
         await websocket.accept()
         await websocket.close(code=1008, reason="Tavern mode disabled")
         return
+
+    logger.info(f"🔌 [WS] Accepting WebSocket connection for session: {session_id}")
     await manager.connect(session_id, websocket)
+
+    # 🔧 关键修复：WebSocket连接时自动处理会话初始化
+    if session_id.startswith("tavern_"):
+        try:
+            # 从session_id提取角色名
+            parts = session_id.split("_")
+            if len(parts) >= 3:
+                character_name = "_".join(parts[1:-1])  # 支持角色名中包含下划线
+                logger.info(f"🔧 [WS] Processing connection for character: {character_name}")
+
+                # 如果会话不在active_sessions中，创建记录
+                if session_id not in storage_manager.active_sessions:
+                    storage_manager.active_sessions[session_id] = {
+                        "character_name": character_name,
+                        "created_at": datetime.now().isoformat(),
+                        "session_type": "tavern",
+                        "status": "connecting"
+                    }
+                    storage_manager._save_active_sessions()
+                    logger.info(f"✅ [WS] Created active_sessions record for {session_id}")
+
+                # 🔧 关键：检查是否有现有角色数据，如果有就自动加载
+                if session_id not in sessions:
+                    # 检查是否有现有的角色映射
+                    character_mapping_key = character_name
+                    if character_mapping_key in storage_manager.character_mapping:
+                        local_dir_name = storage_manager.character_mapping[character_mapping_key]
+                        character_data_path = storage_manager.tavern_chars_path / local_dir_name / "sessions" / "current"
+
+                        if character_data_path.exists() and any(character_data_path.iterdir()):
+                            logger.info(f"🔄 [WS] Found existing data for {character_name} at {character_data_path}, auto-loading...")
+
+                            # 异步创建engine并加载数据
+                            import asyncio
+                            asyncio.create_task(auto_load_character_session(session_id, character_name, character_data_path))
+                        else:
+                            logger.info(f"📁 [WS] Character mapping exists but no data found for {character_name}")
+                    else:
+                        logger.info(f"🆕 [WS] No existing mapping for {character_name}, will wait for initialization request")
+
+        except Exception as e:
+            logger.warning(f"⚠️ [WS] Failed to process connection: {e}")
+
     try:
         # 发送连接确认消息
+        logger.info(f"🔌 [WS] Sending connection confirmation to session: {session_id}")
         await websocket.send_json({
             "type": "connection_established",
             "message": f"Successfully connected to EchoGraph for session {session_id}.",
@@ -2336,8 +2965,26 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
         })
 
         # 主循环：接收请求并路由处理
+        logger.info(f"🔌 [WS] Starting message loop for session: {session_id}")
+
+        # 🔧 Add timeout detection for inactive connections
+        import asyncio
+        timeout_task = None
+
+        async def check_activity_timeout():
+            await asyncio.sleep(10)  # 10 seconds timeout
+            logger.warning(f"⚠️ [WS] No requests received within 10s for session: {session_id}")
+            logger.warning(f"⚠️ [WS] Frontend might be stuck or not sending initialization requests")
+
+        timeout_task = asyncio.create_task(check_activity_timeout())
+
         while True:
             msg = await websocket.receive_json()
+
+            # Cancel timeout since we received a message
+            if timeout_task and not timeout_task.done():
+                timeout_task.cancel()
+
             # 标准化请求结构：{type:'request', action:'...', request_id:'...', payload:{...}}
             req_id = msg.get("request_id")
             action = msg.get("action")
@@ -2346,7 +2993,11 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 logger.info(f"📥 [WS] Received request | session={session_id} | action={action} | request_id={req_id} | payload_keys={payload_keys}")
             except Exception:
                 pass
+
+            logger.debug(f"🔄 [WS] Processing action '{action}' for session {session_id}")
             result = await _handle_ws_request(session_id, msg)
+            logger.debug(f"✅ [WS] Action '{action}' completed for session {session_id}, result keys: {list(result.keys())}")
+
             # 直接通过此连接回传响应，避免与广播消息混淆
             await websocket.send_json({
                 "type": "response",
@@ -2354,10 +3005,15 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 "request_id": req_id,
                 **result
             })
+            logger.debug(f"📤 [WS] Response sent for action '{action}' to session {session_id}")
+
+            # Reset timeout for next message
+            timeout_task = asyncio.create_task(check_activity_timeout())
     except WebSocketDisconnect:
+        logger.info(f"🔌 [WS] WebSocket disconnected normally for session: {session_id}")
         manager.disconnect(session_id, websocket)
     except Exception as e:
-        logger.error(f" [WS] Error in WebSocket connection for session {session_id}: {e}")
+        logger.error(f"❌ [WS] Error in WebSocket connection for session {session_id}: {e}")
         manager.disconnect(session_id, websocket)
 
 # --- 服务器启动 ---

@@ -1,0 +1,51 @@
+# EchoGraph生产环境配置
+
+system:
+  name: "EchoGraph"
+  version: "1.1.0"
+  debug: false
+  environment: "production"
+  allowed_origins: "https://yourdomain.com"
+
+llm:
+  provider: "openai"
+  model: "deepseek-v3.1"
+  stream: false
+  max_tokens: 16000
+  temperature: 0.8
+  request_timeout: 180
+
+memory:
+  max_hot_memory: 5
+  max_context_length: 3000
+  enable_auto_save: true
+  save_interval: 180  # 3分钟
+
+game:
+  world_name: "生产世界"
+  character_name: "系统"
+  enable_sliding_window: true
+  sliding_window_size: 4
+  processing_delay: 1
+
+logging:
+  level: "INFO"
+  enable_file_logging: true
+  log_rotation: "10 MB"
+  log_retention: "30 days"
+  enable_console_logging: false
+
+security:
+  enable_rate_limiting: true
+  max_requests_per_minute: 60
+  enable_input_sanitization: true
+  max_input_length: 10000
+  enable_https_only: true
+  session_timeout: 3600  # 1小时
+
+database:
+  type: "postgresql"
+  host: "localhost"
+  port: 5432
+  database: "echograph_prod"
+  connection_pool_size: 10

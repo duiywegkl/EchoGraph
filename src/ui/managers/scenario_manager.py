@@ -47,7 +47,7 @@ class ScenarioManager:
                     except Exception as e:
                         logger.warning(f"创建实体失败: {entity}: {e}")
             
-            logger.info(f"✅ 从场景文件创建了 {created_count} 个《超时空之轮》实体")
+            logger.info(f"[OK] 从场景文件创建了 {created_count} 个《超时空之轮》实体")
             
             # 创建关系连接
             relationships = scenario_data.get("relationships", [])
@@ -65,15 +65,15 @@ class ScenarioManager:
                         from_node, to_node, relationship_type, description=rel_description
                     )
                     relationship_count += 1
-                    logger.info(f"✅ 创建关系: {from_node} --{relationship_type}--> {to_node}")
+                    logger.info(f"[OK] 创建关系: {from_node} --{relationship_type}--> {to_node}")
                 except Exception as e:
                     logger.warning(f"创建关系失败: {rel}: {e}")
             
-            logger.info(f"✅ 从场景文件创建了 {relationship_count} 个关系连接")
+            logger.info(f"[OK] 从场景文件创建了 {relationship_count} 个关系连接")
             
             # 同步保存数据到entities.json文件
             self.memory.sync_entities_to_json()
-            logger.info("✅ 默认开局数据已同步到entities.json文件")
+            logger.info("[OK] 默认开局数据已同步到entities.json文件")
             
             # 返回开场故事
             opening_story = scenario_data["character_card"]["scenario"]

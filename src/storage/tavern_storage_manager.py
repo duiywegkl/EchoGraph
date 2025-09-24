@@ -95,59 +95,114 @@ class TavernStorageManager:
         注册酒馆角色，创建对应的存储结构
         返回本地角色目录名
         """
+        # 首先检查这个session_id是否已经注册过
+        if session_id in self.active_sessions:
+            existing_session = self.active_sessions[session_id]
+            # 🔧 修复：检查是否有local_dir_name字段，如果没有就继续完整注册流程
+            if "local_dir_name" in existing_session:
+                local_dir_name = existing_session["local_dir_name"]
+                logger.info(f"[OK] 会话已存在，使用现有映射: {session_id} -> {local_dir_name}")
+                return local_dir_name
+            else:
+                logger.info(f"[INFO] 会话存在但未完整注册，继续注册流程: {session_id}")
+                # 继续执行下面的完整注册流程
+
         character_name = character_data.get('name', 'Unknown Character')
         character_id = character_data.get('character_id', character_name)  # 酒馆可能有ID
+
+        # 生成映射键
+        mapping_key = f"{character_id}_{character_name}" if character_id != character_name else character_name
+
+        # 检查是否已经有相同的角色映射（基于角色ID和名称）
+        if mapping_key in self.character_mapping:
+            local_dir_name = self.character_mapping[mapping_key]
+            logger.info(f"[OK] 角色已存在，复用现有目录: {mapping_key} -> {local_dir_name}")
+        else:
+            # 生成本地目录名
+            local_dir_name = self._sanitize_character_name(character_name)
+
+            # 避免重名冲突（只有在创建新角色时才需要）
+            base_dir_name = local_dir_name
+            counter = 1
+            while local_dir_name in self.character_mapping.values():
+                local_dir_name = f"{base_dir_name}_{counter}"
+                counter += 1
+
+            logger.info(f"🆕 创建新角色映射: {mapping_key} -> {local_dir_name}")
         
-        # 生成本地目录名
-        local_dir_name = self._sanitize_character_name(character_name)
-        
-        # 避免重名冲突
-        base_dir_name = local_dir_name
-        counter = 1
-        while local_dir_name in self.character_mapping.values():
-            local_dir_name = f"{base_dir_name}_{counter}"
-            counter += 1
-        
-        # 创建角色目录结构
+        # 确保角色目录结构存在
         char_path = self.tavern_chars_path / local_dir_name
         char_path.mkdir(exist_ok=True)
         (char_path / "sessions").mkdir(exist_ok=True)
         (char_path / "sessions" / "current").mkdir(exist_ok=True)
-        
-        # 保存角色卡信息副本
+
+        # 保存/更新角色卡信息副本
         character_file = char_path / "character_data.json"
         with open(character_file, 'w', encoding='utf-8') as f:
             json.dump(character_data, f, ensure_ascii=False, indent=2)
-        
-        # 创建元数据
-        metadata = {
-            "character_name": character_name,
-            "character_id": character_id,
-            "local_dir_name": local_dir_name,
-            "created_at": datetime.now().isoformat(),
-            "session_count": 1,
-            "last_active": datetime.now().isoformat()
-        }
-        
+
+        # 创建/更新元数据
         meta_file = char_path / "meta.json"
+        if meta_file.exists():
+            # 更新现有元数据
+            try:
+                with open(meta_file, 'r', encoding='utf-8') as f:
+                    metadata = json.load(f)
+                metadata["last_active"] = datetime.now().isoformat()
+                metadata["session_count"] = metadata.get("session_count", 0) + 1
+            except Exception:
+                # 如果读取失败，创建新的元数据
+                metadata = {
+                    "character_name": character_name,
+                    "character_id": character_id,
+                    "local_dir_name": local_dir_name,
+                    "created_at": datetime.now().isoformat(),
+                    "session_count": 1,
+                    "last_active": datetime.now().isoformat()
+                }
+        else:
+            # 创建新的元数据
+            metadata = {
+                "character_name": character_name,
+                "character_id": character_id,
+                "local_dir_name": local_dir_name,
+                "created_at": datetime.now().isoformat(),
+                "session_count": 1,
+                "last_active": datetime.now().isoformat()
+            }
+
         with open(meta_file, 'w', encoding='utf-8') as f:
             json.dump(metadata, f, ensure_ascii=False, indent=2)
-        
-        # 更新映射
-        mapping_key = f"{character_id}_{character_name}" if character_id != character_name else character_name
-        self.character_mapping[mapping_key] = local_dir_name
-        self._save_character_mapping()
-        
-        # 记录活跃会话
-        self.active_sessions[session_id] = {
-            "character_mapping_key": mapping_key,
-            "local_dir_name": local_dir_name,
-            "character_name": character_name,
-            "created_at": datetime.now().isoformat()
-        }
+
+        # 更新映射（只有在新角色时才需要）
+        if mapping_key not in self.character_mapping:
+            self.character_mapping[mapping_key] = local_dir_name
+            self._save_character_mapping()
+
+        # 记录活跃会话（更新现有记录或创建新记录）
+        if session_id in self.active_sessions:
+            # 更新现有记录，保留原有的created_at等字段
+            existing_session = self.active_sessions[session_id]
+            existing_session.update({
+                "character_mapping_key": mapping_key,
+                "local_dir_name": local_dir_name,
+                "character_name": character_name,
+                "status": "registered"  # 标记为已完整注册
+            })
+            logger.info(f"[OK] 更新现有会话记录: {session_id}")
+        else:
+            # 创建新记录
+            self.active_sessions[session_id] = {
+                "character_mapping_key": mapping_key,
+                "local_dir_name": local_dir_name,
+                "character_name": character_name,
+                "created_at": datetime.now().isoformat(),
+                "status": "registered"
+            }
+            logger.info(f"[OK] 创建新会话记录: {session_id}")
         self._save_active_sessions()
-        
-        logger.info(f"Registered tavern character: {character_name} -> {local_dir_name}")
+
+        logger.info(f"[OK] 已注册酒馆角色: {character_name} -> {local_dir_name}")
         return local_dir_name
 
     def get_character_storage_path(self, session_id: str, is_test: bool = False) -> Path:

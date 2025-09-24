@@ -93,7 +93,7 @@ class GRAGMemory:
                 self.knowledge_graph.add_or_update_node(entity_name, entity_type, **attributes)
                 entities_loaded += 1
             
-            logger.info(f"✅ 成功从 entities.json 加载了 {entities_loaded} 个实体到知识图谱")
+            logger.info(f"[OK] 成功从 entities.json 加载了 {entities_loaded} 个实体到知识图谱")
             
             # 加载关系
             relationships = data.get('relationships', [])
@@ -132,7 +132,7 @@ class GRAGMemory:
                 except Exception as e:
                     logger.warning(f"加载关系失败 {rel}: {e}")
             
-            logger.info(f"✅ 成功从 entities.json 加载了 {relationships_loaded} 个关系到知识图谱")
+            logger.info(f"[OK] 成功从 entities.json 加载了 {relationships_loaded} 个关系到知识图谱")
             
         except Exception as e:
             logger.error(f"❌ 从 entities.json 加载实体失败: {e}")
@@ -192,7 +192,7 @@ class GRAGMemory:
             with open(entities_file, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
             
-            logger.info(f"✅ 成功同步 {len(entities)} 个实体和 {len(relationships)} 个关系到 entities.json")
+            logger.info(f"[OK] 成功同步 {len(entities)} 个实体和 {len(relationships)} 个关系到 entities.json")
             
         except Exception as e:
             logger.error(f"❌ 同步实体到 entities.json 失败: {e}")
@@ -219,7 +219,7 @@ class GRAGMemory:
         # 重新加载
         self._load_entities_from_json()
         
-        logger.info("✅ 实体数据重新加载完成")
+        logger.info("[OK] 实体数据重新加载完成")
 
     # --- Interface for Hot and Warm Memory ---
 
@@ -279,6 +279,13 @@ class GRAGMemory:
         """清理超过指定天数的已删除节点。"""
         return self.knowledge_graph.cleanup_deleted_nodes(days_threshold)
 
+    def rename_node(self, old_node_id: str, new_node_id: str) -> bool:
+        """重命名节点，保持所有关系不变。"""
+        result = self.knowledge_graph.rename_node(old_node_id, new_node_id)
+        if result:
+            self._data_changed = True  # 标记数据已变化
+        return result
+
     def get_knowledge_graph_context(self, entity_ids: List[str], depth: int = 1) -> str:
         """
         从知识图谱中为指定实体提取上下文。
@@ -336,16 +343,19 @@ class GRAGMemory:
         if not self._data_changed:
             logger.info("没有数据变化，跳过保存")
             return
-        
+
         # 保存热、温记忆
         self.basic_memory.save_to_file()
-        
+
         # 保存冷记忆 (知识图谱)
         if self.graph_save_path:
             self.knowledge_graph.save_graph(self.graph_save_path)
         else:
             logger.warning("Knowledge graph save path is not set. Graph will not be saved.")
-        
+
+        # 同步实体和关系到JSON文件（确保UI能正确显示）
+        self.sync_entities_to_json()
+
         # 重置变化标记
         self._data_changed = False
         logger.info("记忆状态已保存")

@@ -26,15 +26,15 @@ class LLMWorkerThread(QThread):
             from src.core.llm_client import LLMClient
             
             # 1. 感知用户输入中的实体
-            logger.info(f"🔍 [GRAG] 开始分析用户输入: {self.message}")
+            logger.info(f"[SEARCH] [GRAG] 开始分析用户输入: {self.message}")
             
             perceived_entities = self.engine.perception_module.perceive_entities(self.message)
-            logger.info(f"🎯 [GRAG] 感知到 {len(perceived_entities)} 个相关实体: {perceived_entities}")
+            logger.info(f"[TARGET] [GRAG] 感知到 {len(perceived_entities)} 个相关实体: {perceived_entities}")
             
             # 2. 构建知识图谱上下文
-            logger.info(f"🔗 [GRAG] 开始构建知识图谱上下文...")
+            logger.info(f"[LINK] [GRAG] 开始构建知识图谱上下文...")
             context = self.engine.memory.get_context_for_entities(perceived_entities)
-            logger.info(f"📋 [GRAG] 构建的上下文长度: {len(context)} 字符")
+            logger.info(f"[LOG] [GRAG] 构建的上下文长度: {len(context)} 字符")
             
             # 3. 准备GRAG数据供UI显示
             self.grag_data = {
@@ -52,7 +52,7 @@ class LLMWorkerThread(QThread):
             
             # 调用LLM
             response = llm_client.generate_response(full_prompt)
-            logger.info(f"✅ [LLM] 回复生成完成，长度: {len(response)} 字符")
+            logger.info(f"[OK] [LLM] 回复生成完成，长度: {len(response)} 字符")
             
             # 发送回复信号
             self.response_ready.emit(response)

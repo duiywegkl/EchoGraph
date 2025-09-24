@@ -22,9 +22,9 @@ class LLMClient:
                 usr_msgs = [m for m in messages if m.get('role') == 'user']
                 logger.info(f"🤖 [LLM] 调用开始 | model={kwargs.get('model', self.model)} | max_tokens={kwargs.get('max_tokens', self.max_tokens)} | temp={kwargs.get('temperature', self.temperature)}")
                 if sys_msgs:
-                    logger.info(f"[LLM] System message preview (first 300 chars):\n---\n{sys_msgs[-1].get('content','')[:300]}\n---")
+                    logger.debug(f"[LLM] System message preview (first 300 chars):\n---\n{sys_msgs[-1].get('content','')[:300]}\n---")
                 if usr_msgs:
-                    logger.info(f"[LLM] User prompt preview (first 500 chars):\n---\n{usr_msgs[-1].get('content','')[:500]}\n---")
+                    logger.debug(f"[LLM] User prompt preview (first 500 chars):\n---\n{usr_msgs[-1].get('content','')[:500]}\n---")
                 logger.debug(f"[LLM] Full messages: {messages}")
             except Exception:
                 pass
@@ -39,7 +39,7 @@ class LLMClient:
             )
             content = response.choices[0].message.content or ""
             logger.info(f"🤖 [LLM] 调用成功 | 返回长度={len(content)}")
-            logger.info(f"[LLM] Raw response preview (first 800 chars):\n---\n{content[:800]}\n---")
+            logger.debug(f"[LLM] Raw response preview (first 800 chars):\n---\n{content[:800]}\n---")
             logger.debug(f"[LLM] Full raw response object: {response}")
             return content
         except Exception as e:
