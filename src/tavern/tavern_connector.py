@@ -7,7 +7,8 @@ SillyTavern 连接管理器
 import requests
 import asyncio
 import json
-from typing import Dict, Any, Optional, List
+import threading
+from typing import Dict, Any, Optional, List, Callable
 from loguru import logger
 from dataclasses import dataclass
 from datetime import datetime
@@ -43,6 +44,9 @@ class SillyTavernConnector:
         self.is_connected = False
         self.current_character: Optional[CharacterInfo] = None
         self.session = requests.Session()
+        self._monitor_thread: Optional[threading.Thread] = None
+        self._monitor_stop_event = threading.Event()
+        self._last_monitor_state: Optional[Dict[str, Any]] = None
         
         if config.api_key:
             self.session.headers.update({'Authorization': f'Bearer {config.api_key}'})
@@ -282,11 +286,130 @@ class SillyTavernConnector:
             logger.warning(f"发送增强上下文失败: {e}")
             return False
     
-    def start_monitoring(self, callback):
-        """开始监控酒馆状态变化（可选功能）"""
-        # TODO(tavern-monitor): 实现 WebSocket 或轮询监控机制，
-        # 并在连接/会话状态变化时回调 callback。
-        pass
+    def start_monitoring(self, callback: Callable[[Dict[str, Any]], None], interval: float = 3.0):
+        """开始监控酒馆连接/会话状态变化（轮询模式）"""
+        if not callable(callback):
+            raise ValueError("callback must be callable")
+
+        self.stop_monitoring()
+        self._monitor_stop_event.clear()
+        self._last_monitor_state = None
+
+        poll_interval = max(1.0, float(interval))
+
+        def _monitor_loop():
+            logger.info(f"📡 启动SillyTavern状态监控，轮询间隔={poll_interval:.1f}s")
+            while not self._monitor_stop_event.wait(poll_interval):
+                try:
+                    current_state = self._collect_monitor_state()
+                    previous_state = self._last_monitor_state
+                    state_changed = previous_state is None or self._has_monitor_state_changed(previous_state, current_state)
+                    self._last_monitor_state = current_state
+
+                    if state_changed:
+                        event = {
+                            "event": "state_changed",
+                            "previous": previous_state,
+                            "current": current_state,
+                            "timestamp": datetime.now().isoformat(),
+                        }
+                        try:
+                            callback(event)
+                        except Exception as cb_error:
+                            logger.warning(f"监控回调执行失败: {cb_error}")
+                except Exception as monitor_error:
+                    logger.warning(f"状态监控轮询失败: {monitor_error}")
+
+            logger.info("🛑 SillyTavern状态监控已停止")
+
+        self._monitor_thread = threading.Thread(
+            target=_monitor_loop,
+            name="SillyTavernMonitor",
+            daemon=True,
+        )
+        self._monitor_thread.start()
+
+    def stop_monitoring(self):
+        """停止状态监控线程"""
+        self._monitor_stop_event.set()
+        if self._monitor_thread and self._monitor_thread.is_alive():
+            self._monitor_thread.join(timeout=1.0)
+        self._monitor_thread = None
+
+    def _collect_monitor_state(self) -> Dict[str, Any]:
+        connected = self._check_health()
+        character_name = self._query_current_character_name()
+        session_id, message_count = self._query_current_session_info()
+        self.is_connected = connected
+        return {
+            "connected": connected,
+            "character_name": character_name,
+            "session_id": session_id,
+            "message_count": message_count,
+        }
+
+    def _check_health(self) -> bool:
+        for endpoint in ["/api/ping", "/health", "/api/version", "/"]:
+            try:
+                response = self.session.get(
+                    f"{self.base_url}{endpoint}",
+                    timeout=min(self.config.timeout, 5),
+                )
+                if response.status_code == 200:
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _query_current_character_name(self) -> Optional[str]:
+        endpoints = ["/api/characters/current", "/getcharacter", "/api/character", "/character"]
+        for endpoint in endpoints:
+            try:
+                response = self.session.get(
+                    f"{self.base_url}{endpoint}",
+                    timeout=min(self.config.timeout, 5),
+                )
+                if response.status_code != 200:
+                    continue
+                data = response.json()
+                if isinstance(data, dict):
+                    name = data.get("name") or data.get("char_name") or data.get("character_name")
+                    if isinstance(name, str) and name.strip():
+                        return name.strip()
+            except Exception:
+                continue
+        return None
+
+    def _query_current_session_info(self) -> tuple[Optional[str], int]:
+        endpoints = ["/api/chats/current", "/api/chat/current", "/api/chats"]
+        for endpoint in endpoints:
+            try:
+                response = self.session.get(
+                    f"{self.base_url}{endpoint}",
+                    timeout=min(self.config.timeout, 5),
+                )
+                if response.status_code != 200:
+                    continue
+                data = response.json()
+
+                if isinstance(data, dict):
+                    session_id = data.get("id") or data.get("chat_id") or data.get("session_id")
+                    messages = data.get("messages", [])
+                    if isinstance(messages, list):
+                        return str(session_id) if session_id else None, len(messages)
+                    return str(session_id) if session_id else None, 0
+
+                if isinstance(data, list):
+                    # 某些端点直接返回消息数组
+                    return None, len(data)
+            except Exception:
+                continue
+        return None, 0
+
+    @staticmethod
+    def _has_monitor_state_changed(previous: Dict[str, Any], current: Dict[str, Any]) -> bool:
+        keys = ("connected", "character_name", "session_id", "message_count")
+        return any(previous.get(k) != current.get(k) for k in keys)
     
     def notify_plugin_connection(self, session_id: str = None) -> bool:
         """通知SillyTavern插件EchoGraph已连接并提供会话ID"""
@@ -334,6 +457,7 @@ class SillyTavernConnector:
 
     def disconnect(self):
         """断开连接"""
+        self.stop_monitoring()
         self.is_connected = False
         self.current_character = None
         self.session.close()
@@ -348,6 +472,7 @@ class TavernModeManager:
         self.connector: Optional[SillyTavernConnector] = None
         self.is_tavern_mode = False
         self.saved_session_data = None
+        self._last_monitor_event: Optional[Dict[str, Any]] = None
         
     def enter_tavern_mode(self, tavern_config: TavernConfig) -> Dict[str, Any]:
         """进入酒馆模式"""
@@ -387,6 +512,7 @@ class TavernModeManager:
                 
                 # 6. 通知插件连接状态，并传递会话ID
                 self.connector.notify_plugin_connection(session_id)
+                self.connector.start_monitoring(self._handle_monitor_event)
                 
                 self.is_tavern_mode = True
                 logger.info("[OK] 酒馆模式切换成功")
@@ -406,6 +532,19 @@ class TavernModeManager:
                 "success": False,
                 "error": f"切换失败: {e}"
             }
+
+    def _handle_monitor_event(self, event: Dict[str, Any]):
+        """处理连接器监控事件，记录连接/会话变化"""
+        self._last_monitor_event = event
+        current = event.get("current", {})
+        previous = event.get("previous", {}) or {}
+        logger.info(
+            "📡 [TavernMonitor] 状态变化: "
+            f"connected {previous.get('connected')} -> {current.get('connected')}, "
+            f"character {previous.get('character_name')} -> {current.get('character_name')}, "
+            f"session {previous.get('session_id')} -> {current.get('session_id')}, "
+            f"messages {previous.get('message_count')} -> {current.get('message_count')}"
+        )
     
     def save_current_session(self):
         """保存当前会话数据"""

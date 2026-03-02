@@ -812,6 +812,8 @@ class LoadingBubble(QFrame):
 
 class ChatDisplayWidget(QScrollArea):
     """聊天显示组件"""
+    message_deleted = pyqtSignal(int)  # 删除消息后发出其在当前对话中的索引
+
     def __init__(self):
         super().__init__()
         self.messages_layout = QVBoxLayout()
@@ -921,9 +923,8 @@ class ChatDisplayWidget(QScrollArea):
 
                     # 从列表中移除
                     self.message_widgets.pop(i)
-
                     # 发出删除信号通知父组件更新对话历史
-                    # TODO: 实现对话历史同步
+                    self.message_deleted.emit(i)
 
                 break
 
@@ -1155,6 +1156,20 @@ class ConversationManager(QObject):
             conv['messages'].append(message)
             conv['last_modified'] = time.time()
             self._save_conversation(conv)
+
+    def delete_message_at(self, index: int) -> bool:
+        """删除当前对话指定索引的消息"""
+        conv = self.get_current_conversation()
+        if not conv:
+            return False
+        messages = conv.get('messages', [])
+        if index < 0 or index >= len(messages):
+            return False
+        import time
+        messages.pop(index)
+        conv['last_modified'] = time.time()
+        self._save_conversation(conv)
+        return True
 
     def clear_current_conversation(self):
         """清空当前对话的消息"""
@@ -1499,6 +1514,7 @@ class IntegratedPlayPage(QWidget):
         self.clear_btn.clicked.connect(self.clear_conversation)
         self.regenerate_btn.clicked.connect(self.regenerate_last_response)
         self.delete_mode_btn.toggled.connect(self.toggle_delete_mode)
+        self.chat_display.message_deleted.connect(self.on_chat_message_deleted)
         self.input_text.installEventFilter(self)  # 监听快捷键
 
         # 对话管理器信号
@@ -1646,11 +1662,14 @@ class IntegratedPlayPage(QWidget):
             if main_window:
                 def reset_switching_flag():
                     main_window.switching_modes = False
-                # 启动轮询以自动附着到后端实际会话并刷新图谱
+                # 酒馆模式启动会话监控；本地模式确保停止监控
                 try:
-                    self._start_tavern_session_polling()
+                    if self.is_test_mode:
+                        self._stop_tavern_session_polling()
+                    else:
+                        self._start_tavern_session_polling()
                 except Exception as _e:
-                    logger.warning(f"⚠️ 启动会话轮询失败: {_e}")
+                    logger.warning(f"⚠️ 会话监控状态切换失败: {_e}")
 
                     logger.info("✅ 重置模式切换标志，恢复对话自动初始化")
 
@@ -1811,53 +1830,58 @@ class IntegratedPlayPage(QWidget):
         self.update_status_display(f"❌ 酒馆模式切换失败")
     def _start_tavern_session_polling(self):
         """
-        在酒馆模式下轮询后端以获取当前会话，并自动让图谱页附着到该会话。
+        在酒馆模式下持续轮询后端会话状态，并在会话变更时刷新图谱。
         """
         try:
             self._stop_tavern_session_polling()
         except Exception:
             pass
-        self._tavern_poll_attempts = 0
         self._tavern_session_poll_timer = QTimer(self)
-        self._tavern_session_poll_timer.setInterval(1000)  # 1s
+        poll_interval = int(os.getenv("POLL_INTERVAL", "3"))
+        self._tavern_session_poll_timer.setInterval(max(1, poll_interval) * 1000)
+        self._last_polled_tavern_session_id = None
 
         def _tick():
+            if self.is_test_mode:
+                self._stop_tavern_session_polling()
+                return
+
             try:
-                self._tavern_poll_attempts += 1
                 import requests
-                poll_interval = int(os.getenv("POLL_INTERVAL", "3"))
                 r = requests.get(f"{self.api_base_url}/tavern/current_session", timeout=poll_interval)
                 if r.status_code == 200:
                     data = r.json()
                     if data.get("has_session") and data.get("session_id"):
                         session_id = data.get("session_id")
-                        try:
-                            # 找到主窗口
-                            main_window = None
-                            w = self.parent()
-                            while w is not None:
-                                if hasattr(w, 'graph_page'):
-                                    main_window = w
-                                    break
-                                w = w.parent()
-                            if main_window and hasattr(main_window, 'graph_page'):
-                                main_window.graph_page.enter_tavern_mode(session_id)
-                                main_window.graph_page.refresh_from_api_server(session_id)
-                            self.update_status_display("🍺 酒馆会话已就绪")
-                        except Exception as ui_err:
-
-                            logger.warning(f"⚠️ 切换图谱为酒馆会话失败: {ui_err}")
-                        finally:
-                            self._stop_tavern_session_polling()
-                        return
+                        if self._last_polled_tavern_session_id != session_id:
+                            self._last_polled_tavern_session_id = session_id
+                            try:
+                                # 找到主窗口
+                                main_window = None
+                                w = self.parent()
+                                while w is not None:
+                                    if hasattr(w, 'graph_page'):
+                                        main_window = w
+                                        break
+                                    w = w.parent()
+                                if main_window and hasattr(main_window, 'graph_page'):
+                                    main_window.graph_page.enter_tavern_mode(session_id)
+                                    main_window.graph_page.refresh_from_api_server(session_id)
+                                self.update_status_display("🍺 酒馆会话已就绪")
+                            except Exception as ui_err:
+                                logger.warning(f"⚠️ 切换图谱为酒馆会话失败: {ui_err}")
+                    else:
+                        # 没有活跃会话时保留监控，等待后续恢复/重连
+                        if self._last_polled_tavern_session_id is not None:
+                            logger.warning("⚠️ 酒馆活跃会话丢失，等待插件重连...")
+                            self.update_status_display("⚠️ 酒馆会话断开，等待重连...")
+                            self._last_polled_tavern_session_id = None
             except Exception as poll_err:
                 logger.debug(f"轮询当前会话异常: {poll_err}")
-            # 超过 30 次（约 30s）则停止
-            if getattr(self, "_tavern_poll_attempts", 0) >= 30:
-                self._stop_tavern_session_polling()
 
         self._tavern_session_poll_timer.timeout.connect(_tick)
         self._tavern_session_poll_timer.start()
+        _tick()  # 立即执行一次，减少首次延迟
 
     def _stop_tavern_session_polling(self):
         t = getattr(self, "_tavern_session_poll_timer", None)
@@ -1867,6 +1891,7 @@ class IntegratedPlayPage(QWidget):
             except Exception:
                 pass
             self._tavern_session_poll_timer = None
+        self._last_polled_tavern_session_id = None
 
     def auto_switch_to_local_mode(self, reason: str):
         """自动切换到本地测试模式"""
@@ -2657,6 +2682,16 @@ class IntegratedPlayPage(QWidget):
             self.delete_mode_btn.setText("删除模式")
             self.delete_mode_btn.setStyleSheet("")
             self.chat_display.set_delete_mode(False)
+
+    def on_chat_message_deleted(self, message_index: int):
+        """同步删除当前对话中的消息，避免UI与存储不一致"""
+        try:
+            if self.conversation_manager.delete_message_at(message_index):
+                logger.info(f"✅ 已同步删除对话历史消息，索引={message_index}")
+            else:
+                logger.warning(f"⚠️ 删除同步失败：无效索引 {message_index}")
+        except Exception as e:
+            logger.error(f"❌ 删除消息同步异常: {e}")
 
     def clear_conversation(self):
         """清空当前对话"""
@@ -5078,10 +5113,48 @@ class EchoGraphMainWindow(QMainWindow):
 
     def setup_cross_page_connections(self):
         """设置页面间的联动连接"""
+        self._conversation_graph_root = Path(__file__).parent / "data" / "local_conversations" / "graphs"
+        self._conversation_graph_root.mkdir(exist_ok=True, parents=True)
+        self._active_local_graph_conversation_id: Optional[str] = None
+
         # 当对话切换时，刷新知识图谱
         self.play_page.conversation_manager.conversation_changed.connect(
             self.on_conversation_changed
         )
+
+        # 启动时对当前会话执行一次图谱附着，避免默认共享同一图谱上下文
+        current_conv_id = self.play_page.conversation_manager.current_conversation_id
+        if current_conv_id and getattr(self.play_page, 'is_test_mode', True):
+            if self.load_conversation_knowledge_graph(current_conv_id):
+                self._active_local_graph_conversation_id = current_conv_id
+                self.graph_page.refresh_graph()
+
+    @staticmethod
+    def _sanitize_conversation_id(conv_id: str) -> str:
+        safe_id = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in str(conv_id))
+        return safe_id.strip("_") or "default"
+
+    def _get_conversation_graph_paths(self, conv_id: str) -> tuple[Path, Path]:
+        safe_conv_id = self._sanitize_conversation_id(conv_id)
+        conv_graph_dir = self._conversation_graph_root / safe_conv_id
+        conv_graph_dir.mkdir(exist_ok=True, parents=True)
+        return conv_graph_dir / "knowledge_graph.graphml", conv_graph_dir / "entities.json"
+
+    def _save_conversation_knowledge_graph(self, conv_id: str) -> bool:
+        """保存指定对话当前图谱快照"""
+        if not conv_id:
+            return False
+        try:
+            graph_path, entities_path = self._get_conversation_graph_paths(conv_id)
+            self.memory.graph_save_path = str(graph_path)
+            self.memory.set_entities_json_path(str(entities_path))
+            self.memory.knowledge_graph.save_graph(str(graph_path))
+            self.memory.sync_entities_to_json()
+            logger.info(f"💾 已保存对话图谱快照: conv={conv_id} path={graph_path}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ 保存对话图谱快照失败 (conv={conv_id}): {e}")
+            return False
 
     def on_conversation_changed(self, conv_id: str):
         """处理对话切换事件"""
@@ -5096,6 +5169,22 @@ class EchoGraphMainWindow(QMainWindow):
         if not conv_id:
             logger.info("没有剩余对话，保持当前状态")
             return
+
+        # 酒馆模式下图谱由后端会话驱动，不进行本地图谱隔离切换
+        if not getattr(self.play_page, 'is_test_mode', True):
+            logger.info("当前为酒馆模式，跳过本地图谱隔离切换")
+            return
+
+        # 先保存离开前对话的图谱快照，再加载目标对话图谱
+        previous_conv_id = getattr(self, '_active_local_graph_conversation_id', None)
+        if previous_conv_id and previous_conv_id != conv_id:
+            self._save_conversation_knowledge_graph(previous_conv_id)
+
+        if not self.load_conversation_knowledge_graph(conv_id):
+            logger.warning(f"对话 {conv_id} 的知识图谱加载失败，保持当前图谱")
+            return
+        self._active_local_graph_conversation_id = conv_id
+        self.graph_page.refresh_graph()
 
         # 获取对话信息
         conv = self.play_page.conversation_manager.conversations.get(conv_id)
@@ -5115,10 +5204,50 @@ class EchoGraphMainWindow(QMainWindow):
             logger.info("切换到有内容的对话，保持当前知识图谱状态")
 
     def load_conversation_knowledge_graph(self, conv_id: str) -> bool:
-        """加载对话相关的知识图谱 - 暂时简化实现"""
-        # TODO: 未来可以实现真正的对话-图谱关联机制
-        # 现在先简化，只在真正需要时才处理
-        return True  # 默认返回True，表示加载成功
+        """加载对话相关的知识图谱（本地模式下按对话隔离）"""
+        if not conv_id:
+            return False
+
+        try:
+            graph_path, entities_path = self._get_conversation_graph_paths(conv_id)
+            self.memory.graph_save_path = str(graph_path)
+            self.memory.set_entities_json_path(str(entities_path))
+
+            # 首次升级到“按对话隔离”时，保留历史的本地共享图谱到当前对话
+            if (
+                not graph_path.exists()
+                and not entities_path.exists()
+                and getattr(self, "_active_local_graph_conversation_id", None) is None
+                and self.memory.knowledge_graph.graph.number_of_nodes() > 0
+            ):
+                self.memory.knowledge_graph.save_graph(str(graph_path))
+                self.memory.sync_entities_to_json()
+                logger.info(f"🧭 已将历史共享图谱迁移到当前对话快照: conv={conv_id}")
+                return True
+
+            # 切换对话时先清空内存图谱，避免跨对话污染
+            self.memory.knowledge_graph.clear()
+
+            if graph_path.exists():
+                self.memory.knowledge_graph.load_graph(str(graph_path))
+                self.memory.sync_entities_to_json()
+                logger.info(f"📥 已加载对话图谱: conv={conv_id} graph={graph_path}")
+                return True
+
+            if entities_path.exists():
+                self.memory.reload_entities_from_json()
+                if self.memory.graph_save_path:
+                    self.memory.knowledge_graph.save_graph(self.memory.graph_save_path)
+                logger.info(f"📥 从entities快照恢复对话图谱: conv={conv_id} entities={entities_path}")
+                return True
+
+            # 没有任何历史快照，创建空隔离图谱
+            self.memory.sync_entities_to_json()
+            logger.info(f"🆕 对话无图谱快照，已创建空图谱上下文: conv={conv_id}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ 加载对话图谱失败 (conv={conv_id}): {e}")
+            return False
 
     def prompt_initialize_knowledge_graph(self, conv_id: str):
         """提示用户初始化知识图谱"""
@@ -5178,6 +5307,14 @@ class EchoGraphMainWindow(QMainWindow):
 
     def closeEvent(self, event):
         """关闭事件处理"""
+        try:
+            if getattr(self.play_page, 'is_test_mode', True):
+                active_conv_id = getattr(self, '_active_local_graph_conversation_id', None)
+                if active_conv_id:
+                    self._save_conversation_knowledge_graph(active_conv_id)
+        except Exception as e:
+            logger.warning(f"关闭时保存当前对话图谱失败: {e}")
+
         # 关闭API日志文件
         if hasattr(self, 'api_log_file') and self.api_log_file:
             try:
