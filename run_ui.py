@@ -2388,6 +2388,41 @@ class IntegratedPlayPage(QWidget):
                 loaded_messages += 1
 
         logger.debug(f"✅ [UI] 成功加载 {loaded_messages} 条消息到聊天界面")
+        self._sync_engine_hot_memory_from_current_conversation()
+
+    def _sync_engine_hot_memory_from_current_conversation(self):
+        """按当前对话重建热记忆，避免删除/切换后上下文继续引用旧消息。"""
+        if not getattr(self, "is_test_mode", True):
+            return
+        if not self.engine or not hasattr(self.engine, "memory"):
+            return
+
+        conv = self.conversation_manager.get_current_conversation()
+        if not conv:
+            return
+
+        messages = conv.get("messages", [])
+        basic_memory = self.engine.memory.basic_memory
+        basic_memory.conversation_history.clear()
+
+        pending_user = None
+        for msg in messages:
+            role = msg.get("role")
+            content = msg.get("content", "")
+            if role == "user":
+                if pending_user is not None:
+                    basic_memory.add_conversation(pending_user, "")
+                pending_user = content
+            elif role == "assistant":
+                if pending_user is None:
+                    continue
+                basic_memory.add_conversation(pending_user, content)
+                pending_user = None
+
+        if pending_user is not None:
+            basic_memory.add_conversation(pending_user, "")
+
+        logger.debug(f"🧠 已重建热记忆: {len(basic_memory.conversation_history)} 条")
 
     def append_message(self, message: str, is_user: bool = None, color: str = None):
         """添加消息到显示区域"""
@@ -2687,6 +2722,7 @@ class IntegratedPlayPage(QWidget):
         """同步删除当前对话中的消息，避免UI与存储不一致"""
         try:
             if self.conversation_manager.delete_message_at(message_index):
+                self._sync_engine_hot_memory_from_current_conversation()
                 logger.info(f"✅ 已同步删除对话历史消息，索引={message_index}")
             else:
                 logger.warning(f"⚠️ 删除同步失败：无效索引 {message_index}")

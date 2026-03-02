@@ -82,10 +82,12 @@ class KnowledgeGraph:
         """
         relevant_nodes = set()
         for entity_id in entity_ids:
-            if self.graph.has_node(entity_id):
+            if self.graph.has_node(entity_id) and not self.graph.nodes[entity_id].get('_deleted', False):
                 relevant_nodes.add(entity_id)
                 subgraph = nx.ego_graph(self.graph, entity_id, radius=depth)
-                relevant_nodes.update(subgraph.nodes)
+                for node_id in subgraph.nodes:
+                    if not subgraph.nodes[node_id].get('_deleted', False):
+                        relevant_nodes.add(node_id)
         
         return self.graph.subgraph(relevant_nodes)
 
@@ -94,13 +96,20 @@ class KnowledgeGraph:
         将图（或子图）转换为文本表示，以便输入到LLM。
         """
         target_graph = subgraph if subgraph is not None else self.graph
+        active_nodes = [n for n, d in target_graph.nodes(data=True) if not d.get('_deleted', False)]
         
-        if not target_graph.nodes:
+        if not active_nodes:
             return "The knowledge graph is empty."
 
         text_parts = ["[Nodes]"]
-        for node, attrs in target_graph.nodes(data=True):
-            attr_list = [f"{k}: {repr(v)}" if isinstance(v, str) else f"{k}: {v}" for k, v in attrs.items() if k != 'type']
+        active_node_set = set(active_nodes)
+        for node in active_nodes:
+            attrs = target_graph.nodes[node]
+            attr_list = [
+                f"{k}: {repr(v)}" if isinstance(v, str) else f"{k}: {v}"
+                for k, v in attrs.items()
+                if k != 'type' and not str(k).startswith("_")
+            ]
             attr_str = ", ".join(attr_list)
             if attr_str:
                 text_parts.append(f"- {node} (type: {attrs.get('type', 'N/A')}): {{ {attr_str} }}")
@@ -109,8 +118,14 @@ class KnowledgeGraph:
 
         text_parts.append("\n[Relationships]")
         for source, target, attrs in target_graph.edges(data=True):
+            if source not in active_node_set or target not in active_node_set:
+                continue
             rel = attrs.get('relationship', 'related_to')
-            attr_list = [f"{k}: {repr(v)}" if isinstance(v, str) else f"{k}: {v}" for k, v in attrs.items() if k != 'relationship']
+            attr_list = [
+                f"{k}: {repr(v)}" if isinstance(v, str) else f"{k}: {v}"
+                for k, v in attrs.items()
+                if k != 'relationship' and not str(k).startswith("_")
+            ]
             attr_str = ", ".join(attr_list)
             if attr_str:
                 text_parts.append(f"- {source} -> {target} ({rel}): {{ {attr_str} }}")

@@ -33,7 +33,10 @@ class GRAGMemory:
             attention_config (Optional[Dict[str, Any]]): 预留给注意力检索策略的配置项。
         """
         # 热、温记忆层 (继承自BasicMemory的功能)
-        self.basic_memory = BasicMemory(max_size=hot_memory_size)
+        memory_snapshot_path = None
+        if graph_save_path:
+            memory_snapshot_path = str(Path(graph_save_path).parent / "memory")
+        self.basic_memory = BasicMemory(max_size=hot_memory_size, data_path=memory_snapshot_path, auto_load=True)
 
         # 冷记忆层
         self.knowledge_graph = KnowledgeGraph()
@@ -218,14 +221,8 @@ class GRAGMemory:
         """重新加载entities.json文件中的实体"""
         logger.info("🔄 重新加载实体数据...")
         
-        # 清空现有节点（只清空实体节点，保留其他节点）
-        nodes_to_remove = []
-        for node_id, attrs in self.knowledge_graph.graph.nodes(data=True):
-            if attrs.get('type') in ['character', 'location', 'item', 'event', 'concept']:
-                nodes_to_remove.append(node_id)
-        
-        for node_id in nodes_to_remove:
-            self.knowledge_graph.graph.remove_node(node_id)
+        # 直接清空图谱，确保与entities.json完全一致，避免遗留脏节点。
+        self.knowledge_graph.clear()
         
         # 重新加载
         self._load_entities_from_json()

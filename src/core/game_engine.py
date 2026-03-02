@@ -567,19 +567,20 @@ class GameEngine:
     def _get_recent_conversation_context(self) -> str:
         """获取最近的对话上下文用于Agent分析"""
         try:
-            recent_history = self.memory.basic_memory.conversation_history[-3:]  # 最近3轮对话
+            recent_history = list(self.memory.basic_memory.conversation_history)[-3:]  # 最近3轮对话
             context_parts = []
             
             for turn in recent_history:
                 user_msg = turn.get("user", "")
-                assistant_msg = turn.get("assistant", "")
+                assistant_msg = turn.get("assistant") or turn.get("ai", "")
                 if user_msg:
                     context_parts.append(f"用户: {user_msg}")
                 if assistant_msg:
                     context_parts.append(f"助手: {assistant_msg}")
             
             return "\n".join(context_parts) if context_parts else ""
-        except:
+        except Exception as e:
+            logger.debug(f"获取最近对话上下文失败: {e}")
             return ""
 
     def _process_deletion_events(self, validated_updates: Dict[str, Any]) -> Dict[str, int]:
