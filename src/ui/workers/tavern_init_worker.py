@@ -312,7 +312,7 @@ class TavernInitWorker(QThread):
                 "character_card": character_card,
                 "world_info": world_info_text,
                 "is_test": False,
-                "enable_agent": False,  # 暂时禁用Agent避免LLM超时阻塞
+                "enable_agent": True,  # 图谱维护仅允许LLM Agent
                 "session_config": {
                     "sliding_window": {
                         "window_size": 4,

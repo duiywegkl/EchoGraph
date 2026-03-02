@@ -682,7 +682,7 @@ class TavernModeManager:
                 "character_card": character_card,
                 "world_info": world_info_text,
                 "is_test": False,  # 酒馆模式不是测试模式
-                "enable_agent": False,  # 暂时禁用Agent避免LLM超时阻塞
+                "enable_agent": True,  # 图谱维护优先使用LLM Agent
                 "session_config": {
                     "sliding_window": {
                         "window_size": 4,

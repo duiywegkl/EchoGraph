@@ -21,7 +21,7 @@ class GameEngine:
         self.rpg_processor = rpg_processor
         self.validation_layer = validation_layer
         self.grag_agent = grag_agent
-        logger.info(f"GameEngine 初始化完成，{'支持智能Agent分析' if grag_agent else '使用本地文本处理器'}。")
+        logger.info(f"GameEngine 初始化完成，{'支持智能Agent分析' if grag_agent else '未启用Agent（将跳过自动图谱维护）'}。")
 
     def initialize_from_tavern_data(self, character_card: Dict[str, Any], world_info: str):
         """
@@ -435,14 +435,13 @@ class GameEngine:
     def extract_updates_from_response(self, llm_response: str, user_input: str = "") -> Dict[str, Any]:
         """
         智能分析对话内容，生成精确的知识图谱更新操作。
-        优先使用GRAG Agent进行分析，回退到本地处理器。
+        图谱维护只允许GRAG Agent（LLM）执行，不允许正则回退。
         """
         if self.grag_agent:
             logger.info("使用GRAG智能Agent分析对话更新...")
             return self._extract_with_agent(user_input, llm_response)
-        else:
-            logger.info("使用本地文本处理器提取更新...")
-            return self._extract_with_local_processor(llm_response)
+        logger.warning("未配置GRAG Agent：按策略跳过图谱更新（禁用正则/规则维护）。")
+        return {"nodes_updated": 0, "edges_added": 0, "nodes_deleted": 0, "edges_deleted": 0}
     
     def _extract_with_agent(self, user_input: str, llm_response: str) -> Dict[str, Any]:
         """使用GRAG Agent进行智能分析"""
@@ -457,8 +456,8 @@ class GameEngine:
             )
             
             if "error" in analysis_result:
-                logger.warning(f"Agent分析失败，回退到本地处理器: {analysis_result['error']}")
-                return self._extract_with_local_processor(llm_response)
+                logger.warning(f"Agent分析失败，本轮不更新图谱: {analysis_result['error']}")
+                return {"nodes_updated": 0, "edges_added": 0, "nodes_deleted": 0, "edges_deleted": 0}
             
             # 2. 将Agent结果转换为执行格式
             execution_format = self.grag_agent.convert_to_execution_format(analysis_result)
@@ -471,25 +470,12 @@ class GameEngine:
             
         except Exception as e:
             logger.error(f"Agent分析过程出错: {e}")
-            logger.info("回退到本地文本处理器...")
-            return self._extract_with_local_processor(llm_response)
+            return {"nodes_updated": 0, "edges_added": 0, "nodes_deleted": 0, "edges_deleted": 0}
     
     def _extract_with_local_processor(self, llm_response: str) -> Dict[str, Any]:
-        """使用本地RPG文本处理器（回退方案）"""
-        try:
-            # 使用RPG文本处理器提取完整的游戏元素更新
-            updates = self.rpg_processor.extract_rpg_entities_and_relations(llm_response)
-            
-            # 验证并应用更新
-            validated_updates = self.validation_layer.validate(updates, self.memory.knowledge_graph)
-
-            # 应用更新
-            return self._apply_validated_updates(validated_updates, source="local_processor")
-            
-        except Exception as e:
-            logger.error(f"本地处理器分析失败: {e}")
-            # 返回安全的空结果
-            return {"nodes_updated": 0, "edges_added": 0, "nodes_deleted": 0, "edges_deleted": 0}
+        """保留历史接口；当前策略禁用本地规则维护。"""
+        logger.warning("本地RPG规则更新已禁用，不执行任何图谱维护。")
+        return {"nodes_updated": 0, "edges_added": 0, "nodes_deleted": 0, "edges_deleted": 0}
     
     def _apply_validated_updates(self, validated_updates: Dict[str, Any], source: str = "unknown") -> Dict[str, Any]:
         """统一的更新应用逻辑"""

@@ -31,6 +31,12 @@ class InitializeRequest(BaseModel):
             raise ValueError("World info too large (max 100KB)")
         return v
 
+    @validator('enable_agent')
+    def validate_enable_agent(cls, v):
+        if not v:
+            raise ValueError("enable_agent must be true (graph maintenance is LLM-only)")
+        return True
+
 
 class AsyncInitializeRequest(BaseModel):
     """异步会话初始化请求"""
@@ -39,7 +45,13 @@ class AsyncInitializeRequest(BaseModel):
     world_info: str
     session_config: Optional[Dict[str, Any]] = Field(default_factory=dict)
     is_test: bool = False
-    enable_agent: bool = False  # 异步模式默认禁用Agent避免超时
+    enable_agent: bool = True  # 图谱维护仅允许LLM Agent
+
+    @validator('enable_agent')
+    def validate_enable_agent(cls, v):
+        if not v:
+            raise ValueError("enable_agent must be true (graph maintenance is LLM-only)")
+        return True
 
 
 class EnhancePromptRequest(BaseModel):

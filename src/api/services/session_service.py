@@ -512,6 +512,10 @@ class SessionService:
         """创建游戏引擎"""
         from fastapi.concurrency import run_in_threadpool
 
+        if not enable_agent:
+            logger.warning("⚠️ 收到 enable_agent=False 请求，按策略强制启用LLM Agent。")
+        enable_agent = True
+
         logger.info(f"⚙️ 创建会话引擎: {session_id}")
 
         def _create_engine():

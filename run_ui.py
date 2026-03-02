@@ -272,7 +272,7 @@ class TavernInitWorker(QThread):
                 "character_card": character_card,
                 "world_info": world_info_text,
                 "is_test": False,
-                "enable_agent": False,  # 禁用Agent避免超时
+                "enable_agent": True,  # 图谱维护仅允许LLM Agent
                 "session_config": {
                     "sliding_window": {
                         "window_size": int(os.getenv("SLIDING_WINDOW_SIZE", "4")),
@@ -438,7 +438,7 @@ class TavernInitWorker(QThread):
                 "character_card": character_card,
                 "world_info": world_info_text,
                 "is_test": False,
-                "enable_agent": False,  # 禁用Agent避免超时
+                "enable_agent": True,  # 图谱维护仅允许LLM Agent
                 "session_config": {
                     "sliding_window": {
                         "window_size": int(os.getenv("SLIDING_WINDOW_SIZE", "4")),
@@ -982,6 +982,8 @@ from src.core.perception import PerceptionModule
 from src.core.rpg_text_processor import RPGTextProcessor
 from src.core.game_engine import GameEngine
 from src.core.validation import ValidationLayer
+from src.core.llm_client import LLMClient
+from src.core.grag_update_agent import GRAGUpdateAgent
 
 from typing import Dict, List, Optional
 
@@ -5041,13 +5043,26 @@ class EchoGraphMainWindow(QMainWindow):
             self.perception = PerceptionModule()
             self.rpg_processor = RPGTextProcessor()
             self.validation_layer = ValidationLayer()
+            grag_agent = None
+
+            # 默认优先启用LLM Agent做图谱维护，避免纯正则策略误更新。
+            try:
+                from src.utils.config import config
+                if config.llm.api_key and config.llm.base_url:
+                    grag_agent = GRAGUpdateAgent(LLMClient())
+                    logger.info("🤖 本地模式已启用GRAG Agent。")
+                else:
+                    logger.warning("⚠️ LLM配置不完整，本地模式将不会自动维护图谱（正则回退已禁用）。")
+            except Exception as agent_error:
+                logger.warning(f"⚠️ 本地模式GRAG Agent初始化失败: {agent_error}")
 
             # 创建游戏引擎
             self.game_engine = GameEngine(
                 self.memory,
                 self.perception,
                 self.rpg_processor,
-                self.validation_layer
+                self.validation_layer,
+                grag_agent
             )
 
             # 初始化酒馆模式管理器

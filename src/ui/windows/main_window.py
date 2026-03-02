@@ -95,17 +95,31 @@ class MainWindow(QMainWindow):
             from src.core.rpg_text_processor import RPGTextProcessor
             from src.core.validation import ValidationLayer
             from src.core.game_engine import GameEngine
+            from src.core.llm_client import LLMClient
+            from src.core.grag_update_agent import GRAGUpdateAgent
+            from src.utils.config import config
 
             self.perception = PerceptionModule()
             self.rpg_processor = RPGTextProcessor()
             self.validation_layer = ValidationLayer()
+            grag_agent = None
+
+            try:
+                if config.llm.api_key and config.llm.base_url:
+                    grag_agent = GRAGUpdateAgent(LLMClient())
+                    logger.info("🤖 模块化UI已启用GRAG Agent。")
+                else:
+                    logger.warning("⚠️ LLM配置不完整，模块化UI将跳过自动图谱维护。")
+            except Exception as agent_error:
+                logger.warning(f"⚠️ 模块化UI GRAG Agent初始化失败: {agent_error}")
 
             # 创建游戏引擎
             self.game_engine = GameEngine(
                 self.memory,
                 self.perception,
                 self.rpg_processor,
-                self.validation_layer
+                self.validation_layer,
+                grag_agent
             )
 
             # 初始化酒馆模式管理器

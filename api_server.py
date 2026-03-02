@@ -232,8 +232,24 @@ def get_or_create_conflict_resolver(session_id: str) -> ConflictResolver:
 
     return conflict_resolvers[session_id]
 
+
+def build_grag_agent_if_available() -> Optional[GRAGUpdateAgent]:
+    """按当前LLM配置创建GRAG Agent，配置不完整时返回None。"""
+    try:
+        from src.utils.config import config
+        if not config.llm.api_key or not config.llm.base_url:
+            return None
+        return GRAGUpdateAgent(LLMClient())
+    except Exception as e:
+        logger.warning(f"GRAG Agent 初始化失败: {e}")
+        return None
+
 def get_or_create_session_engine(session_id: str, is_test: bool = False, enable_agent: bool = True) -> GameEngine:
     """根据会话ID获取或创建一个新的GameEngine实例，支持测试模式和Agent开关"""
+    if not enable_agent:
+        logger.warning("⚠️ 收到 enable_agent=False 请求，按策略强制启用LLM Agent。")
+    enable_agent = True
+
     # 如果会话已存在，直接返回
     if session_id in sessions:
         return sessions[session_id]
@@ -412,7 +428,7 @@ class AsyncInitializeRequest(BaseModel):
     world_info: str
     session_config: Optional[Dict[str, Any]] = {}
     is_test: bool = False
-    enable_agent: bool = False  # 异步模式默认禁用Agent避免超时
+    enable_agent: bool = True  # 图谱维护仅允许LLM Agent
 
 # --- 角色数据提交相关数据模型 ---
 class SubmitCharacterDataRequest(BaseModel):
@@ -1990,9 +2006,10 @@ async def process_tavern_message(request: TavernMessageRequest):
             perception = PerceptionModule()
             rpg_processor = RPGTextProcessor()
             validation_layer = ValidationLayer()
+            grag_agent = build_grag_agent_if_available()
 
             # 创建游戏引擎
-            game_engine = GameEngine(memory, perception, rpg_processor, validation_layer)
+            game_engine = GameEngine(memory, perception, rpg_processor, validation_layer, grag_agent)
             sessions[session_id] = game_engine
 
             # 为酒馆会话创建滑动窗口管理器
@@ -2003,7 +2020,7 @@ async def process_tavern_message(request: TavernMessageRequest):
                 sliding_window = SlidingWindowManager(window_size=window_size, processing_delay=processing_delay)
                 sliding_window_managers[session_id] = DelayedUpdateManager(
                     sliding_window=sliding_window,
-                    grag_agent=None  # 将在需要时创建
+                    grag_agent=grag_agent
                 )
 
         engine = sessions[session_id]
@@ -2888,9 +2905,10 @@ async def auto_load_character_session(session_id: str, character_name: str, char
         perception = PerceptionModule()
         rpg_processor = RPGTextProcessor()
         validation_layer = ValidationLayer()
+        grag_agent = build_grag_agent_if_available()
 
         # 创建GameEngine
-        engine = GameEngine(memory, perception, rpg_processor, validation_layer)
+        engine = GameEngine(memory, perception, rpg_processor, validation_layer, grag_agent)
 
         # 设置基本信息
         engine.character_name = character_name
