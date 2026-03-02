@@ -72,6 +72,8 @@ class ConfigPage(QWidget):
         self.api_key_input = QLineEdit(); self.api_key_input.setEchoMode(QLineEdit.Password)
         self.model_input = QLineEdit()
         self.stream_checkbox = QCheckBox("启用流式输出")
+        self.embedding_review_checkbox = QCheckBox("启用Embedding向量复核（付费）")
+        self.embedding_review_checkbox.setToolTip("仅勾选后才会调用Embedding接口进行语义复核，可能产生额外费用。")
         self.max_tokens_input = QSpinBox(); self.max_tokens_input.setRange(100, 32000); self.max_tokens_input.setSuffix(" tokens")
         self.temperature_input = QDoubleSpinBox(); self.temperature_input.setRange(0.0, 2.0); self.temperature_input.setSingleStep(0.1); self.temperature_input.setDecimals(1)
         self.request_timeout_input = QSpinBox(); self.request_timeout_input.setRange(30, 600); self.request_timeout_input.setSuffix(" 秒")
@@ -82,6 +84,7 @@ class ConfigPage(QWidget):
         llm_form.addRow("温度(Temperature):", self.temperature_input)
         llm_form.addRow("请求超时:", self.request_timeout_input)
         llm_form.addRow("", self.stream_checkbox)
+        llm_form.addRow("", self.embedding_review_checkbox)
 
         # ========== 滑动窗口配置 ==========
         window_group = QGroupBox("滑动窗口配置")
@@ -173,6 +176,7 @@ class ConfigPage(QWidget):
         self.temperature_input.setValue(float(config.get("TEMPERATURE", "0.8")))
         self.request_timeout_input.setValue(int(config.get("REQUEST_TIMEOUT", "180")))
         self.stream_checkbox.setChecked(config.get("LLM_STREAM_OUTPUT", "false").lower() in ("true","1","t","yes"))
+        self.embedding_review_checkbox.setChecked(config.get("ENABLE_EMBEDDING_REVIEW", "false").lower() in ("true","1","t","yes"))
 
         # 滑动窗口
         self.window_size_input.setValue(int(config.get("SLIDING_WINDOW_SIZE", "4")))
@@ -206,6 +210,7 @@ class ConfigPage(QWidget):
             set_key(self.env_path, "OPENAI_API_KEY", self.api_key_input.text())
             set_key(self.env_path, "DEFAULT_MODEL", self.model_input.text())
             set_key(self.env_path, "LLM_STREAM_OUTPUT", str(self.stream_checkbox.isChecked()).lower())
+            set_key(self.env_path, "ENABLE_EMBEDDING_REVIEW", str(self.embedding_review_checkbox.isChecked()).lower())
             set_key(self.env_path, "MAX_TOKENS", str(self.max_tokens_input.value()))
             set_key(self.env_path, "TEMPERATURE", str(self.temperature_input.value()))
             set_key(self.env_path, "REQUEST_TIMEOUT", str(self.request_timeout_input.value()))

@@ -4,13 +4,14 @@
 
 ## 空实现 / 占位实现
 
-1. `src/core/validation.py`
-   - `TODO(validation): 用真实的冲突/规则校验替换当前占位实现。`
-   - `TODO(validation): 增加可配置的校验策略与指标统计。`
-   - `TODO(validation): 在写入图谱前校验实体字段、关系完整性与危险更新。`
-
-2. `src/tavern/tavern_connector.py`
+1. `src/tavern/tavern_connector.py`
    - `TODO(tavern-monitor): 实现 WebSocket 或轮询监控机制，并在连接/会话状态变化时回调 callback。`
+
+## 已完成（最近修复）
+
+1. `src/core/validation.py`
+   - 已替换占位实现，新增结构校验、关系语义校验、危险删除拦截与置信度门槛。
+   - 已支持基础策略参数（`min_confidence`、`allow_wildcard_deletions`）与校验统计（`validation_report`）。
 
 ## 现有功能性 TODO
 
