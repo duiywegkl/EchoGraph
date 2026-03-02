@@ -233,16 +233,16 @@ def get_or_create_conflict_resolver(session_id: str) -> ConflictResolver:
     return conflict_resolvers[session_id]
 
 
-def build_grag_agent_if_available() -> Optional[GRAGUpdateAgent]:
-    """按当前LLM配置创建GRAG Agent，配置不完整时返回None。"""
-    try:
-        from src.utils.config import config
-        if not config.llm.api_key or not config.llm.base_url:
-            return None
-        return GRAGUpdateAgent(LLMClient())
-    except Exception as e:
-        logger.warning(f"GRAG Agent 初始化失败: {e}")
-        return None
+def build_grag_agent_or_raise() -> GRAGUpdateAgent:
+    """创建GRAG Agent；配置或初始化失败时直接抛错。"""
+    from src.utils.config import config
+
+    if not config.llm.api_key:
+        raise RuntimeError("LLM API Key 未配置，无法启用LLM图谱维护。")
+    if not config.llm.base_url:
+        raise RuntimeError("LLM Base URL 未配置，无法启用LLM图谱维护。")
+
+    return GRAGUpdateAgent(LLMClient())
 
 def get_or_create_session_engine(session_id: str, is_test: bool = False, enable_agent: bool = True) -> GameEngine:
     """根据会话ID获取或创建一个新的GameEngine实例，支持测试模式和Agent开关"""
@@ -301,36 +301,9 @@ def get_or_create_session_engine(session_id: str, is_test: bool = False, enable_
         validation_layer = ValidationLayer()
         logger.debug("✅ [ThreadPool] ValidationLayer initialized.")
 
-        # 可选初始化GRAG Agent
-        grag_agent = None
-        if enable_agent:
-            logger.info("🤖 [ThreadPool] Initializing GRAG Agent...")
-            try:
-                from src.utils.config import config
-
-                # 检查LLM配置是否完整
-                if not config.llm.api_key:
-                    logger.warning("⚠️ [ThreadPool] LLM API Key not configured, disabling GRAG Agent.")
-                elif not config.llm.base_url:
-                    logger.warning("⚠️ [ThreadPool] LLM Base URL not configured, disabling GRAG Agent.")
-                else:
-                    logger.debug("🌐 [ThreadPool] Initializing LLMClient...")
-                    start_time = time.time()
-                    llm_client = LLMClient()
-                    llm_init_time = time.time() - start_time
-                    logger.info(f"✅ [ThreadPool] LLMClient initialized in {llm_init_time:.2f}s")
-
-                    logger.debug("🤖 [ThreadPool] Creating GRAGUpdateAgent instance...")
-                    start_time = time.time()
-                    grag_agent = GRAGUpdateAgent(llm_client)
-                    agent_init_time = time.time() - start_time
-                    logger.info(f"✅ [ThreadPool] GRAGUpdateAgent created in {agent_init_time:.2f}s")
-            except Exception as e:
-                logger.warning(f"⚠️ [ThreadPool] GRAG Agent initialization failed, will use local processor: {e}")
-                import traceback
-                logger.debug(f"Detailed error: {traceback.format_exc()}")
-        else:
-            logger.info("🚫 [ThreadPool] Agent function is disabled, using local processor.")
+        logger.info("🤖 [ThreadPool] Initializing GRAG Agent...")
+        grag_agent = build_grag_agent_or_raise()
+        logger.info("✅ [ThreadPool] GRAG Agent initialized.")
 
         logger.info("🎮 [ThreadPool] Creating GameEngine instance...")
         start_time = time.time()
@@ -2006,7 +1979,7 @@ async def process_tavern_message(request: TavernMessageRequest):
             perception = PerceptionModule()
             rpg_processor = RPGTextProcessor()
             validation_layer = ValidationLayer()
-            grag_agent = build_grag_agent_if_available()
+            grag_agent = build_grag_agent_or_raise()
 
             # 创建游戏引擎
             game_engine = GameEngine(memory, perception, rpg_processor, validation_layer, grag_agent)
@@ -2905,7 +2878,7 @@ async def auto_load_character_session(session_id: str, character_name: str, char
         perception = PerceptionModule()
         rpg_processor = RPGTextProcessor()
         validation_layer = ValidationLayer()
-        grag_agent = build_grag_agent_if_available()
+        grag_agent = build_grag_agent_or_raise()
 
         # 创建GameEngine
         engine = GameEngine(memory, perception, rpg_processor, validation_layer, grag_agent)

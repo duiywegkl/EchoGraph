@@ -542,18 +542,22 @@ class SessionService:
             rpg_processor = RPGTextProcessor()
             validation_layer = ValidationLayer()
 
-            # 可选初始化GRAG Agent
-            grag_agent = None
-            if enable_agent:
-                try:
-                    if not self.config.llm.api_key or not self.config.llm.base_url:
-                        logger.warning("[WARN] LLM配置不完整，禁用GRAG Agent")
-                    else:
-                        llm_client = LLMClient()
-                        grag_agent = GRAGUpdateAgent(llm_client)
-                        logger.info("[OK] GRAG Agent初始化成功")
-                except Exception as e:
-                    logger.warning(f"[WARN] GRAG Agent初始化失败: {e}")
+            if not self.config.llm.api_key:
+                raise SessionError(
+                    "LLM API Key 未配置，无法启用LLM图谱维护",
+                    session_id=session_id,
+                    error_code=ErrorCode.SESSION_CREATION_FAILED,
+                )
+            if not self.config.llm.base_url:
+                raise SessionError(
+                    "LLM Base URL 未配置，无法启用LLM图谱维护",
+                    session_id=session_id,
+                    error_code=ErrorCode.SESSION_CREATION_FAILED,
+                )
+
+            llm_client = LLMClient()
+            grag_agent = GRAGUpdateAgent(llm_client)
+            logger.info("[OK] GRAG Agent初始化成功")
 
             return GameEngine(memory, perception, rpg_processor, validation_layer, grag_agent)
 
