@@ -284,7 +284,8 @@ class SillyTavernConnector:
     
     def start_monitoring(self, callback):
         """开始监控酒馆状态变化（可选功能）"""
-        # 这里可以实现WebSocket连接或轮询来监控酒馆状态
+        # TODO(tavern-monitor): 实现 WebSocket 或轮询监控机制，
+        # 并在连接/会话状态变化时回调 callback。
         pass
     
     def notify_plugin_connection(self, session_id: str = None) -> bool:

@@ -162,7 +162,11 @@ class TavernStorageManager:
             角色存储的完整路径
         """
         if is_test:
-            return self.ui_test_path / "test_character" / "current"
+            # Isolate test-mode data per session to prevent cross-session pollution.
+            safe_session_id = self._sanitize_character_name(session_id) or "default_test_session"
+            session_path = self.ui_test_path / "temp" / safe_session_id / "current"
+            session_path.mkdir(parents=True, exist_ok=True)
+            return session_path
         
         if session_id not in self.active_sessions:
             raise ValueError(f"Session {session_id} not found in active sessions")
