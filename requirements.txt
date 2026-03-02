@@ -7,5 +7,6 @@ networkx
 pydantic
 websockets
 PyYAML
+toml
 openai
 PySide6

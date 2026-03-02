@@ -128,7 +128,8 @@ class GameEngine:
                 prompt=analysis_prompt,
                 system_message="你是一个专门分析角色扮演游戏角色卡的AI助手。你需要从角色描述中提取结构化的实体和关系信息，以JSON格式返回。请确保JSON格式完整，不要截断。",
                 temperature=0.1,
-                max_tokens=16000  # 进一步增加token限制，确保完整输出
+                max_tokens=16000,  # 进一步增加token限制，确保完整输出
+                json_mode=True,
             )
             end_time = time.time()
             

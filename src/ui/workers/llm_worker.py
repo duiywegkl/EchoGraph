@@ -27,13 +27,13 @@ class LLMWorkerThread(QThread):
             
             # 1. 感知用户输入中的实体
             logger.info(f"[SEARCH] [GRAG] 开始分析用户输入: {self.message}")
-            
-            perceived_entities = self.engine.perception_module.perceive_entities(self.message)
+            perceived = self.engine.perception.analyze(self.message, self.engine.memory.knowledge_graph)
+            perceived_entities = perceived.get("entities", [])
             logger.info(f"[TARGET] [GRAG] 感知到 {len(perceived_entities)} 个相关实体: {perceived_entities}")
             
             # 2. 构建知识图谱上下文
             logger.info(f"[LINK] [GRAG] 开始构建知识图谱上下文...")
-            context = self.engine.memory.get_context_for_entities(perceived_entities)
+            context = self.engine.memory.retrieve_context_for_prompt(perceived_entities, recent_turns=3)
             logger.info(f"[LOG] [GRAG] 构建的上下文长度: {len(context)} 字符")
             
             # 3. 准备GRAG数据供UI显示
@@ -48,7 +48,11 @@ class LLMWorkerThread(QThread):
             llm_client = LLMClient()
             
             # 构建完整的提示词
-            full_prompt = self.engine._build_full_prompt(self.message, context)
+            full_prompt = (
+                "你是一个角色扮演助手，请结合上下文自然回复。\n\n"
+                f"[Context]\n{context}\n\n"
+                f"[User]\n{self.message}"
+            )
             
             # 调用LLM
             response = llm_client.generate_response(full_prompt)

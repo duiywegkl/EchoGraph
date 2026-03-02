@@ -13,8 +13,8 @@ class LLMClient:
         self.max_tokens = config.llm.max_tokens
         self.temperature = config.llm.temperature
 
-    def chat(self, messages: List[Dict[str, str]], **kwargs) -> str:
-        """单次LLM调用 - 严格JSON模式，带详细日志"""
+    def chat(self, messages: List[Dict[str, str]], json_mode: bool = False, **kwargs) -> str:
+        """单次LLM调用，支持按需开启JSON模式。"""
         try:
             # 记录调用参数和关键信息（不记录API密钥）
             try:
@@ -29,14 +29,17 @@ class LLMClient:
             except Exception:
                 pass
 
-            response = self.client.chat.completions.create(
-                model=kwargs.get('model', self.model),
-                messages=messages,
-                max_tokens=kwargs.get('max_tokens', self.max_tokens),
-                temperature=kwargs.get('temperature', self.temperature),
-                timeout=config.llm.request_timeout,
-                response_format={"type": "json_object"} # 启用JSON模式
-            )
+            request_kwargs = {
+                "model": kwargs.get('model', self.model),
+                "messages": messages,
+                "max_tokens": kwargs.get('max_tokens', self.max_tokens),
+                "temperature": kwargs.get('temperature', self.temperature),
+                "timeout": config.llm.request_timeout,
+            }
+            if json_mode:
+                request_kwargs["response_format"] = {"type": "json_object"}
+
+            response = self.client.chat.completions.create(**request_kwargs)
             content = response.choices[0].message.content or ""
             logger.info(f"🤖 [LLM] 调用成功 | 返回长度={len(content)}")
             logger.debug(f"[LLM] Raw response preview (first 800 chars):\n---\n{content[:800]}\n---")
@@ -46,7 +49,14 @@ class LLMClient:
             logger.error(f"❌ [LLM] 调用失败: {e}")
             return "抱歉，系统暂时无法响应。"
 
-    def generate_response(self, prompt: str, max_tokens: int = None, temperature: float = None, system_message: str = None) -> str:
+    def generate_response(
+        self,
+        prompt: str,
+        max_tokens: int = None,
+        temperature: float = None,
+        system_message: str = None,
+        json_mode: bool = False,
+    ) -> str:
         """
         兼容GRAG Agent调用的统一接口
         将单个prompt转换为消息格式进行调用
@@ -61,5 +71,6 @@ class LLMClient:
         return self.chat(
             messages=messages,
             max_tokens=max_tokens or self.max_tokens,
-            temperature=temperature or self.temperature
+            temperature=temperature or self.temperature,
+            json_mode=json_mode,
         )

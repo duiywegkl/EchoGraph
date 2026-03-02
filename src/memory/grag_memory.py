@@ -14,7 +14,14 @@ class GRAGMemory:
     - 冷记忆 (Cold Memory): 结构化的知识图谱，使用 KnowledgeGraph。
     """
 
-    def __init__(self, hot_memory_size: int = 10, graph_save_path: Optional[str] = None, entities_json_path: Optional[str] = None, auto_load_entities: bool = True):
+    def __init__(
+        self,
+        hot_memory_size: int = 10,
+        graph_save_path: Optional[str] = None,
+        entities_json_path: Optional[str] = None,
+        auto_load_entities: bool = True,
+        attention_config: Optional[Dict[str, Any]] = None,
+    ):
         """
         初始化三层记忆系统。
 
@@ -23,6 +30,7 @@ class GRAGMemory:
             graph_save_path (Optional[str]): 知识图谱的保存/加载路径。
             entities_json_path (Optional[str]): 实体JSON文件的保存/加载路径。
             auto_load_entities (bool): 是否自动加载entities.json文件。默认True，设为False时需要手动调用加载。
+            attention_config (Optional[Dict[str, Any]]): 预留给注意力检索策略的配置项。
         """
         # 热、温记忆层 (继承自BasicMemory的功能)
         self.basic_memory = BasicMemory(max_size=hot_memory_size)
@@ -31,6 +39,8 @@ class GRAGMemory:
         self.knowledge_graph = KnowledgeGraph()
         self.graph_save_path = graph_save_path
         self.entities_json_path = entities_json_path or str(Path(__file__).parent.parent.parent / "data" / "entities.json")
+        # 当前版本尚未启用该配置进行打分，但需要兼容调用方传参，避免初始化失败。
+        self.attention_config = attention_config or {}
 
         if self.graph_save_path:
             self.knowledge_graph.load_graph(self.graph_save_path)

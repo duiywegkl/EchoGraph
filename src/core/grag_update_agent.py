@@ -63,7 +63,8 @@ class GRAGUpdateAgent:
                 analysis_prompt,
                 max_tokens=2000,
                 temperature=0.1,  # 低温度确保一致性
-                system_message="你是一个专门分析RPG对话并生成知识图谱更新指令的智能Agent。请严格按照JSON格式返回分析结果。"
+                system_message="你是一个专门分析RPG对话并生成知识图谱更新指令的智能Agent。请严格按照JSON格式返回分析结果。",
+                json_mode=True,
             )
 
             try:

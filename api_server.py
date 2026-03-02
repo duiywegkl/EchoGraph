@@ -2018,40 +2018,40 @@ async def process_tavern_message(request: TavernMessageRequest):
         edges_added = 0
 
         try:
-            # 从记忆中检索相关上下文
-            relevant_context = engine.memory.retrieve_relevant_context(
-                request.message,
-                max_context_length=4000
-            )
+            # 先走统一的感知+检索路径，避免调用不存在的旧接口。
+            perception_results = engine.perception.analyze(request.message, engine.memory.knowledge_graph)
+            entities = perception_results.get("entities", [])
+            relevant_context = engine.memory.retrieve_context_for_prompt(entities, recent_turns=3)
 
             if relevant_context:
+                # 控制注入长度，避免把提示词塞爆。
+                max_ctx_len = 4000
+                if len(relevant_context) > max_ctx_len:
+                    relevant_context = relevant_context[: max_ctx_len - 80] + "\n[...context truncated...]"
                 enhanced_context = f"[EchoGraph Enhanced Context]\n{relevant_context}\n\n[User Message]\n{request.message}"
                 logger.info(f"📖 [API] 检索到相关上下文，长度: {len(relevant_context)}")
 
-            # 如果没有足够的上下文，尝试从消息中提取实体
-            if len(enhanced_context) < 100:
-                logger.info(f"🔍 [API] 上下文较短，尝试从消息中提取实体...")
+            # 如果检索结果太短，则退化为实体摘要注入。
+            if len(enhanced_context) < 100 and entities:
+                logger.info("🔍 [API] 上下文较短，使用实体摘要补全...")
+                entity_info = []
+                for entity_id in entities[:5]:
+                    if not engine.memory.knowledge_graph.graph.has_node(entity_id):
+                        continue
+                    node_data = engine.memory.knowledge_graph.graph.nodes[entity_id]
+                    entity_type = node_data.get("type", "concept")
+                    description = node_data.get("description", "")
+                    if description:
+                        entity_info.append(f"• {entity_id} ({entity_type}): {description}")
+                    else:
+                        entity_info.append(f"• {entity_id} ({entity_type})")
 
-                # 使用感知模块分析消息
-                perception_results = engine.perception.analyze_text(request.message)
-
-                if perception_results.get('entities'):
-                    entity_info = []
-                    for entity in perception_results['entities'][:5]:  # 最多5个实体
-                        entity_name = entity.get('name', '')
-                        entity_type = entity.get('type', 'concept')
-                        if entity_name:
-                            # 检查知识图谱中是否有这个实体
-                            if engine.memory.knowledge_graph.graph.has_node(entity_name):
-                                node_data = engine.memory.knowledge_graph.graph.nodes[entity_name]
-                                description = node_data.get('description', '')
-                                if description:
-                                    entity_info.append(f"• {entity_name} ({entity_type}): {description}")
-                            else:
-                                entity_info.append(f"• {entity_name} ({entity_type}): 新发现的实体")
-
-                    if entity_info:
-                        enhanced_context = f"[EchoGraph Entity Context]\n" + "\n".join(entity_info) + f"\n\n[User Message]\n{request.message}"
+                if entity_info:
+                    enhanced_context = (
+                        "[EchoGraph Entity Context]\n"
+                        + "\n".join(entity_info)
+                        + f"\n\n[User Message]\n{request.message}"
+                    )
 
             # 异步更新知识图谱（不阻塞响应）
             if request.message and len(request.message.strip()) > 10:
