@@ -464,12 +464,12 @@ async def initialize_session(req: InitializeRequest):
             edges_count = len(engine.memory.knowledge_graph.graph.edges())
 
             return InitializeResponse(
-                success=True,
                 session_id=session_id,
-                nodes_added=nodes_count,
-                edges_added=edges_count,
                 message=f"使用现有会话，当前包含 {nodes_count} 个节点和 {edges_count} 条边",
-                processing_time=0.0
+                graph_stats={
+                    "nodes_added": nodes_count,
+                    "edges_added": edges_count
+                }
             )
 
         # 详细记录角色卡数据
@@ -556,12 +556,12 @@ async def initialize_session(req: InitializeRequest):
             engine.memory.sync_entities_to_json()
 
             return InitializeResponse(
-                success=True,
                 session_id=session_id,
-                nodes_added=existing_nodes,
-                edges_added=existing_edges,
                 message=f"使用现有知识图谱，包含 {existing_nodes} 个节点和 {existing_edges} 条边",
-                processing_time=0.0
+                graph_stats={
+                    "nodes_added": existing_nodes,
+                    "edges_added": existing_edges
+                }
             )
 
         # 调用GameEngine方法来处理数据 - 使用LLM智能解析

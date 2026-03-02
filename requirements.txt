@@ -6,3 +6,6 @@ requests
 networkx
 pydantic
 websockets
+PyYAML
+openai
+PySide6

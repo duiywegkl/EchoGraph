@@ -1,10 +1,11 @@
-# Placeholder for the Validation Layer
+# TODO(validation): 用真实的冲突/规则校验替换当前占位实现。
 from loguru import logger
 from typing import Dict, Any
 
 class ValidationLayer:
     """一个临时的验证层占位符。"""
     def __init__(self):
+        # TODO(validation): 增加可配置的校验策略与指标统计。
         logger.info("ValidationLayer (Placeholder) initialized.")
 
     def validate(self, updates: Dict[str, Any], kg: Any) -> Dict[str, Any]:
@@ -18,5 +19,6 @@ class ValidationLayer:
         Returns:
             Dict[str, Any]: 未经修改的原始更新。
         """
+        # TODO(validation): 在写入图谱前校验实体字段、关系完整性与危险更新。
         logger.warning("ValidationLayer.validate is a placeholder and is not performing any validation.")
         return updates
