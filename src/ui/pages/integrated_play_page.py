@@ -585,6 +585,9 @@ class IntegratedPlayPage(QWidget):
             self.tavern_init_worker.connection_status_changed.connect(self.on_tavern_init_progress)
             self.tavern_init_worker.initialization_completed.connect(self.on_tavern_init_completed)
             self.tavern_init_worker.error_occurred.connect(self.on_tavern_init_error)
+            self.tavern_init_worker.world_info_confirmation_required.connect(
+                self.on_world_info_confirmation_required
+            )
             self.tavern_init_worker.finished.connect(self.on_tavern_init_finished)
 
             # 启动线程
@@ -665,6 +668,33 @@ class IntegratedPlayPage(QWidget):
         logger.error(f"❌ 酒馆初始化失败: {error_message}")
         self.update_status_display(f"❌ 初始化失败: {error_message}")
 
+        # 失败后自动恢复到本地模式
+        self.is_test_mode = True
+        self.is_connected_to_api = True
+        self.current_session_id = ""
+        if hasattr(self, 'local_mode_radio'):
+            self.local_mode_radio.setChecked(True)
+            self.local_mode_radio.setEnabled(False)
+        if hasattr(self, 'tavern_mode_radio'):
+            self.tavern_mode_radio.setChecked(False)
+            self.tavern_mode_radio.setEnabled(True)
+
+        # 无论是否完成酒馆切换，都尝试恢复本地数据视图
+        try:
+            from src.ui.windows.main_window import MainWindow
+            from PySide6.QtWidgets import QApplication
+
+            for widget in QApplication.topLevelWidgets():
+                if isinstance(widget, MainWindow):
+                    if hasattr(widget, "memory"):
+                        widget.memory.reload_entities_from_json()
+                    if hasattr(widget, "graph_page"):
+                        widget.graph_page.exit_tavern_mode()
+                        widget.graph_page.refresh_graph()
+                    break
+        except Exception as restore_error:
+            logger.warning(f"恢复本地模式数据失败: {restore_error}")
+
         # 恢复UI状态
         if hasattr(self, 'switch_to_tavern_btn'):
             self.switch_to_tavern_btn.setEnabled(True)
@@ -672,6 +702,21 @@ class IntegratedPlayPage(QWidget):
 
         # 显示错误对话框
         QMessageBox.critical(self, "酒馆模式初始化失败", f"无法初始化酒馆模式：\n\n{error_message}")
+
+    def on_world_info_confirmation_required(self, character_data: dict):
+        """缺少世界书文本时，询问用户是否继续。"""
+        character_name = character_data.get("name", "当前角色")
+        reply = QMessageBox.question(
+            self,
+            "未获取到世界书",
+            f"未获取到 {character_name} 的世界书文本。\n\n是否继续初始化？\n"
+            f"继续将按空文本处理，不传递任何默认内容。",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        worker = getattr(self, "tavern_init_worker", None)
+        if worker:
+            worker.set_world_info_decision(reply == QMessageBox.Yes)
 
     def on_tavern_init_finished(self):
         """酒馆初始化线程结束"""

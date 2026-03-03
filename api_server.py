@@ -244,6 +244,16 @@ def build_grag_agent_or_raise() -> GRAGUpdateAgent:
 
     return GRAGUpdateAgent(LLMClient())
 
+
+def _is_tavern_init_request(is_test: bool, character_card: Dict[str, Any]) -> bool:
+    """判定是否为酒馆初始化请求（用于严格失败策略）。"""
+    if is_test:
+        return False
+    tags = character_card.get("tags", [])
+    if isinstance(tags, (list, tuple, set)):
+        return "tavern_mode" in tags or "plugin_submitted" in tags
+    return True
+
 def get_or_create_session_engine(session_id: str, is_test: bool = False, enable_agent: bool = True) -> GameEngine:
     """根据会话ID获取或创建一个新的GameEngine实例，支持测试模式和Agent开关"""
     if not enable_agent:
@@ -560,19 +570,26 @@ async def initialize_session(req: InitializeRequest):
         logger.info(f"  - 世界书数据: {bool(req.world_info)} (有数据)")
 
         start_time = time.time()
+        is_tavern_request = _is_tavern_init_request(req.is_test, req.character_card)
         try:
             init_result = await run_in_threadpool(engine.initialize_from_tavern_data, req.character_card, req.world_info)
         except Exception as init_error:
             logger.error(f"❌ 初始化过程发生错误: {init_error}")
             import traceback
             logger.error(f"详细错误堆栈: {traceback.format_exc()}")
-            # 返回基本的失败结果，但不阻塞整个API
+            if is_tavern_request:
+                raise
+            # 非酒馆请求保持兼容：返回失败结果但不中断API
             init_result = {
                 "nodes_added": 0,
                 "edges_added": 0,
                 "method": "failed",
                 "error": str(init_error)
             }
+
+        if is_tavern_request and isinstance(init_result, dict):
+            if init_result.get("method") in {"failed", "simple_fallback"}:
+                raise RuntimeError(f"酒馆初始化失败: {init_result.get('error', init_result.get('method'))}")
 
         graph_init_time = time.time() - start_time
         logger.info(f"✅ 知识图谱初始化完成: {init_result} (耗时: {graph_init_time:.2f}秒)")
@@ -641,6 +658,9 @@ async def perform_async_initialization(task_id: str, req: AsyncInitializeRequest
         logger.info(f"🔄 [Async Task {task_id}] Step 2: Initializing knowledge graph in thread pool...")
 
         init_result = await run_in_threadpool(engine.initialize_from_tavern_data, req.character_card, req.world_info)
+        if _is_tavern_init_request(req.is_test, req.character_card):
+            if isinstance(init_result, dict) and init_result.get("method") in {"failed", "simple_fallback"}:
+                raise RuntimeError(f"酒馆初始化失败: {init_result.get('error', init_result.get('method'))}")
         logger.info(f"✅ [Async Task {task_id}] Step 2: Knowledge graph initialized.")
 
         # 步骤3: 配置滑动窗口 (80%)

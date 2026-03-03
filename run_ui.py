@@ -9,6 +9,7 @@ import traceback
 import subprocess
 import json
 import requests
+import threading
 from pathlib import Path
 
 from PySide6.QtWidgets import (
@@ -33,11 +34,14 @@ class TavernInitWorker(QThread):
     progress_updated = pyqtSignal(str, str)  # (status_message, step_info)
     initialization_completed = pyqtSignal(dict)  # (result_data)
     error_occurred = pyqtSignal(str)  # (error_message)
+    world_info_confirmation_required = pyqtSignal(dict)  # (character_data)
 
     def __init__(self, tavern_manager, tavern_config):
         super().__init__()
         self.tavern_manager = tavern_manager
         self.tavern_config = tavern_config
+        self._world_info_decision_event = threading.Event()
+        self._continue_without_world_info = False
 
     def run(self):
         """在后台线程中执行酒馆初始化"""
@@ -63,6 +67,19 @@ class TavernInitWorker(QThread):
             if not character_data:
                 self.error_occurred.emit("插件未能获取到角色信息，请确保：\n1. 已在SillyTavern中选择了角色\n2. EchoGraph插件正常运行\n3. 刷新页面后重试\n\n⚠️ 如果持续无法获取角色信息，将自动切换回本地测试模式")
                 return
+
+            if not self._has_world_info_content(character_data.get("world_info")):
+                self.progress_updated.emit("⚠️ 未获取到世界书文本", "等待用户确认是否继续")
+                self._continue_without_world_info = False
+                self._world_info_decision_event.clear()
+                self.world_info_confirmation_required.emit(character_data)
+                if not self._world_info_decision_event.wait(timeout=300):
+                    self.error_occurred.emit("未收到用户确认，已取消酒馆初始化。")
+                    return
+                if not self._continue_without_world_info:
+                    self.error_occurred.emit("未获取到世界书文本，用户已取消初始化。")
+                    return
+                self.progress_updated.emit("ℹ️ 已确认继续", "将以空世界书文本继续初始化")
 
             # 步骤3: 检查现有会话
             self.progress_updated.emit("🔍 检查现有会话...", f"查找角色 {character_data['name']} 的现有会话")
@@ -247,8 +264,8 @@ class TavernInitWorker(QThread):
                 "tags": ["tavern_mode", "plugin_submitted"]
             }
 
-            # 构建世界信息（暂时简化，后续可从插件数据扩展）
-            world_info_text = f"这是{character_name}的世界设定。"
+            # 构建世界信息：无世界书时保持空字符串，不传递默认文本
+            world_info_text = ""
             world_info_entries = character_data.get('world_info', [])
 
             if world_info_entries:
@@ -386,6 +403,18 @@ class TavernInitWorker(QThread):
             self.error_occurred.emit(f"启动异步初始化异常: {str(e)}")
             return None
 
+    def set_world_info_decision(self, continue_without_world_info: bool):
+        """由UI线程设置“无世界书文本”时的用户决策。"""
+        self._continue_without_world_info = continue_without_world_info
+        self._world_info_decision_event.set()
+
+    @staticmethod
+    def _has_world_info_content(world_info_entries) -> bool:
+        for entry in world_info_entries or []:
+            if isinstance(entry, dict) and str(entry.get("content", "")).strip():
+                return True
+        return False
+
     def _start_async_initialization(self, character) -> str:
         """启动异步初始化任务，返回task_id"""
         logger.info("🚀 ========== 启动异步初始化任务 ==========")
@@ -426,7 +455,7 @@ class TavernInitWorker(QThread):
                         world_info_text += f"[{', '.join(keys)}]: {content}\n\n"
 
             if not world_info_text:
-                world_info_text = f"这是{character.name}的世界设定。"
+                logger.info("ℹ️ 未获取到世界书文本，按空文本发送。")
 
             logger.info(f"📦 请求数据统计:")
             logger.info(f"  - 角色卡字段数: {len(character_card)}")
@@ -1761,6 +1790,9 @@ class IntegratedPlayPage(QWidget):
             self.tavern_init_worker.progress_updated.connect(self.on_tavern_init_progress)
             self.tavern_init_worker.initialization_completed.connect(self.on_tavern_init_completed)
             self.tavern_init_worker.error_occurred.connect(self.on_tavern_init_error)
+            self.tavern_init_worker.world_info_confirmation_required.connect(
+                self.on_world_info_confirmation_required
+            )
             self.tavern_init_worker.finished.connect(self.on_tavern_init_finished)
 
 
@@ -1781,6 +1813,23 @@ class IntegratedPlayPage(QWidget):
         logger.info(f"🔄 酒馆初始化进度: {status_message} - {step_info}")
         self.update_status_display(f"{status_message}")
         QApplication.processEvents()  # 确保UI立即更新
+
+    @Slot(dict)
+    def on_world_info_confirmation_required(self, character_data: dict):
+        """世界书缺失时，弹窗询问是否继续。"""
+        character_name = character_data.get("name", "当前角色")
+        reply = QMessageBox.question(
+            self,
+            "未获取到世界书",
+            f"未获取到 {character_name} 的世界书文本。\n\n是否继续初始化？\n"
+            f"继续将以空世界书文本发送，不传递任何默认内容。",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        continue_without_world = reply == QMessageBox.Yes
+        worker = getattr(self, "tavern_init_worker", None)
+        if worker:
+            worker.set_world_info_decision(continue_without_world)
 
     @Slot(dict)
     def on_tavern_init_completed(self, result: dict):
@@ -1830,6 +1879,9 @@ class IntegratedPlayPage(QWidget):
         """处理酒馆初始化错误"""
         logger.error(f"❌ 酒馆初始化失败: {error_message}")
         self.update_status_display(f"❌ 酒馆模式切换失败")
+        QMessageBox.critical(self, "酒馆模式初始化失败", error_message)
+        self.auto_switch_to_local_mode(f"酒馆初始化失败: {error_message}")
+
     def _start_tavern_session_polling(self):
         """
         在酒馆模式下持续轮询后端会话状态，并在会话变更时刷新图谱。
@@ -1922,30 +1974,36 @@ class IntegratedPlayPage(QWidget):
                 logger.warning(f"⚠️ 自动回退时关闭 tavern_mode/quick_reset 失败: {gate_err}")
 
 
-            # 退出酒馆模式（如果有）
+            # 若当前处于酒馆模式，则执行退出；否则跳过
             if hasattr(self, 'tavern_manager') and self.tavern_manager.is_tavern_mode:
                 result = self.tavern_manager.exit_tavern_mode()
-                if result["success"]:
+                if result.get("success"):
                     logger.info("✅ 已退出酒馆模式")
 
-                    # 恢复本地知识图谱
-                    main_window = None
-                    widget = self.parent()
-                    while widget is not None:
-                        if isinstance(widget, EchoGraphMainWindow):
-                            main_window = widget
-                            break
-                        widget = widget.parent()
+            # 无论是否真正进入过酒馆模式，都强制恢复本地数据展示
+            main_window = None
+            widget = self.parent()
+            while widget is not None:
+                if isinstance(widget, EchoGraphMainWindow):
+                    main_window = widget
+                    break
+                widget = widget.parent()
 
-                    if main_window and hasattr(main_window, 'memory'):
-                        main_window.memory.reload_entities_from_json()
-                        logger.info("✅ 已恢复本地知识图谱数据")
+            if main_window and hasattr(main_window, 'memory'):
+                try:
+                    main_window.memory.reload_entities_from_json()
+                    logger.info("✅ 已恢复本地知识图谱数据")
+                except Exception as restore_error:
+                    logger.warning(f"⚠️ 恢复本地知识图谱数据失败: {restore_error}")
 
-                        # 刷新图谱页面显示本地数据
-                        if hasattr(main_window, 'graph_page'):
-                            main_window.graph_page.exit_tavern_mode()
-                            main_window.graph_page.refresh_graph()  # 已包含更新实体列表和统计
-                            logger.info("📊 知识图谱页面已恢复本地显示")
+                # 刷新图谱页面显示本地数据
+                if hasattr(main_window, 'graph_page'):
+                    try:
+                        main_window.graph_page.exit_tavern_mode()
+                        main_window.graph_page.refresh_graph()  # 已包含更新实体列表和统计
+                        logger.info("📊 知识图谱页面已恢复本地显示")
+                    except Exception as graph_restore_error:
+                        logger.warning(f"⚠️ 恢复本地图谱页面失败: {graph_restore_error}")
 
             # 启用对话界面
             self.enable_chat_interface(True)
@@ -2068,7 +2126,20 @@ class IntegratedPlayPage(QWidget):
             # 使用酒馆管理器进入酒馆模式
             logger.info("📋 步骤5: 调用酒馆管理器...")
             logger.info("🚀 调用 tavern_manager.enter_tavern_mode()")
-            result = self.tavern_manager.enter_tavern_mode(tavern_config)
+            def _confirm_continue_without_world_info() -> bool:
+                reply = QMessageBox.question(
+                    self,
+                    "未获取到世界书",
+                    "未获取到世界书文本，是否继续？\n继续将按空文本初始化，不传递任何默认内容。",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                )
+                return reply == QMessageBox.Yes
+
+            result = self.tavern_manager.enter_tavern_mode(
+                tavern_config,
+                on_world_info_missing=_confirm_continue_without_world_info,
+            )
 
             logger.info("📨 酒馆管理器返回结果:")
             logger.info(f"  - 操作结果: {result}")

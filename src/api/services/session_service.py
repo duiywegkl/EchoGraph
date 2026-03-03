@@ -106,7 +106,7 @@ class SessionService:
                 # 执行知识图谱初始化
                 start_time = time.time()
                 init_result = await self._initialize_knowledge_graph(
-                    engine, req.character_card, req.world_info
+                    engine, req.character_card, req.world_info, is_tavern_request=not req.is_test
                 )
                 processing_time = time.time() - start_time
 
@@ -566,7 +566,11 @@ class SessionService:
         return engine
 
     async def _initialize_knowledge_graph(
-        self, engine: GameEngine, character_card: Dict[str, Any], world_info: str
+        self,
+        engine: GameEngine,
+        character_card: Dict[str, Any],
+        world_info: str,
+        is_tavern_request: bool = False,
     ) -> Dict[str, Any]:
         """初始化知识图谱"""
         from fastapi.concurrency import run_in_threadpool
@@ -577,10 +581,17 @@ class SessionService:
             init_result = await run_in_threadpool(
                 engine.initialize_from_tavern_data, character_card, world_info
             )
+            if is_tavern_request and isinstance(init_result, dict):
+                if init_result.get("method") in {"failed", "simple_fallback"}:
+                    raise RuntimeError(
+                        f"酒馆初始化失败: {init_result.get('error', init_result.get('method'))}"
+                    )
             logger.info(f"[OK] 知识图谱初始化完成: {init_result}")
             return init_result
         except Exception as e:
             logger.error(f"❌ 知识图谱初始化失败: {e}")
+            if is_tavern_request:
+                raise
             return {
                 "nodes_added": 0,
                 "edges_added": 0,

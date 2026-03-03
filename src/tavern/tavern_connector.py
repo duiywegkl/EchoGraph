@@ -12,6 +12,7 @@ from typing import Dict, Any, Optional, List, Callable
 from loguru import logger
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 
 
 @dataclass
@@ -473,8 +474,13 @@ class TavernModeManager:
         self.is_tavern_mode = False
         self.saved_session_data = None
         self._last_monitor_event: Optional[Dict[str, Any]] = None
+        self._backup_graph_path = Path("data/backup_before_tavern.graphml")
         
-    def enter_tavern_mode(self, tavern_config: TavernConfig) -> Dict[str, Any]:
+    def enter_tavern_mode(
+        self,
+        tavern_config: TavernConfig,
+        on_world_info_missing: Optional[Callable[[], bool]] = None,
+    ) -> Dict[str, Any]:
         """进入酒馆模式"""
         try:
             logger.info("[READY] 正在切换到酒馆模式...")
@@ -490,6 +496,7 @@ class TavernModeManager:
             connection_result = self.connector.test_connection()
             
             if connection_result["status"] != "connected":
+                self.restore_previous_session()
                 return {
                     "success": False,
                     "error": "无法连接SillyTavern",
@@ -499,10 +506,28 @@ class TavernModeManager:
             # 4. 获取角色信息
             character = self.connector.get_current_character()
             if not character:
+                self.restore_previous_session()
                 return {
                     "success": False,
                     "error": "无法获取角色信息，请确保在SillyTavern中选择了角色"
                 }
+
+            if not self._has_world_info(character.world_info):
+                logger.warning("⚠️ 未获取到世界书文本。")
+                should_continue = False
+                if on_world_info_missing:
+                    try:
+                        should_continue = bool(on_world_info_missing())
+                    except Exception as callback_error:
+                        logger.warning(f"⚠️ 世界书确认回调执行失败: {callback_error}")
+                        should_continue = False
+                if not should_continue:
+                    self.restore_previous_session()
+                    return {
+                        "success": False,
+                        "error": "未获取到世界书文本，用户取消继续。"
+                    }
+                logger.info("ℹ️ 用户选择继续：世界书将按空文本处理。")
             
             # 5. 用LLM初始化知识图谱
             init_result = self.initialize_knowledge_graph_from_character(character)
@@ -524,10 +549,12 @@ class TavernModeManager:
                     "connection": connection_result
                 }
             else:
+                self.restore_previous_session()
                 return init_result
                 
         except Exception as e:
             logger.error(f"进入酒馆模式失败: {e}")
+            self.restore_previous_session()
             return {
                 "success": False,
                 "error": f"切换失败: {e}"
@@ -557,11 +584,34 @@ class TavernModeManager:
             }
             
             # 实际保存知识图谱到文件
-            self.engine.memory.knowledge_graph.save_graph("data/backup_before_tavern.graphml")
+            self._backup_graph_path.parent.mkdir(parents=True, exist_ok=True)
+            self.engine.memory.knowledge_graph.save_graph(str(self._backup_graph_path))
             logger.info(f"💾 已保存当前会话: {self.saved_session_data['graph_nodes']} 节点, {self.saved_session_data['graph_edges']} 边")
             
         except Exception as e:
             logger.error(f"保存会话失败: {e}")
+
+    def restore_previous_session(self) -> bool:
+        """失败时自动恢复切换前的图谱。"""
+        try:
+            if not self._backup_graph_path.exists():
+                logger.warning("⚠️ 未找到可恢复的备份图谱文件。")
+                return False
+            self.engine.memory.knowledge_graph.load_graph(str(self._backup_graph_path))
+            self.engine.memory.sync_entities_to_json()
+            logger.info("♻️ 已自动恢复切换前图谱。")
+            return True
+        except Exception as e:
+            logger.error(f"恢复会话失败: {e}")
+            return False
+
+    @staticmethod
+    def _has_world_info(world_info: List[Dict[str, Any]]) -> bool:
+        """判断世界书是否包含可用文本。"""
+        for entry in world_info or []:
+            if isinstance(entry, dict) and str(entry.get("content", "")).strip():
+                return True
+        return False
     
     def initialize_knowledge_graph_from_character(self, character: CharacterInfo) -> Dict[str, Any]:
         """根据角色信息通过EchoGraph API初始化知识图谱"""
@@ -669,8 +719,7 @@ class TavernModeManager:
                         logger.info(f"  - 条目{i+1}: [{', '.join(keys)}] ({len(content)} 字符)")
             
             if not world_info_text:
-                world_info_text = f"这是{character.name}的世界设定。"
-                logger.info("ℹ️ 没有世界书条目，使用默认设定")
+                logger.info("ℹ️ 没有世界书条目，按空文本继续初始化")
             
             logger.info(f"🌍 世界书构建完成: {len(world_info_text)} 字符")
             

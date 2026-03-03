@@ -7,6 +7,7 @@ import time
 import asyncio
 import websockets
 import os
+import threading
 from typing import Dict, Any, Optional
 from PySide6.QtCore import QThread, Signal
 from loguru import logger
@@ -26,6 +27,7 @@ class TavernInitWorker(QThread):
     initialization_completed = Signal(dict)  # 初始化完成
     websocket_message_received = Signal(dict)  # WebSocket消息
     error_occurred = Signal(str)  # 错误发生
+    world_info_confirmation_required = Signal(dict)  # 缺少世界书时请求用户确认
 
     def __init__(self, api_base_url: str):
         super().__init__()
@@ -34,6 +36,8 @@ class TavernInitWorker(QThread):
         self.session_id = ""
         self.should_stop = False
         self.websocket = None
+        self._world_info_decision_event = threading.Event()
+        self._continue_without_world_info = False
 
     def run(self):
         """主线程执行方法 - 完整的酒馆初始化流程"""
@@ -54,6 +58,19 @@ class TavernInitWorker(QThread):
             if not character_data:
                 self.error_occurred.emit("插件未能获取到角色信息，请确保：\n1. 已在SillyTavern中选择了角色\n2. EchoGraph插件正常运行\n3. 刷新页面后重试\n\n⚠️ 如果持续无法获取角色信息，将自动切换回本地测试模式")
                 return
+
+            if not self._has_world_info_content(character_data.get("world_info")):
+                self.connection_status_changed.emit(True, "⚠️ 未获取到世界书文本，等待用户确认...")
+                self._continue_without_world_info = False
+                self._world_info_decision_event.clear()
+                self.world_info_confirmation_required.emit(character_data)
+                if not self._world_info_decision_event.wait(timeout=300):
+                    self.error_occurred.emit("未收到用户确认，已取消初始化。")
+                    return
+                if not self._continue_without_world_info:
+                    self.error_occurred.emit("未获取到世界书文本，用户已取消初始化。")
+                    return
+                self.connection_status_changed.emit(True, "ℹ️ 将以空世界书文本继续初始化")
 
             # 步骤3: 检查现有会话
             self.connection_status_changed.emit(True, f"🔍 检查现有会话...")
@@ -514,3 +531,15 @@ class TavernInitWorker(QThread):
             asyncio.create_task(self.websocket.close())
         self.quit()
         self.wait()
+
+    def set_world_info_decision(self, continue_without_world_info: bool):
+        """由UI线程设置世界书缺失时是否继续。"""
+        self._continue_without_world_info = continue_without_world_info
+        self._world_info_decision_event.set()
+
+    @staticmethod
+    def _has_world_info_content(world_info_entries) -> bool:
+        for entry in world_info_entries or []:
+            if isinstance(entry, dict) and str(entry.get("content", "")).strip():
+                return True
+        return False

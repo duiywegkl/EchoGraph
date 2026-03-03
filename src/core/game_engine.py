@@ -29,6 +29,7 @@ class GameEngine:
         如果LLM不可用，则自动回退到简化初始化模式。
         """
         logger.info("[AI] 开始初始化角色卡和世界书...")
+        strict_tavern_init = self._is_strict_tavern_init(character_card)
 
         try:
             # 1. 准备角色卡数据
@@ -45,6 +46,8 @@ class GameEngine:
             
             # 2. 检查LLM是否可用且正确配置
             if not self._is_llm_available():
+                if strict_tavern_init:
+                    raise RuntimeError("酒馆模式初始化失败：LLM不可用，已按策略中止初始化。")
                 logger.info("⚡ LLM不可用，直接使用简化初始化")
                 return self._fallback_simple_initialization(char_name, char_description)
             
@@ -62,10 +65,14 @@ class GameEngine:
                     logger.info("[OK] LLM分析成功完成")
                     return analysis_result
                 else:
+                    if strict_tavern_init:
+                        raise RuntimeError("酒馆模式初始化失败：LLM分析返回空结果，已按策略中止初始化。")
                     logger.warning("[WARN] LLM分析返回空结果，使用简化初始化")
                     return self._fallback_simple_initialization(char_name, char_description)
                     
             except Exception as llm_error:
+                if strict_tavern_init:
+                    raise RuntimeError(f"酒馆模式初始化失败：LLM分析异常：{llm_error}") from llm_error
                 logger.warning(f"[WARN] LLM分析失败: {llm_error}")
                 logger.info("🔄 回退到简化初始化模式...")
                 return self._fallback_simple_initialization(char_name, char_description)
@@ -74,7 +81,16 @@ class GameEngine:
             logger.error(f"❌ 角色卡初始化过程发生异常: {e}")
             import traceback
             logger.error(f"详细错误: {traceback.format_exc()}")
+            if strict_tavern_init:
+                raise
             return self._fallback_simple_initialization(char_name or "Unknown", "")
+
+    def _is_strict_tavern_init(self, character_card: Dict[str, Any]) -> bool:
+        """酒馆模式强制LLM初始化：失败直接中止，不回退简化初始化。"""
+        tags = character_card.get("tags", [])
+        if isinstance(tags, (list, tuple, set)):
+            return "tavern_mode" in tags or "plugin_submitted" in tags
+        return False
     
     def _is_llm_available(self) -> bool:
         """检查LLM是否可用"""
