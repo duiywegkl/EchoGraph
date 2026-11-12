@@ -55,7 +55,8 @@ class LLMWorkerThread(QThread):
             )
             
             # 调用LLM
-            response = llm_client.generate_response(full_prompt)
+            from src.utils.config import config
+            response = llm_client.generate_response(full_prompt, max_tokens=config.llm.max_tokens)
             logger.info(f"[OK] [LLM] 回复生成完成，长度: {len(response)} 字符")
             
             # 发送回复信号

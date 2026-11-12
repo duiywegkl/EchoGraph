@@ -1793,6 +1793,8 @@ class IntegratedPlayPage(QWidget):
                         reason = data.get("initialization_reason", "")
                         if state == "failed":
                             status_text = f"图谱初始化失败：{reason or '未知原因'}"
+                        elif state == "partial":
+                            status_text = f"图谱部分完成：{reason or '部分世界书条目未提取'}"
                         elif data.get("graph_nodes", 0) == 0:
                             status_text = (f"图谱为空：{reason or '角色卡未提取到实体'}"
                                            if state == "completed" else "正在从角色卡生成图谱…")

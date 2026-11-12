@@ -10,3 +10,4 @@ PyYAML
 toml
 openai
 PySide6
+json-repair==0.64.9

@@ -106,6 +106,7 @@ def test_leftover_empty_session_plugin_flow_extracts(isolated):
 def test_nonempty_session_skips_extraction(isolated):
     _, engine, sid, card = isolated
     engine.graph.nodes().append("preserved")
+    api_server._set_initialization_state(sid, "completed")
     with TestClient(api_server.app) as client:
         response = client.post("/initialize", json={
             "session_id": sid, "character_card": card, "world_info": "",
@@ -202,20 +203,20 @@ def test_autoload_notifies_every_socket(isolated, tmp_path, monkeypatch):
 
 
 
-def test_partial_failure_preserves_nodes_and_retries(isolated):
+def test_partial_failure_rolls_back_nodes_and_retries(isolated):
     storage, engine, sid, card = isolated
     engine.outcome = "partial_failure"
     with TestClient(api_server.app) as client:
         payload = {"session_id": sid, "character_card": card, "world_info": ""}
         assert client.post("/initialize", json=payload).status_code == 500
-        assert engine.graph.nodes() == ["partial"]
+        assert engine.graph.nodes() == []
         state = client.get("/tavern/current_session").json()
-        assert state["graph_nodes"] == 1
+        assert state["graph_nodes"] == 0
         assert state["initialization_status"] == "failed"
         assert state["needs_initialization"]
         engine.outcome = "nodes"
         assert client.post("/initialize", json=payload).status_code == 200
-    assert engine.graph.nodes() == ["partial", "Test"]
+    assert engine.graph.nodes() == ["Test"]
     assert engine.calls == 2
     assert storage.active_sessions[sid]["initialization_status"] == "completed"
 
@@ -267,3 +268,84 @@ def test_websocket_failure_contains_backend_reason(isolated):
             assert not response["ok"]
             assert response["error"]["code"] == 500
             assert "stub extraction failed" in response["error"]["message"]
+
+
+def test_concurrent_initialize_shares_result(isolated):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    import time
+    storage, engine, sid, card = isolated
+    entered = Event()
+    release = Event()
+    original = engine.initialize_from_tavern_data
+
+    def slow_initialize(card, world):
+        entered.set()
+        assert release.wait(5)
+        return original(card, world)
+
+    engine.initialize_from_tavern_data = slow_initialize
+    payload = {"session_id": sid, "character_card": card, "world_info": ""}
+    with TestClient(api_server.app) as client, ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(client.post, '/initialize', json=payload)
+        assert entered.wait(5)
+        second = pool.submit(client.post, '/initialize', json=payload)
+        time.sleep(0.1)
+        release.set()
+        a, b = first.result(timeout=5), second.result(timeout=5)
+    assert a.status_code == b.status_code == 200
+    assert a.json() == b.json()
+    assert engine.calls == 1
+    assert storage.active_sessions[sid]['initialization_status'] == 'completed'
+
+
+def test_failed_initialization_restores_disk(isolated, tmp_path):
+    storage, engine, sid, card = isolated
+    graph_path = tmp_path / 'graph.graphml'
+    entities_path = tmp_path / 'entities.json'
+    graph_path.write_text('original graph', encoding='utf-8')
+    entities_path.write_text('original entities', encoding='utf-8')
+    engine.memory.graph_save_path = str(graph_path)
+    engine.memory.entities_json_path = str(entities_path)
+
+    def fail_after_writing(card, world):
+        engine.graph.nodes().append('fallback')
+        graph_path.write_text('fallback graph', encoding='utf-8')
+        entities_path.write_text('fallback entities', encoding='utf-8')
+        raise RuntimeError('3 轮修复仍无法解析')
+
+    engine.initialize_from_tavern_data = fail_after_writing
+    with TestClient(api_server.app) as client:
+        failed = client.post('/initialize', json={
+            'session_id': sid, 'character_card': card, 'world_info': ''})
+        assert failed.status_code == 500
+        state = client.get('/tavern/current_session').json()
+    assert '3 轮修复' in state['initialization_reason']
+    assert state['initialization_status'] == 'failed'
+    assert engine.graph.nodes() == []
+    assert graph_path.read_text(encoding='utf-8') == 'original graph'
+    assert entities_path.read_text(encoding='utf-8') == 'original entities'
+
+
+def test_partial_status_and_reason_visible(isolated):
+    storage, engine, sid, card = isolated
+
+    def partial(card, world):
+        engine.calls += 1
+        engine.graph.nodes().append(card['name'])
+        return {'nodes_added': 1, 'edges_added': 0, 'method': 'partial',
+                'reason': '批次 2/3: JSON 修复 3 轮失败'}
+
+    engine.initialize_from_tavern_data = partial
+    with TestClient(api_server.app) as client:
+        payload = {'session_id': sid, 'character_card': card, 'world_info': 'world'}
+        first = client.post('/initialize', json=payload)
+        assert first.status_code == 200
+        assert '批次 2/3' in first.json()['message']
+        state = client.get('/tavern/current_session').json()
+        assert state['initialization_status'] == 'partial'
+        assert 'JSON 修复' in state['initialization_reason']
+        second = client.post('/initialize', json=payload)
+        assert second.status_code == 200
+        assert '批次 2/3' in second.json()['message']
+    assert engine.calls == 1

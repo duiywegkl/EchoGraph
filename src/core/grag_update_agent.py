@@ -59,22 +59,17 @@ class GRAGUpdateAgent:
             except Exception:
                 pass
 
-            analysis_result = self.llm_client.generate_response(
-                analysis_prompt,
-                max_tokens=2000,
-                temperature=0.1,  # 低温度确保一致性
-                system_message="你是一个专门分析RPG对话并生成知识图谱更新指令的智能Agent。请严格按照JSON格式返回分析结果。",
-                json_mode=True,
+            from src.utils.llm_json import request_json, validate_operations
+            update_instructions, repair_rounds = request_json(
+                self.llm_client, analysis_prompt,
+                "你是一个专门分析RPG对话并生成知识图谱更新指令的智能Agent。只返回 JSON。",
+                validate_operations,
             )
+            update_instructions['operations'] = [
+                op for op in update_instructions['operations'] if self._validate_operation(op)
+            ]
+            logger.info(f"[GRAG] JSON 修复轮数={repair_rounds}")
 
-            try:
-                logger.info(f"[GRAG] LLM response preview (first 800 chars):\n---\n{(analysis_result or '')[:800]}\n---")
-            except Exception:
-                pass
-
-            # 4. 解析LLM返回的更新指令
-            update_instructions = self._parse_llm_analysis(analysis_result)
-            
             logger.info(f"GRAG分析完成: {len(update_instructions.get('operations', []))} 个操作")
             return update_instructions
             
@@ -223,59 +218,12 @@ AI回复: {llm_response}
         return prompt
     
     def _parse_llm_analysis(self, analysis_result: str) -> Dict[str, Any]:
-        """
-        解析LLM返回的分析结果
-        """
-        try:
-            # 尝试提取JSON部分
-            analysis_result = analysis_result.strip()
-            
-            # 如果包含代码块，提取JSON
-            if "```json" in analysis_result:
-                start = analysis_result.find("```json") + 7
-                end = analysis_result.find("```", start)
-                json_str = analysis_result[start:end].strip()
-            elif "```" in analysis_result:
-                start = analysis_result.find("```") + 3
-                end = analysis_result.rfind("```")
-                json_str = analysis_result[start:end].strip()
-            else:
-                json_str = analysis_result
-            
-            # 解析JSON
-            parsed_result = json.loads(json_str)
-            
-            # 验证必要字段
-            if "operations" not in parsed_result:
-                parsed_result["operations"] = []
-            
-            # 验证每个操作的格式
-            validated_operations = []
-            for op in parsed_result["operations"]:
-                if self._validate_operation(op):
-                    validated_operations.append(op)
-                else:
-                    logger.warning(f"跳过无效操作: {op}")
-            
-            parsed_result["operations"] = validated_operations
-            return parsed_result
-            
-        except json.JSONDecodeError as e:
-            logger.error(f"JSON解析失败: {e}")
-            logger.debug(f"原始响应: {analysis_result}")
-            return {
-                "operations": [],
-                "error": "JSON格式解析失败",
-                "raw_response": analysis_result
-            }
-        except Exception as e:
-            logger.error(f"分析结果解析失败: {e}")
-            return {
-                "operations": [],
-                "error": str(e),
-                "raw_response": analysis_result
-            }
-    
+        """Compatibility for direct parsers; live extraction uses request_json."""
+        from src.utils.llm_json import _parse, validate_operations
+        result = _parse(analysis_result, validate_operations, False)
+        result['operations'] = [op for op in result['operations'] if self._validate_operation(op)]
+        return result
+
     def _validate_operation(self, operation: Dict[str, Any]) -> bool:
         """
         验证操作格式是否正确

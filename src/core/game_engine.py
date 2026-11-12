@@ -24,66 +24,15 @@ class GameEngine:
         logger.info(f"GameEngine 初始化完成，{'支持智能Agent分析' if grag_agent else '未启用Agent（将跳过自动图谱维护）'}。")
 
     def initialize_from_tavern_data(self, character_card: Dict[str, Any], world_info: str):
-        """
-        使用LLM智能解析角色卡和世界书，生成知识图谱初始化数据。
-        如果LLM不可用，则自动回退到简化初始化模式。
-        """
-        logger.info("[AI] 开始初始化角色卡和世界书...")
-        strict_tavern_init = self._is_strict_tavern_init(character_card)
-
-        try:
-            # 1. 准备角色卡数据
-            char_name = character_card.get('name', 'Unknown Character')
-            char_description = character_card.get('description', '')
-            char_personality = character_card.get('personality', '')
-            char_scenario = character_card.get('scenario', '')
-            char_first_mes = character_card.get('first_mes', '')
-            char_example = character_card.get('mes_example', '')
-            
-            logger.info(f"[CHART] 角色信息: {char_name}")
-            logger.info(f"[CHART] 描述长度: {len(char_description)} 字符")
-            logger.info(f"[CHART] 世界书长度: {len(world_info or '')} 字符")
-            
-            # 2. 检查LLM是否可用且正确配置
-            if not self._is_llm_available():
-                if strict_tavern_init:
-                    raise RuntimeError("酒馆模式初始化失败：LLM不可用，已按策略中止初始化。")
-                logger.info("⚡ LLM不可用，直接使用简化初始化")
-                return self._fallback_simple_initialization(char_name, char_description)
-            
-            # 3. 尝试使用LLM进行智能解析
-            logger.info("🤖 尝试使用LLM进行角色卡语义分析...")
-            
-            try:
-                # 直接尝试LLM分析，依赖LLM客户端自带的超时机制
-                analysis_result = self._perform_llm_analysis(
-                    char_name, char_description, char_personality, 
-                    char_scenario, char_first_mes, char_example, world_info
-                )
-                
-                if analysis_result:
-                    logger.info("[OK] LLM分析成功完成")
-                    return analysis_result
-                else:
-                    if strict_tavern_init:
-                        raise RuntimeError("酒馆模式初始化失败：LLM分析返回空结果，已按策略中止初始化。")
-                    logger.warning("[WARN] LLM分析返回空结果，使用简化初始化")
-                    return self._fallback_simple_initialization(char_name, char_description)
-                    
-            except Exception as llm_error:
-                if strict_tavern_init:
-                    raise RuntimeError(f"酒馆模式初始化失败：LLM分析异常：{llm_error}") from llm_error
-                logger.warning(f"[WARN] LLM分析失败: {llm_error}")
-                logger.info("🔄 回退到简化初始化模式...")
-                return self._fallback_simple_initialization(char_name, char_description)
-            
-        except Exception as e:
-            logger.error(f"❌ 角色卡初始化过程发生异常: {e}")
-            import traceback
-            logger.error(f"详细错误: {traceback.format_exc()}")
-            if strict_tavern_init:
-                raise
-            return self._fallback_simple_initialization(char_name or "Unknown", "")
+        """Extract card and world book in bounded batches, then commit once."""
+        name = character_card.get('name') or 'Unknown Character'
+        if not self._is_llm_available():
+            raise RuntimeError('酒馆初始化失败：LLM 不可用')
+        return self._perform_llm_analysis(
+            name, character_card.get('description', ''), character_card.get('personality', ''),
+            character_card.get('scenario', ''), character_card.get('first_mes', ''),
+            character_card.get('mes_example', ''), world_info,
+        )
 
     def _is_strict_tavern_init(self, character_card: Dict[str, Any]) -> bool:
         """酒馆模式强制LLM初始化：失败直接中止，不回退简化初始化。"""
@@ -118,101 +67,96 @@ class GameEngine:
             logger.warning(f"[WARN] LLM可用性检查失败: {e}")
             return False
     
-    def _perform_llm_analysis(self, name: str, description: str, personality: str, 
-                             scenario: str, first_mes: str, example: str, world_info: str) -> Dict[str, Any]:
-        """执行LLM分析（带快速失败机制）"""
-        import time
+    def _world_batches(self, world_info: str, budget: int = 6000) -> List[str]:
+        """Keep world-book entries intact. Blank lines delimit plain-text entries."""
+        if not world_info or world_info == 'No world information available.':
+            return []
         try:
-            # 构建分析提示
-            analysis_prompt = self._build_character_analysis_prompt(
-                name, description, personality, scenario, first_mes, example, world_info
-            )
-            
-            # --- 详细日志 ---
-            logger.info("="*50)
-            logger.info("📜 [LLM KG Gen] Preparing to call LLM for Knowledge Graph generation.")
-            logger.info(f"角色名称: {name}")
-            logger.debug(f"角色描述:\n---\n{description}\n---")
-            logger.debug(f"世界书:\n---\n{world_info}\n---")
-            logger.info("Full prompt sent to LLM will be logged at DEBUG level.")
-            logger.debug(f"Full LLM Prompt:\n{analysis_prompt}")
-            logger.info("="*50)
-            
-            # 调用LLM并计时
-            start_time = time.time()
-            analysis_result = self.grag_agent.llm_client.generate_response(
-                prompt=analysis_prompt,
-                system_message="你是一个专门分析角色扮演游戏角色卡的AI助手。你需要从角色描述中提取结构化的实体和关系信息，以JSON格式返回。请确保JSON格式完整，不要截断。",
-                temperature=0.1,
-                max_tokens=16000,  # 进一步增加token限制，确保完整输出
-                json_mode=True,
-            )
-            end_time = time.time()
-            
-            # --- 详细日志 ---
-            duration = end_time - start_time
-            logger.info("="*50)
-            logger.info(f"[OK] [LLM KG Gen] LLM call completed in {duration:.2f} seconds.")
-            logger.info(f"LLM Raw Response:\n---\n{analysis_result}\n---")
-            logger.info("="*50)
-            
-            # 解析结果
-            logger.info(f"[LLM KG Gen] 开始解析LLM返回的JSON数据...")
-            parsed_data = json.loads(analysis_result)
-            logger.info(f"[LLM KG Gen] JSON解析成功")
-            logger.info(f"[LLM KG Gen] 解析结果统计: {len(parsed_data.get('entities', []))} 个实体, {len(parsed_data.get('relationships', []))} 个关系")
-
-            # 记录主角色信息
-            main_char_data = parsed_data.get("main_character")
-            if main_char_data:
-                logger.info(f"[LLM KG Gen] 主角色: {main_char_data.get('name', 'Unknown')}")
+            decoded = json.loads(world_info)
+            if isinstance(decoded, list):
+                entries = [json.dumps(entry, ensure_ascii=False) for entry in decoded]
             else:
-                logger.warning(f"[LLM KG Gen] 未找到主角色数据")
+                entries = [world_info]
+        except (ValueError, TypeError):
+            entries = [entry for entry in re.split(r'\n\s*\n', world_info) if entry.strip()]
+        batches, current = [], ''
+        for entry in entries:
+            if current and len(current) + len(entry) + 2 > budget:
+                batches.append(current)
+                current = ''
+            if len(entry) > budget:
+                logger.warning(f'⚠️ 单条世界书条目超过 {budget} 字符，保持条目完整: {len(entry)} 字符')
+            current = current + ('\n\n' if current else '') + entry
+        if current:
+            batches.append(current)
+        return batches
 
-            # 记录实体信息
-            entities = parsed_data.get("entities", [])
-            logger.info(f"[LLM KG Gen] 实体详情:")
-            for i, entity in enumerate(entities[:5]):  # 只显示前5个
-                logger.info(f"  {i+1}. {entity.get('name', 'Unknown')} ({entity.get('type', 'unknown')})")
-            if len(entities) > 5:
-                logger.info(f"  ... 还有 {len(entities)-5} 个实体")
+    def _perform_llm_analysis(self, name: str, description: str, personality: str,
+                             scenario: str, first_mes: str, example: str, world_info: str) -> Dict[str, Any]:
+        from src.utils.llm_json import request_json, validate_kg
+        batches = [''] + self._world_batches(world_info)
+        card = (f'主角色：{name}\n描述：{description}\n性格：{personality}\n'
+                f'场景：{scenario}\n首条消息：{first_mes}\n示例：{example}')
+        entities, relationships = {}, {}
+        canonical = {name.strip().casefold(): name}
+        main = {'name': name, 'type': 'character', 'attributes': {'is_main_character': True}}
+        failures = []
+        rounds_used = 0
+        for index, world_batch in enumerate(batches):
+            known = ', '.join(list(canonical.values())[:80])
+            prompt = (f'从以下材料提取知识图谱。主角色始终为 {name}。已知实体：{known}。'
+                      '只返回 JSON 对象，包含 main_character、entities、relationships。'
+                      '实体需 name/type，可选简短 description/attributes；关系需 source/target/relationship。'
+                      '每个描述不超过 60 字；不要重复或编造实体；关系端点使用实体名称。\n'
+                      f'角色卡：\n{card}\n世界书条目：\n{world_batch}')
+            logger.info(f'📚 KG 批次 {index + 1}/{len(batches)} | 输入长度={len(prompt)}')
+            try:
+                parsed, used = request_json(
+                    self.grag_agent.llm_client, prompt,
+                    '你是知识图谱提取助手。只输出简洁的 JSON。', validate_kg,
+                )
+                rounds_used += used
+                if isinstance(parsed.get('main_character'), dict):
+                    main.update(parsed['main_character'])
+                    main['name'] = name
+                for entity in parsed['entities']:
+                    key = entity['name'].strip().casefold()
+                    if key == name.strip().casefold():
+                        continue
+                    if key in entities:
+                        previous = entities[key]
+                        previous.setdefault('attributes', {}).update(entity.get('attributes') or {})
+                        if not previous.get('description'):
+                            previous['description'] = entity.get('description', '')
+                    else:
+                        entities[key] = entity.copy()
+                        canonical[key] = entity['name']
+                for rel in parsed['relationships']:
+                    source = rel['source'].strip().casefold()
+                    target = rel['target'].strip().casefold()
+                    if source not in canonical or target not in canonical:
+                        continue
+                    key = (source, target, rel['relationship'].strip().casefold())
+                    relationships[key] = {**rel, 'source': canonical[source], 'target': canonical[target]}
+            except Exception as error:
+                failures.append(f'批次 {index + 1}/{len(batches)}: {error}')
+                logger.error(f'❌ KG 批次 {index + 1}/{len(batches)} 失败: {error}')
+            logger.info(f'📚 KG 进度 {index + 1}/{len(batches)} | 实体={len(entities) + 1} | 关系={len(relationships)}')
+        if len(failures) == len(batches):
+            raise RuntimeError('酒馆初始化失败：' + '；'.join(failures))
+        parsed = {'main_character': main, 'entities': list(entities.values()),
+                  'relationships': list(relationships.values())}
+        nodes, edges = self._apply_llm_analysis_results(parsed, name)
+        if self.memory.graph_save_path:
+            self.memory.knowledge_graph.save_graph(self.memory.graph_save_path)
+        self.memory.sync_entities_to_json()
+        reason = '；'.join(failures) if failures else ''
+        if rounds_used:
+            reason = (reason + '；' if reason else '') + f'JSON 修复 {rounds_used} 轮'
+        return {'nodes_added': nodes, 'edges_added': edges,
+                'method': 'partial' if failures else 'llm_analysis',
+                'reason': reason, 'repair_rounds': rounds_used, 'character_name': name}
 
-            # 记录关系信息
-            relationships = parsed_data.get("relationships", [])
-            logger.info(f"[LLM KG Gen] 关系详情:")
-            for i, rel in enumerate(relationships[:3]):  # 只显示前3个
-                logger.info(f"  {i+1}. {rel.get('source', 'Unknown')} --{rel.get('relationship', 'unknown')}--> {rel.get('target', 'Unknown')}")
-            if len(relationships) > 3:
-                logger.info(f"  ... 还有 {len(relationships)-3} 个关系")
-            
-            # 应用到知识图谱
-            logger.info(f"[LLM KG Gen] 开始将解析结果应用到知识图谱...")
-            nodes_added, edges_added = self._apply_llm_analysis_results(parsed_data, name)
-            logger.info(f"[LLM KG Gen] 知识图谱应用完成: 添加了{nodes_added}个节点, {edges_added}个关系")
-            
-            # 保存知识图谱到GraphML格式
-            if self.memory.graph_save_path:
-                self.memory.knowledge_graph.save_graph(self.memory.graph_save_path)
-
-            # 同步实体数据到JSON文件，供UI使用
-            self.memory.sync_entities_to_json()
-            logger.info("[OK] 实体数据已同步到 entities.json")
-
-            return {
-                "nodes_added": nodes_added,
-                "edges_added": edges_added,
-                "method": "llm_analysis",
-                "character_name": name
-            }
-            
-        except json.JSONDecodeError as je:
-            logger.error(f"❌ LLM返回的JSON解析失败: {je}")
-            logger.error(f"LLM Raw Response that caused error:\n---\n{analysis_result}\n---")
-            return None
-        except Exception as e:
-            logger.error(f"❌ LLM分析执行失败: {e}")
-            return None
-    
     def _build_character_analysis_prompt(self, name: str, description: str, personality: str, 
                                        scenario: str, first_mes: str, example: str, world_info: str) -> str:
         """构建角色分析的LLM提示词"""
@@ -391,10 +335,9 @@ class GameEngine:
                 else:
                     logger.warning(f"[Apply Results] 关系{i+1}中的实体不存在: {source_id} 或 {target_id}")
 
-        except Exception as e:
-            logger.error(f"[Apply Results] 应用LLM分析结果时发生错误: {e}")
-            import traceback
-            logger.error(f"[Apply Results] 详细错误: {traceback.format_exc()}")
+        except Exception:
+            logger.exception('❌ 应用 LLM 分析结果失败')
+            raise
 
         logger.info(f"[Apply Results] 应用完成: 最终统计 nodes_added={nodes_added}, edges_added={edges_added}")
         return nodes_added, edges_added

@@ -31,7 +31,7 @@ class LLMConfig(BaseModel):
     provider: str = "openai"
     model: str = "deepseek-v3.1"
     stream: bool = False # 默认不使用流式输出
-    max_tokens: int = 16000
+    max_tokens: int = 4000
     temperature: float = 0.8
     api_key: Optional[str] = None
     base_url: Optional[str] = None
@@ -78,6 +78,8 @@ class Config:
         # 环境变量中的模型名称优先级最高
         if os.getenv('DEFAULT_MODEL'):
             llm_config['model'] = os.getenv('DEFAULT_MODEL')
+        if os.getenv('MAX_TOKENS'):
+            llm_config['max_tokens'] = int(os.environ['MAX_TOKENS'])
         # 从环境变量读取流式输出配置
         stream_env = os.getenv('LLM_STREAM_OUTPUT', 'false').lower()
         if stream_env in ('true', '1', 't'):

@@ -28,7 +28,7 @@ class LLMConfig(BaseModel):
     provider: str = "openai"
     model: str = "deepseek-v3.1"
     stream: bool = False  # 默认不使用流式输出
-    max_tokens: int = Field(default=16000, ge=1, le=32000)
+    max_tokens: int = Field(default=4000, ge=1, le=32000)
     temperature: float = Field(default=0.8, ge=0.0, le=2.0)
     api_key: Optional[str] = None
     base_url: Optional[str] = None

@@ -112,6 +112,44 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
+import asyncio
+import copy
+import threading
+from concurrent.futures import Future
+
+_initialization_lock = threading.Lock()
+_initialization_flights: Dict[str, Future] = {}
+
+
+def _snapshot_initialization(engine):
+    """Take an in-memory and on-disk snapshot before extraction mutates either."""
+    graph = engine.memory.knowledge_graph.graph
+    paths = [getattr(engine.memory, 'graph_save_path', None),
+             getattr(engine.memory, 'entities_json_path', None)]
+    files = {}
+    for path in paths:
+        if path:
+            file = Path(path)
+            files[file] = file.read_bytes() if file.exists() else None
+    return copy.deepcopy(graph), files
+
+
+def _restore_initialization(engine, snapshot):
+    original, files = snapshot
+    graph = engine.memory.knowledge_graph.graph
+    if hasattr(graph, '_nodes') and isinstance(graph._nodes, list):
+        graph._nodes[:] = original._nodes
+        graph._edges[:] = original._edges
+    else:
+        graph.clear()
+        graph.add_nodes_from(original.nodes(data=True))
+        graph.add_edges_from(original.edges(data=True))
+    for path, contents in files.items():
+        if contents is None:
+            path.unlink(missing_ok=True)
+        else:
+            path.write_bytes(contents)
+
 initializing_sessions: Set[str] = set()
 
 
@@ -123,11 +161,9 @@ def _initialization_state(session_id: str, nodes_count: int) -> Dict[str, Any]:
     if status == "initializing" and session_id not in initializing_sessions:
         status = "failed"  # Interrupted by a previous process exit.
         reason = reason or "上次初始化中断，可重新尝试"
-    if nodes_count and status not in {"failed", "initializing"}:
-        status = "completed"
     return {
         "initialization_status": status,
-        "needs_initialization": status == "failed" or (nodes_count == 0 and status not in {"completed", "initializing"}),
+        "needs_initialization": status in {"failed", "uninitialized"} or (nodes_count == 0 and status not in {"completed", "partial", "initializing"}),
         "initialization_reason": reason,
     }
 
@@ -496,6 +532,32 @@ class InitTaskStatusResponse(BaseModel):
 
 @app.post("/initialize", response_model=InitializeResponse)
 async def initialize_session(req: InitializeRequest):
+    session_id = req.session_id or str(uuid.uuid4())
+    with _initialization_lock:
+        flight = _initialization_flights.get(session_id)
+        owner = flight is None
+        if owner:
+            flight = Future()
+            _initialization_flights[session_id] = flight
+    if not owner:
+        logger.info(f'⏳ 会话 {session_id} 初始化进行中，等待同一结果')
+        return await asyncio.wrap_future(flight)
+    try:
+        result = await _initialize_session_impl(req)
+        flight.set_result(result)
+        return result
+    except BaseException as error:
+        flight.set_exception(error)
+        # The owner also raises this exception; prevent an unobserved-future warning.
+        flight.exception()
+        raise
+    finally:
+        with _initialization_lock:
+            if _initialization_flights.get(session_id) is flight:
+                del _initialization_flights[session_id]
+
+
+async def _initialize_session_impl(req: InitializeRequest):
     """
     初始化一个新的对话会话，解析角色卡和世界书来创建知识图谱。
     支持酒馆角色卡分类存储和测试模式。
@@ -508,7 +570,7 @@ async def initialize_session(req: InitializeRequest):
         # 检查会话是否已经存在并已初始化
         if session_id in sessions and (
             _initialization_state(session_id, len(sessions[session_id].memory.knowledge_graph.graph.nodes()))["initialization_status"]
-            == "completed"
+            in {"completed", "partial"}
         ):
             logger.info(f"♻️ 会话 {session_id} 已初始化，跳过重复初始化")
             # 返回现有会话的统计信息
@@ -520,10 +582,13 @@ async def initialize_session(req: InitializeRequest):
             return InitializeResponse(
                 session_id=session_id,
                 message=(_initialization_state(session_id, nodes_count)["initialization_reason"]
-                         if nodes_count == 0 else f"使用现有会话，当前包含 {nodes_count} 个节点和 {edges_count} 条边"),
+                         if _initialization_state(session_id, nodes_count)["initialization_status"] == "partial" or nodes_count == 0
+                         else f"使用现有会话，当前包含 {nodes_count} 个节点和 {edges_count} 条边"),
                 graph_stats={
                     "nodes_added": nodes_count,
-                    "edges_added": edges_count
+                    "edges_added": edges_count,
+                    "method": _initialization_state(session_id, nodes_count)["initialization_status"],
+                    "reason": _initialization_state(session_id, nodes_count)["initialization_reason"],
                 }
             )
 
@@ -603,7 +668,7 @@ async def initialize_session(req: InitializeRequest):
 
         # 检查知识图谱是否已有数据，如果有则直接跳过整个初始化
         existing_nodes = len(engine.memory.knowledge_graph.graph.nodes())
-        if existing_nodes > 0 and _initialization_state(session_id, existing_nodes)["initialization_status"] != "failed":
+        if existing_nodes > 0 and _initialization_state(session_id, existing_nodes)["initialization_status"] in {"completed", "partial"}:
             logger.info(f"♻️ 知识图谱已有 {existing_nodes} 个节点，跳过整个初始化过程")
             existing_edges = len(engine.memory.knowledge_graph.graph.edges())
 
@@ -625,6 +690,7 @@ async def initialize_session(req: InitializeRequest):
         logger.info(f"  - 角色卡数据: {bool(req.character_card)} (有数据)")
         logger.info(f"  - 世界书数据: {bool(req.world_info)} (有数据)")
 
+        snapshot = _snapshot_initialization(engine)
         _set_initialization_state(session_id, "initializing")
         start_time = time.time()
         is_tavern_request = _is_tavern_init_request(req.is_test, req.character_card)
@@ -675,8 +741,9 @@ async def initialize_session(req: InitializeRequest):
             reason = f"角色卡未提取到实体：{detail or '角色卡或世界书没有可提取的内容，或 LLM 未返回实体'}"
             logger.warning(f"⚠️ {reason}")
         else:
-            reason = ""
-        _set_initialization_state(session_id, "completed", reason)
+            reason = init_result.get('reason', '') if isinstance(init_result, dict) else ''
+        status = 'partial' if isinstance(init_result, dict) and init_result.get('method') == 'partial' else 'completed'
+        _set_initialization_state(session_id, status, reason)
         logger.info(f"🎉 会话 {session_id} 初始化完全成功：{nodes_count} 个实体")
         return InitializeResponse(
             session_id=session_id,
@@ -684,6 +751,11 @@ async def initialize_session(req: InitializeRequest):
             graph_stats=init_result
         )
     except Exception as e:
+        if 'snapshot' in locals() and 'engine' in locals():
+            try:
+                _restore_initialization(engine, snapshot)
+            except Exception:
+                logger.exception('❌ 初始化回滚失败')
         if 'session_id' in locals():
             _set_initialization_state(session_id, "failed", str(e))
         logger.error(f"❌ 会话初始化失败: {e}")
