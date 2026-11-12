@@ -955,13 +955,16 @@ class GraphBridge(QObject):
     @Slot(str, str)
     def editNode(self, entity_name, entity_type):
         """JavaScript直接调用此方法编辑节点"""
-        if self.graph_page.tavern_mode:
-            return
         try:
+            if self.graph_page.tavern_mode and (
+                not self.graph_page.tavern_session_id or self.graph_page.showing_tavern_placeholder
+            ):
+                raise RuntimeError("酒馆会话或图谱暂不可用，请连接会话后刷新图谱。")
             logger.info(f"通过WebChannel编辑节点: {entity_name} ({entity_type})")
             self.graph_page.edit_node_with_python_dialog(entity_name, entity_type)
         except Exception as e:
-            logger.error(f"WebChannel编辑节点失败: {e}")
+            logger.exception(f"WebChannel编辑节点失败: {e}")
+            QMessageBox.warning(self.graph_page, "编辑节点失败", str(e))
 
     @Slot()
     def refreshGraph(self):
@@ -3194,16 +3197,20 @@ class GraphPage(QWidget):
     def _tavern_mutation(self, method, path, payload=None, params=None):
         from urllib.parse import quote
         if not self.tavern_session_id:
-            raise RuntimeError("????????")
+            raise RuntimeError("酒馆会话不可用，请重新连接后重试。")
         url = f"{self._api_base_url()}/sessions/{quote(self.tavern_session_id, safe='')}/{path}"
-        response = requests.request(method, url, json=payload, params=params, timeout=30)
+        try:
+            response = requests.request(method, url, json=payload, params=params, timeout=30)
+        except requests.RequestException as exc:
+            raise RuntimeError("酒馆后端不可用，请检查连接后重试。") from exc
         if not response.ok:
             try:
                 detail = response.json().get("detail", response.text)
             except (ValueError, AttributeError):
                 detail = response.text
             raise RuntimeError(str(detail))
-        self.refresh_from_api_server(self.tavern_session_id, force=True)
+        if not self.refresh_from_api_server(self.tavern_session_id, force=True):
+            raise RuntimeError("节点已保存，但无法从酒馆会话刷新图谱。")
         return response.json()
 
     def mutate_relationship(self, action, source, target, relation=None):
@@ -3504,6 +3511,7 @@ class GraphPage(QWidget):
                         break
 
                 if not current_entity:
+                    logger.warning("Node edit refused: entity not found: %s (%s)", entity_name, entity_type)
                     QMessageBox.warning(self, "错误", f"找不到实体: {entity_name}")
                     return
 
@@ -3723,6 +3731,42 @@ class GraphPage(QWidget):
             cancel_btn = QPushButton("取消")
             cancel_btn.clicked.connect(dialog.reject)
 
+            if not is_new_node:
+                delete_btn = QPushButton("删除节点")
+                delete_btn.setProperty("variant", "danger")
+
+                def delete_changes():
+                    answer = QMessageBox.question(
+                        dialog, "确认删除",
+                        f"确定删除节点 '{entity_name}'吗？",
+                        QMessageBox.Yes | QMessageBox.No,
+                    )
+                    if answer != QMessageBox.Yes:
+                        logger.info("Node deletion cancelled: %s", entity_name)
+                        return
+                    try:
+                        if self.tavern_mode:
+                            from urllib.parse import quote
+                            self._tavern_mutation("DELETE", f"nodes/{quote(entity_name, safe='')}")
+                        else:
+                            entities = self.get_all_entities()
+                            remaining = [entity for entity in entities
+                                         if not (entity["name"] == entity_name and entity["type"] == entity_type)]
+                            if len(remaining) == len(entities):
+                                raise RuntimeError(f"找不到要删除的节点: {entity_name}")
+                            self.save_entities(remaining)
+                            self.refresh_graph()
+                        self.current_selected_node = None
+                        self.detail_text.clear()
+                    except Exception as exc:
+                        logger.exception("Node deletion failed: %s", exc)
+                        QMessageBox.warning(dialog, "删除失败", str(exc))
+                        return
+                    QMessageBox.information(dialog, "成功", f"节点 '{entity_name}' 已删除")
+                    dialog.accept()
+
+                delete_btn.clicked.connect(delete_changes)
+
             save_btn = QPushButton("保存" if not is_new_node else "创建")
             save_btn.setProperty("variant", "primary")
 
@@ -3731,6 +3775,7 @@ class GraphPage(QWidget):
                 # 验证输入
                 new_name = name_edit.text().strip()
                 if not new_name:
+                    logger.warning("Node edit refused: empty name")
                     QMessageBox.warning(dialog, "验证错误", "节点名称不能为空！")
                     name_edit.setFocus()
                     return
@@ -3757,6 +3802,7 @@ class GraphPage(QWidget):
                     try:
                         self.save_entities(all_entities)
                     except Exception as exc:
+                        logger.exception("Node save failed: %s", exc)
                         QMessageBox.warning(dialog, "Save failed", str(exc))
                         return
                     logger.info(f"创建新节点: {new_name} (类型: {type_combo.currentText()})")
@@ -3782,17 +3828,21 @@ class GraphPage(QWidget):
                     try:
                         self.save_entities(all_entities, old_name=entity_name, new_name=new_name)
                     except Exception as exc:
+                        logger.exception("Node save failed: %s", exc)
                         QMessageBox.warning(dialog, "Save failed", str(exc))
                         return
                     logger.info(f"实体更新成功: {new_name} (类型: {type_combo.currentText()})")
 
-                self.refresh_graph()  # 刷新图谱显示
+                if not self.tavern_mode:
+                    self.refresh_graph()
 
                 QMessageBox.information(dialog, "成功", success_msg)
                 dialog.accept()
 
             save_btn.clicked.connect(save_changes)
 
+            if not is_new_node:
+                button_layout.addWidget(delete_btn)
             button_layout.addWidget(cancel_btn)
             button_layout.addWidget(save_btn)
             main_layout.addLayout(button_layout)
@@ -4322,7 +4372,11 @@ class GraphPage(QWidget):
                             state = current.json()
                     except Exception as state_error:
                         logger.debug(f"无法获取图谱初始化状态: {state_error}")
-                    self._show_tavern_mode_placeholder(session_id, {**stats, **state})
+                    placeholder_data = {**stats, **state}
+                    if (self.showing_tavern_placeholder and self.tavern_session_id == session_id
+                            and self._placeholder_stats == placeholder_data):
+                        return True
+                    self._show_tavern_mode_placeholder(session_id, placeholder_data)
                     return True
 
                 # 获取会话的知识图谱导出数据
@@ -4333,7 +4387,7 @@ class GraphPage(QWidget):
                     return False
                 if export_response.status_code == 200:
                     graph_data = export_response.json()
-                    if (not force and not self.showing_tavern_placeholder and self._tavern_graph_data
+                    if (not self.showing_tavern_placeholder and self._tavern_graph_data
                             and graph_data.get('graph_data') == self._tavern_graph_data.get('graph_data')):
                         return True
                     self._tavern_graph_data = graph_data

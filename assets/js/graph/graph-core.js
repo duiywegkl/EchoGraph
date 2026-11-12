@@ -49,6 +49,7 @@ let simulation, svg, g, node, link, label, linkLabel, zoom, tooltip;
 let nodes = [];
 let links = [];
 let bridge = null;
+let nodeClickTimer = null;
 let editMode = false;
 let selectedNode = null;
 let tempLine = null;
@@ -399,6 +400,7 @@ function initializeGraph() {
             .join("g")
             .attr("class", "node-group")
             .call(d3.drag()
+                .clickDistance(5)
                 .on("start", dragstarted)
                 .on("drag", dragged)
                 .on("end", dragended));
@@ -435,6 +437,16 @@ function initializeGraph() {
 /**
  * 设置事件处理器
  */
+function openNodeEditor(d) {
+    if (bridge && bridge.editNode) {
+        bridge.editNode(d.name, d.type);
+    } else {
+        const message = "节点编辑暂不可用：与应用的连接尚未就绪，请刷新图谱后重试。";
+        console.error(message);
+        window.alert(message);
+    }
+}
+
 function setupEventHandlers(nodeGroup) {
     // 节点鼠标悬停
     nodeGroup.on("mouseover", (event, d) => {
@@ -454,16 +466,26 @@ function setupEventHandlers(nodeGroup) {
     // 节点点击事件
     nodeGroup.on("click", function(event, d) {
         event.stopPropagation();
-        console.log('节点被点击:', d.name, '编辑模式:', editMode, '已选中节点:', selectedNode ? selectedNode.datum().name : 'none');
-
         if (editMode) {
+            if (event.detail > 1) return;
             handleRelationEdit(d, d3.select(this));
-        } else if (bridge && bridge.editNode) {
-            bridge.editNode(d.name, d.type);
+            return;
         }
+        if (event.detail > 1) return;
+        clearTimeout(nodeClickTimer);
+        nodeClickTimer = setTimeout(() => {
+            nodeClickTimer = null;
+            openNodeEditor(d);
+        }, 220);
+    }).on("dblclick", function(event, d) {
+        event.stopPropagation();
+        clearTimeout(nodeClickTimer);
+        nodeClickTimer = null;
+        if (editMode) clearSelection();
+        openNodeEditor(d);
     });
 
-    // 关系连线和标签点击编辑
+    // Relationship edge and label editing.
     link.on("click", function(event, d) {
         event.stopPropagation();
         if (editMode) openRelationEditDialog(d);
