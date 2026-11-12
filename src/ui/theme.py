@@ -125,6 +125,9 @@ def build_app_stylesheet(palette=None) -> str:
     palette_name = "ink" if palette is PALETTES["ink"] else "sand"
     CHECK_ICON = (_ICON_DIR / f"check-{palette_name}.svg").as_posix()
     RADIO_DOT_ICON = (_ICON_DIR / f"radio-dot-{palette_name}.svg").as_posix()
+    CHEVRON_DOWN = (_ICON_DIR / f"chevron-down-{palette_name}.svg").as_posix()
+    CHEVRON_UP = (_ICON_DIR / f"chevron-up-{palette_name}.svg").as_posix()
+    CHEVRON_DISABLED = (_ICON_DIR / f"chevron-down-{palette_name}-disabled.svg").as_posix()
     return f"""
     QWidget {{ background: transparent; color: {TEXT_PRIMARY}; font-family: 'Microsoft YaHei UI', 'Segoe UI', sans-serif; font-size: 13px; }}
     QMainWindow, QTabWidget, QTabWidget::pane {{ background: {BG_BASE}; border: 0; }}
@@ -157,7 +160,19 @@ def build_app_stylesheet(palette=None) -> str:
     QPushButton:disabled {{ background: transparent; border-color: {BORDER}; color: {TEXT_MUTED}; }}
     QLineEdit, QTextEdit, QPlainTextEdit, QComboBox, QSpinBox, QDoubleSpinBox {{ min-height: 18px; background: {BG_INPUT}; color: {TEXT_PRIMARY}; border: 1px solid {BORDER_STRONG}; border-radius: 6px; padding: 6px 10px; selection-background-color: {ACCENT_SUBTLE}; selection-color: {TEXT_PRIMARY}; }}
     QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {{ border-color: {ACCENT}; }}
-    QComboBox::drop-down {{ width: 22px; border: 0; background: transparent; }}
+    QComboBox {{ padding-right: 34px; }}
+    QComboBox::drop-down {{ subcontrol-origin: padding; subcontrol-position: right center; width: 26px; border: 0; border-left: 1px solid {BORDER}; background: transparent; }}
+    QComboBox::drop-down:hover {{ background: {BG_RAISED}; }}
+    QComboBox::down-arrow {{ image: url("{CHEVRON_DOWN}"); width: 12px; height: 12px; }}
+    QComboBox::down-arrow:on {{ image: url("{CHEVRON_UP}"); }}
+    QComboBox::down-arrow:disabled {{ image: url("{CHEVRON_DISABLED}"); }}
+    QLineEdit#valueUnitNumber[invalid="true"] {{ border-color: {DANGER}; background: {DANGER_SUBTLE}; }}
+    QLineEdit#valueUnitNumber[invalid="true"]:focus {{ border-color: {DANGER}; }}
+    QAbstractSpinBox::up-button {{ subcontrol-origin: border; subcontrol-position: top right; width: 22px; border: 0; border-left: 1px solid {BORDER}; background: transparent; }}
+    QAbstractSpinBox::down-button {{ subcontrol-origin: border; subcontrol-position: bottom right; width: 22px; border: 0; border-left: 1px solid {BORDER}; background: transparent; }}
+    QAbstractSpinBox::up-button:hover, QAbstractSpinBox::down-button:hover {{ background: {BG_RAISED}; }}
+    QAbstractSpinBox::up-arrow {{ image: url("{CHEVRON_UP}"); width: 10px; height: 10px; }}
+    QAbstractSpinBox::down-arrow {{ image: url("{CHEVRON_DOWN}"); width: 10px; height: 10px; }}
     QComboBox QAbstractItemView {{ background: {BG_RAISED}; color: {TEXT_PRIMARY}; border: 1px solid {BORDER_STRONG}; selection-background-color: {ACCENT_SUBTLE}; }}
     QRadioButton, QCheckBox {{ color: {TEXT_SECONDARY}; spacing: 8px; background: transparent; }}
     QRadioButton::indicator, QCheckBox::indicator {{ width: 16px; height: 16px; border: 1px solid {BORDER_STRONG}; background: {BG_INPUT}; }}

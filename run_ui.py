@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
     QFormLayout, QLineEdit, QPushButton, QCheckBox, QTabWidget,
     QMessageBox, QSplitter, QListWidget, QListWidgetItem, QLabel, QTextEdit,
     QGroupBox, QComboBox, QInputDialog, QStyle, QDialog, QFileDialog,
-    QRadioButton, QButtonGroup, QScrollArea, QFrame, QSpinBox, QDoubleSpinBox, QStyledItemDelegate
+    QRadioButton, QButtonGroup, QScrollArea, QFrame, QStyledItemDelegate
 )
 from PySide6.QtCore import Qt, QObject, Signal as pyqtSignal, QUrl, Slot, QTimer, QPropertyAnimation, QRect, QThread, QEvent
 from PySide6.QtWebEngineWidgets import QWebEngineView
@@ -691,6 +691,7 @@ from src.ui.workers.llm_worker import LLMWorkerThread
 from src.ui.managers.scenario_manager import ScenarioManager
 from src.ui.managers.window_manager import WindowManager
 from src.ui import theme
+from src.ui.value_unit_input import UnitSpec, ValueUnitInput
 from src.ui.managers.resource_cleanup_manager import ResourceCleanupManager
 # 导入酒馆连接器
 from src.tavern.tavern_connector import TavernModeManager, TavernConfig, SillyTavernConnector
@@ -1784,11 +1785,23 @@ class IntegratedPlayPage(QWidget):
                                 if main_window and hasattr(main_window, 'graph_page'):
                                     main_window.graph_page.enter_tavern_mode(session_id)
                                     main_window.graph_page.refresh_from_api_server(session_id)
-                                self.update_status_display("酒馆会话已就绪")
                             except Exception as ui_err:
                                 logger.warning(f"⚠️ 切换图谱为酒馆会话失败: {ui_err}")
                         elif getattr(self.window(), 'graph_page', None):
                             self.window().graph_page.refresh_from_api_server(session_id)
+                        state = data.get("initialization_status")
+                        reason = data.get("initialization_reason", "")
+                        if state == "failed":
+                            status_text = f"图谱初始化失败：{reason or '未知原因'}"
+                        elif data.get("graph_nodes", 0) == 0:
+                            status_text = (f"图谱为空：{reason or '角色卡未提取到实体'}"
+                                           if state == "completed" else "正在从角色卡生成图谱…")
+                        else:
+                            status_text = f"图谱已就绪：{data['graph_nodes']} 个实体，{data.get('graph_edges', 0)} 条关系"
+                        if getattr(self, "_last_polled_tavern_status", None) != status_text:
+                            logger.info(f"📊 酒馆图谱状态：{status_text}")
+                            self._last_polled_tavern_status = status_text
+                        self.update_status_display(status_text)
                     else:
                         # 没有活跃会话时保留监控，等待后续恢复/重连
                         if self._last_polled_tavern_session_id is not None:
@@ -4299,6 +4312,16 @@ class GraphPage(QWidget):
             if response.status_code == 200:
                 stats = response.json()
                 logger.info(f"成功获取会话统计: 节点={stats.get('graph_nodes', 0)}, 边={stats.get('graph_edges', 0)}")
+                if stats.get("graph_nodes", 0) == 0:
+                    state = {}
+                    try:
+                        current = requests.get(f"{api_base_url}/tavern/current_session", timeout=health_check_timeout)
+                        if current.status_code == 200 and current.json().get("session_id") == session_id:
+                            state = current.json()
+                    except Exception as state_error:
+                        logger.debug(f"无法获取图谱初始化状态: {state_error}")
+                    self._show_tavern_mode_placeholder(session_id, {**stats, **state})
+                    return True
 
                 # 获取会话的知识图谱导出数据
                 export_url = f"{api_base_url}/sessions/{session_id}/export"
@@ -4464,6 +4487,18 @@ class GraphPage(QWidget):
             self.showing_tavern_placeholder = True
             self._update_mode_controls()
             self._placeholder_stats = dict(stats)
+            from html import escape
+            state = stats.get("initialization_status")
+            reason = stats.get("initialization_reason", "")
+            if state == "failed":
+                status_text = f"图谱初始化失败：{reason or '未知原因'}"
+            elif state == "completed":
+                status_text = f"图谱为空：{reason or '角色卡未提取到实体'}"
+            else:
+                status_text = "正在从角色卡生成图谱…"
+            self.entity_list.clear()
+            self.entity_list.addItem(status_text)
+            safe_status = escape(status_text)
             colors = theme.current()
             # 创建简单的酒馆模式信息页面
             html_content = f"""
@@ -4545,7 +4580,7 @@ class GraphPage(QWidget):
                     <div class="info">
                         <h3>会话信息</h3>
                         <p><strong>会话ID:</strong> {session_id}</p>
-                        <p><strong>状态:</strong> 活跃连接</p>
+                        <p><strong>状态:</strong> {safe_status}</p>
                         <p><strong>模式:</strong> SillyTavern集成</p>
                     </div>
 
@@ -4575,6 +4610,47 @@ class GraphPage(QWidget):
 
 
 
+class ModelFetchWorker(QThread):
+    fetched = pyqtSignal(object, bool)
+    failed = pyqtSignal(str)
+
+    def __init__(self, base_url, api_key, timeout, parent=None):
+        super().__init__(parent)
+        self.base_url, self.api_key, self.timeout = base_url, api_key, timeout
+
+    def run(self):
+        from src.utils.model_catalog import fetch_models
+        try:
+            models, retried = fetch_models(self.base_url, self.api_key, self.timeout)
+            self.fetched.emit(models, retried)
+        except ValueError as error:
+            self.failed.emit(str(error))
+        except Exception:
+            self.failed.emit("获取模型失败，请检查接口地址和网络")
+
+
+class BackendReloadWorker(QThread):
+    checked = pyqtSignal(str)
+
+    def __init__(self, port, parent=None):
+        super().__init__(parent)
+        self.port = port
+
+    def run(self):
+        try:
+            response = requests.post(f"http://127.0.0.1:{self.port}/system/reload_config", timeout=2)
+            data = response.json() if response.ok else {}
+            if response.ok and data.get("ok"):
+                status = "后端已加载新 LLM 设置" if data.get("llm_configured") else "后端已加载设置，但 LLM 配置不完整"
+            elif response.status_code == 404:
+                status = "当前后端不支持配置热重载；重启后端后生效"
+            else:
+                status = f"后端未确认更新（HTTP {response.status_code}）"
+        except Exception:
+            status = "后端未连接；下次启动或初始化时会读取配置"
+        self.checked.emit(status)
+
+
 class ConfigPage(QWidget):
     """系统配置页面"""
 
@@ -4584,15 +4660,6 @@ class ConfigPage(QWidget):
         self.env_path = Path(env_path) if env_path is not None else Path(__file__).resolve().parent / '.env'
         self.init_ui()
         self.load_config()
-
-    def load_config_styles(self):
-        """Keep spin controls compact; global theme supplies all colours."""
-        self.setStyleSheet("""
-            #configPage QSpinBox::up-button, #configPage QDoubleSpinBox::up-button,
-            #configPage QSpinBox::down-button, #configPage QDoubleSpinBox::down-button {
-                width: 0px; height: 0px; border: none; background: transparent;
-            }
-        """)
 
     def init_ui(self):
         # 创建滚动区域
@@ -4605,9 +4672,6 @@ class ConfigPage(QWidget):
         main_widget = QWidget()
         layout = QVBoxLayout(main_widget)
 
-        # 加载配置页面样式
-        self.load_config_styles()
-
         # LLM配置组
         llm_group = QGroupBox("LLM模型配置")
         llm_layout = QFormLayout(llm_group)
@@ -4615,32 +4679,49 @@ class ConfigPage(QWidget):
         self.api_base_url_input = QLineEdit()
         self.api_key_input = QLineEdit()
         self.api_key_input.setEchoMode(QLineEdit.Password)
-        self.model_input = QLineEdit()
+        self.model_input = QComboBox()
+        self.model_input.setEditable(True)
+        self.fetch_models_button = QPushButton("获取模型")
+        self.fetch_models_button.clicked.connect(self.fetch_models)
+        self.model_metadata = {}
+        self.model_status_label = QLabel("")
+        self.model_status_label.setProperty("role", "status")
+        self.model_detail_labels = {}
+        details = QWidget()
+        details_layout = QFormLayout(details)
+        details_layout.setContentsMargins(0, 0, 0, 0)
+        from src.utils.model_catalog import model_details
+        for name in model_details({}):
+            label = QLabel("未提供（使用服务商默认）")
+            label.setWordWrap(True)
+            details_layout.addRow(name + ":", label)
+            self.model_detail_labels[name] = label
+        self.model_input.currentTextChanged.connect(self.update_model_details)
         self.stream_checkbox = QCheckBox("启用流式输出")
         self.embedding_review_checkbox = QCheckBox("启用Embedding向量复核（付费）")
         self.embedding_review_checkbox.setToolTip("仅勾选后才会调用Embedding接口进行语义复核，可能产生额外费用。")
 
         # LLM参数配置
-        self.max_tokens_input = QSpinBox()
-        self.max_tokens_input.setRange(100, 32000)
+        self.max_tokens_input = ValueUnitInput([UnitSpec('tokens', 1), UnitSpec('K tokens', 1000)], 100, 32000, decimals=0)
         self.max_tokens_input.setValue(4000)
-        self.max_tokens_input.setSuffix(" tokens")
 
-        self.temperature_input = QDoubleSpinBox()
-        self.temperature_input.setRange(0.0, 2.0)
-        self.temperature_input.setSingleStep(0.1)
-        self.temperature_input.setDecimals(1)
+        self.temperature_input = ValueUnitInput([], 0.0, 2.0, decimals=1)
         self.temperature_input.setValue(0.8)
 
-        self.request_timeout_input = QSpinBox()
-        self.request_timeout_input.setRange(30, 600)
+        self.request_timeout_input = ValueUnitInput([UnitSpec('秒', 1), UnitSpec('分钟', 60)], 30, 600, decimals=0)
         self.request_timeout_input.setValue(180)
-        self.request_timeout_input.setSuffix("秒")
 
         llm_layout.addRow("API接口地址:", self.api_base_url_input)
         llm_layout.addRow("API密钥:", self.api_key_input)
-        llm_layout.addRow("默认模型:", self.model_input)
-        llm_layout.addRow("最大Token数:", self.max_tokens_input)
+        model_row = QWidget()
+        model_row_layout = QHBoxLayout(model_row)
+        model_row_layout.setContentsMargins(0, 0, 0, 0)
+        model_row_layout.addWidget(self.model_input, 1)
+        model_row_layout.addWidget(self.fetch_models_button)
+        llm_layout.addRow("默认模型:", model_row)
+        llm_layout.addRow("", self.model_status_label)
+        llm_layout.addRow("模型详情:", details)
+        llm_layout.addRow("最大输出量:", self.max_tokens_input)
         llm_layout.addRow("温度参数:", self.temperature_input)
         llm_layout.addRow("请求超时:", self.request_timeout_input)
         llm_layout.addRow("", self.stream_checkbox)
@@ -4650,15 +4731,11 @@ class ConfigPage(QWidget):
         window_group = QGroupBox("滑动窗口配置")
         window_layout = QFormLayout(window_group)
 
-        self.window_size_input = QSpinBox()
-        self.window_size_input.setRange(2, 20)
+        self.window_size_input = ValueUnitInput([UnitSpec('轮', 1)], 2, 20, decimals=0)
         self.window_size_input.setValue(4)
-        self.window_size_input.setSuffix("轮对话")
 
-        self.processing_delay_input = QSpinBox()
-        self.processing_delay_input.setRange(0, 10)
+        self.processing_delay_input = ValueUnitInput([UnitSpec('轮', 1)], 0, 10, decimals=0)
         self.processing_delay_input.setValue(1)
-        self.processing_delay_input.setSuffix("轮延迟")
 
         self.enable_enhanced_agent_checkbox = QCheckBox("启用增强Agent")
         self.enable_enhanced_agent_checkbox.setChecked(True)
@@ -4678,15 +4755,11 @@ class ConfigPage(QWidget):
         self.api_server_port_input = QLineEdit()
         self.api_server_port_input.setValidator(QIntValidator(1024, 65535, self))
 
-        self.api_timeout_input = QSpinBox()
-        self.api_timeout_input.setRange(5, 60)
+        self.api_timeout_input = ValueUnitInput([UnitSpec('秒', 1), UnitSpec('分钟', 60)], 5, 60, decimals=0)
         self.api_timeout_input.setValue(15)
-        self.api_timeout_input.setSuffix("秒")
 
-        self.health_check_timeout_input = QSpinBox()
-        self.health_check_timeout_input.setRange(3, 30)
+        self.health_check_timeout_input = ValueUnitInput([UnitSpec('秒', 1), UnitSpec('分钟', 60)], 3, 30, decimals=0)
         self.health_check_timeout_input.setValue(10)
-        self.health_check_timeout_input.setSuffix("秒")
 
         server_layout.addRow("API服务器端口:", self.api_server_port_input)
         server_layout.addRow("API请求超时:", self.api_timeout_input)
@@ -4700,10 +4773,8 @@ class ConfigPage(QWidget):
         self.tavern_port_input = QLineEdit()
         self.tavern_port_input.setValidator(QIntValidator(1024, 65535, self))
 
-        self.tavern_timeout_input = QSpinBox()
-        self.tavern_timeout_input.setRange(3, 30)
+        self.tavern_timeout_input = ValueUnitInput([UnitSpec('秒', 1), UnitSpec('分钟', 60)], 3, 30, decimals=0)
         self.tavern_timeout_input.setValue(10)
-        self.tavern_timeout_input.setSuffix("秒")
 
         # 测试连接按钮
         self.test_tavern_btn = QPushButton("测试酒馆连接")
@@ -4724,20 +4795,14 @@ class ConfigPage(QWidget):
         ui_group = QGroupBox("界面配置")
         ui_layout = QFormLayout(ui_group)
 
-        self.max_messages_input = QSpinBox()
-        self.max_messages_input.setRange(100, 5000)
+        self.max_messages_input = ValueUnitInput([UnitSpec('条', 1)], 100, 5000, decimals=0)
         self.max_messages_input.setValue(1000)
-        self.max_messages_input.setSuffix("条消息")
 
-        self.animation_interval_input = QSpinBox()
-        self.animation_interval_input.setRange(100, 2000)
+        self.animation_interval_input = ValueUnitInput([UnitSpec('毫秒', 1), UnitSpec('秒', 1000)], 100, 2000, decimals=0)
         self.animation_interval_input.setValue(500)
-        self.animation_interval_input.setSuffix("毫秒")
 
-        self.poll_interval_input = QSpinBox()
-        self.poll_interval_input.setRange(1, 10)
+        self.poll_interval_input = ValueUnitInput([UnitSpec('秒', 1), UnitSpec('分钟', 60)], 1, 10, decimals=0)
         self.poll_interval_input.setValue(3)
-        self.poll_interval_input.setSuffix("秒")
 
         ui_layout.addRow("最大消息数:", self.max_messages_input)
         ui_layout.addRow("动画间隔:", self.animation_interval_input)
@@ -4793,7 +4858,7 @@ class ConfigPage(QWidget):
         # LLM配置
         self.api_base_url_input.setText(config.get("OPENAI_API_BASE_URL", ""))
         self.api_key_input.setText(config.get("OPENAI_API_KEY", ""))
-        self.model_input.setText(config.get("DEFAULT_MODEL", "deepseek-v3.1"))
+        self.model_input.setCurrentText(config.get("DEFAULT_MODEL", "deepseek-v3.1"))
 
         # LLM参数配置
         self.max_tokens_input.setValue(int(config.get("MAX_TOKENS", "4000")))
@@ -4836,14 +4901,95 @@ class ConfigPage(QWidget):
         active_theme = theme.current_name() if QApplication.instance() else resolved_theme
         self.theme_combo.setCurrentIndex(self.theme_combo.findData(active_theme))
 
+    def update_model_details(self, model_id):
+        from src.utils.model_catalog import model_details
+        data = self.model_metadata.get(model_id)
+        details = model_details(data) if data is not None else {}
+        for name, label in self.model_detail_labels.items():
+            label.setText(details.get(name, "未提供（使用服务商默认）"))
+        if data is None:
+            self.model_status_label.setText("当前模型无元数据")
+
+    def fetch_models(self):
+        if not self.request_timeout_input.isValid():
+            self._models_failed(f"请求超时：{self.request_timeout_input.errorText()}")
+            return
+        from src.utils.model_catalog import validate_endpoint
+        try:
+            base_url, api_key = validate_endpoint(self.api_base_url_input.text(), self.api_key_input.text())
+        except ValueError as error:
+            self.model_status_label.setText(str(error))
+            self.model_status_label.setProperty("status", "danger")
+            self.model_status_label.style().unpolish(self.model_status_label)
+            self.model_status_label.style().polish(self.model_status_label)
+            return
+        self.fetch_models_button.setEnabled(False)
+        self.fetch_models_button.setText("获取中…")
+        self.model_status_label.setText("正在获取模型列表…")
+        self.model_fetch_worker = ModelFetchWorker(base_url, api_key, self.request_timeout_input.value(), self)
+        self.model_fetch_worker.fetched.connect(self._models_fetched)
+        self.model_fetch_worker.failed.connect(self._models_failed)
+        self.model_fetch_worker.finished.connect(self._models_fetch_finished)
+        self.model_fetch_worker.start()
+
+    def _models_fetched(self, models, retried):
+        selected = self.model_input.currentText()
+        self.model_metadata = models
+        self.model_input.blockSignals(True)
+        self.model_input.clear()
+        self.model_input.addItems(models)
+        self.model_input.setCurrentText(selected)
+        self.model_input.blockSignals(False)
+        self.update_model_details(selected)
+        note = "（原地址返回 404，已通过 /v1/models 获取）" if retried else ""
+        self.model_status_label.setText(f"已获取 {len(models)} 个模型{note}")
+        self.model_status_label.setProperty("status", "success")
+        self.model_status_label.style().unpolish(self.model_status_label)
+        self.model_status_label.style().polish(self.model_status_label)
+
+    def _models_failed(self, message):
+        self.model_status_label.setText(message)
+        self.model_status_label.setProperty("status", "danger")
+        self.model_status_label.style().unpolish(self.model_status_label)
+        self.model_status_label.style().polish(self.model_status_label)
+
+    def _models_fetch_finished(self):
+        self.fetch_models_button.setEnabled(True)
+        self.fetch_models_button.setText("获取模型")
+        self.model_fetch_worker.deleteLater()
+
+    def _show_save_result(self, backend_status, other_settings_changed):
+        message = "配置保存成功！\n" + backend_status
+        if other_settings_changed:
+            message += "\n其他部分设置可能需要重启应用。"
+        QMessageBox.information(self, "成功", message)
+
     def save_config(self):
-        """保存配置"""
+        """保存配置；先验证全部数值，避免部分写入 .env。"""
+        fields = (
+            ("最大输出量", self.max_tokens_input),
+            ("温度参数", self.temperature_input),
+            ("请求超时", self.request_timeout_input),
+            ("滑动窗口", self.window_size_input),
+            ("处理延迟", self.processing_delay_input),
+            ("API请求超时", self.api_timeout_input),
+            ("健康检查超时", self.health_check_timeout_input),
+            ("连接超时", self.tavern_timeout_input),
+            ("最大消息数", self.max_messages_input),
+            ("动画间隔", self.animation_interval_input),
+            ("轮询间隔", self.poll_interval_input),
+        )
+        for label, field in fields:
+            if not field.isValid():
+                field.number_edit.setFocus()
+                QMessageBox.warning(self, "输入无效", f"{label}：{field.errorText()}")
+                return
         try:
             previous_config = dotenv_values(self.env_path)
             # LLM配置
             set_key(self.env_path, "OPENAI_API_BASE_URL", self.api_base_url_input.text())
             set_key(self.env_path, "OPENAI_API_KEY", self.api_key_input.text())
-            set_key(self.env_path, "DEFAULT_MODEL", self.model_input.text())
+            set_key(self.env_path, "DEFAULT_MODEL", self.model_input.currentText())
             set_key(self.env_path, "LLM_STREAM_OUTPUT", str(self.stream_checkbox.isChecked()).lower())
             set_key(self.env_path, "ENABLE_EMBEDDING_REVIEW", str(self.embedding_review_checkbox.isChecked()).lower())
 
@@ -4889,10 +5035,22 @@ class ConfigPage(QWidget):
                 previous_config.get(key) != updated_config.get(key)
                 for key in previous_config.keys() | updated_config.keys() if key != "UI_THEME"
             )
-            message = "\u914d\u7f6e\u4fdd\u5b58\u6210\u529f\uff01"
-            if other_settings_changed:
-                message += "\n\n\u6ce8\u610f\uff1a\u67d0\u4e9b\u5176\u4ed6\u914d\u7f6e\u9700\u8981\u91cd\u542f\u5e94\u7528\u7a0b\u5e8f\u624d\u80fd\u751f\u6548\u3002"
-            QMessageBox.information(self, "\u6210\u529f", message)
+            from src.utils.config import reload_config, config as live_config
+            reload_config(self.env_path)
+            main_window = self.window()
+            if isinstance(main_window, EchoGraphMainWindow) and hasattr(main_window, "game_engine"):
+                main_window.game_engine.grag_agent = (
+                    GRAGUpdateAgent(LLMClient()) if live_config.llm.api_key and live_config.llm.base_url else None
+                )
+            port = self.api_server_port_input.text().strip() or "9543"
+            self.save_button.setEnabled(False)
+            self.backend_reload_worker = BackendReloadWorker(port, self)
+            self.backend_reload_worker.checked.connect(
+                lambda status: self._show_save_result(status, other_settings_changed)
+            )
+            self.backend_reload_worker.finished.connect(lambda: self.save_button.setEnabled(True))
+            self.backend_reload_worker.finished.connect(self.backend_reload_worker.deleteLater)
+            self.backend_reload_worker.start()
 
         except Exception as e:
             QMessageBox.critical(self, "错误", f"配置保存失败：{str(e)}")
@@ -5391,7 +5549,8 @@ def create_app_and_window(env_path=None, process_theme=theme._USE_PROCESS_ENV):
     if process_theme is theme._USE_PROCESS_ENV:
         process_theme = _EXTERNAL_UI_THEME
     selected_theme = theme.resolve_ui_theme(path, process_theme)
-    load_dotenv(path, override=False)
+    from src.utils.config import reload_config
+    reload_config(path)
     os.environ["UI_THEME"] = selected_theme
     app = QApplication(sys.argv)
     app.setApplicationName("EchoGraph")

@@ -1,14 +1,31 @@
 import os
 import yaml
 from pathlib import Path
-from dotenv import load_dotenv
+from dotenv import dotenv_values
+from threading import RLock
 from pydantic import BaseModel
 from typing import Optional
 
-# 强制加载.env文件，覆盖系统环境变量
 env_file = Path(__file__).resolve().parents[2] / '.env'
-if env_file.exists():
-    load_dotenv(env_file, override=False)
+_reload_lock = RLock()
+_loaded_env_keys = set()
+_env_mtime_ns = None
+
+
+def _load_file_environment(path=None):
+    """For keys present in the repository .env, file values win over inherited environment."""
+    global _loaded_env_keys, _env_mtime_ns
+    path = Path(path) if path is not None else env_file
+    values = dotenv_values(path) if path.is_file() else {}
+    for key in _loaded_env_keys - values.keys():
+        os.environ.pop(key, None)
+    for key, value in values.items():
+        os.environ[key] = value if value is not None else ""
+    _loaded_env_keys = set(values)
+    _env_mtime_ns = path.stat().st_mtime_ns if path.is_file() else None
+
+
+_load_file_environment()
 
 class LLMConfig(BaseModel):
     provider: str = "openai"
@@ -37,7 +54,9 @@ class LoggingConfig(BaseModel):
     level: str = "INFO"
 
 class Config:
-    def __init__(self, config_path: str = "config.yaml"):
+    def __init__(self, config_path=None):
+        if config_path is None:
+            config_path = env_file.parent / "config.yaml"
         self.config_path = Path(config_path)
         self._load_config()
     
@@ -72,3 +91,26 @@ class Config:
 
 # 全局配置实例
 config = Config()
+
+
+def reload_config(path=None):
+    """Reload the repository .env and update the existing singleton in place.
+
+    Values explicitly present in .env override inherited process variables and
+    are copied into os.environ. Absent keys retain their external values, except
+    keys removed from .env since the previous load.
+    """
+    with _reload_lock:
+        _load_file_environment(path)
+        fresh = Config(config.config_path)
+        for name in ("system", "logging", "llm", "memory", "game"):
+            getattr(config, name).__dict__.update(getattr(fresh, name).__dict__)
+        return config
+
+
+def reload_config_if_changed():
+    """Stat only; parse and rebuild when the .env timestamp changes."""
+    mtime = env_file.stat().st_mtime_ns if env_file.is_file() else None
+    if mtime != _env_mtime_ns:
+        return reload_config()
+    return config

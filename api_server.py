@@ -1,5 +1,5 @@
 import uvicorn
-from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -15,11 +15,10 @@ from datetime import datetime
 from pathlib import Path
 
 # 导入配置
-from src.utils.config import config
-from dotenv import load_dotenv
+from src.utils.config import config, reload_config, reload_config_if_changed
 
 # 加载环境变量
-load_dotenv()
+reload_config()
 
 # --- Configure file logging for API server ---
 os.makedirs("logs", exist_ok=True)
@@ -111,6 +110,38 @@ class ConnectionManager:
                 self.disconnect(session_id, websocket)
 
 manager = ConnectionManager()
+
+
+initializing_sessions: Set[str] = set()
+
+
+def _initialization_state(session_id: str, nodes_count: int) -> Dict[str, Any]:
+    """Expose initialization state without changing has_session for older clients."""
+    info = storage_manager.active_sessions.get(session_id, {})
+    status = info.get("initialization_status", "uninitialized")
+    reason = info.get("initialization_reason", "")
+    if status == "initializing" and session_id not in initializing_sessions:
+        status = "failed"  # Interrupted by a previous process exit.
+        reason = reason or "上次初始化中断，可重新尝试"
+    if nodes_count and status not in {"failed", "initializing"}:
+        status = "completed"
+    return {
+        "initialization_status": status,
+        "needs_initialization": status == "failed" or (nodes_count == 0 and status not in {"completed", "initializing"}),
+        "initialization_reason": reason,
+    }
+
+
+def _set_initialization_state(session_id: str, status: str, reason: str = "") -> None:
+    if status == "initializing":
+        initializing_sessions.add(session_id)
+    else:
+        initializing_sessions.discard(session_id)
+    info = storage_manager.active_sessions.get(session_id)
+    if info is not None:
+        info["initialization_status"] = status
+        info["initialization_reason"] = reason
+        storage_manager._save_active_sessions()
 
 # --- 项目核心逻辑导入 ---
 from src.memory import GRAGMemory
@@ -223,7 +254,7 @@ def get_or_create_conflict_resolver(session_id: str) -> ConflictResolver:
 
 def build_grag_agent_or_raise() -> GRAGUpdateAgent:
     """创建GRAG Agent；配置或初始化失败时直接抛错。"""
-    from src.utils.config import config
+    reload_config_if_changed()
 
     if not config.llm.api_key:
         raise RuntimeError("LLM API Key 未配置，无法启用LLM图谱维护。")
@@ -233,13 +264,41 @@ def build_grag_agent_or_raise() -> GRAGUpdateAgent:
     return GRAGUpdateAgent(LLMClient())
 
 
+def _ensure_session_agent(engine: GameEngine, session_id: str) -> None:
+    """Rebuild an invalidated session agent on its next initialization."""
+    reload_config_if_changed()
+    settings = (config.llm.api_key, config.llm.base_url, config.llm.model)
+    if engine.grag_agent is None or getattr(engine, "_llm_settings", None) != settings:
+        engine.grag_agent = build_grag_agent_or_raise()
+        engine._llm_settings = settings
+        if session_id in sliding_window_managers:
+            sliding_window_managers[session_id].grag_agent = engine.grag_agent
+
+
+@app.post("/system/reload_config")
+async def reload_system_config(request: Request):
+    if request.client is None or request.client.host not in ("127.0.0.1", "::1"):
+        raise HTTPException(status_code=403, detail="Local requests only")
+    reload_config()
+    for engine in sessions.values():
+        engine.grag_agent = None
+        engine._llm_settings = None
+    for sliding_manager in sliding_window_managers.values():
+        sliding_manager.grag_agent = None
+    logger.info(f"🔄 LLM configuration reloaded; key set: {'yes' if config.llm.api_key else 'no'}")
+    safe_base_url = config.llm.base_url
+    if safe_base_url and config.llm.api_key:
+        safe_base_url = safe_base_url.replace(config.llm.api_key, "***")
+    return {"ok": True, "llm_configured": bool(config.llm.api_key and config.llm.base_url),
+            "base_url": safe_base_url, "model": config.llm.model}
+
+
 def _is_tavern_init_request(is_test: bool, character_card: Dict[str, Any]) -> bool:
     """判定是否为酒馆初始化请求（用于严格失败策略）。"""
     if is_test:
         return False
-    tags = character_card.get("tags", [])
-    if isinstance(tags, (list, tuple, set)):
-        return "tavern_mode" in tags or "plugin_submitted" in tags
+    # The plugin sends ordinary character fields without tags. Non-test requests
+    # must propagate extraction failures so the plugin can report and retry them.
     return True
 
 def get_or_create_session_engine(session_id: str, is_test: bool = False, enable_agent: bool = True) -> GameEngine:
@@ -250,6 +309,7 @@ def get_or_create_session_engine(session_id: str, is_test: bool = False, enable_
 
     # 如果会话已存在，直接返回
     if session_id in sessions:
+        _ensure_session_agent(sessions[session_id], session_id)
         return sessions[session_id]
 
     # 获取或创建会话特定的锁
@@ -260,6 +320,7 @@ def get_or_create_session_engine(session_id: str, is_test: bool = False, enable_
     with session_creation_locks[session_id]:
         # 双重检查，因为在等待锁期间可能已经被另一个线程创建
         if session_id in sessions:
+            _ensure_session_agent(sessions[session_id], session_id)
             return sessions[session_id]
 
         logger.info(f"🔧 [ThreadPool] Creating new session engine for session_id={session_id}")
@@ -307,6 +368,7 @@ def get_or_create_session_engine(session_id: str, is_test: bool = False, enable_
         start_time = time.time()
         engine = GameEngine(memory, perception, rpg_processor, validation_layer, grag_agent)
         engine_init_time = time.time() - start_time
+        engine._llm_settings = (config.llm.api_key, config.llm.base_url, config.llm.model)
         sessions[session_id] = engine
         logger.info(f"✅ [ThreadPool] GameEngine instance created in {engine_init_time:.2f}s. Session creation complete.")
 
@@ -444,16 +506,21 @@ async def initialize_session(req: InitializeRequest):
         logger.info(f"📝 使用会话ID: {session_id}")
 
         # 检查会话是否已经存在并已初始化
-        if session_id in sessions:
-            logger.info(f"♻️ 会话 {session_id} 已存在，跳过重复初始化")
+        if session_id in sessions and (
+            _initialization_state(session_id, len(sessions[session_id].memory.knowledge_graph.graph.nodes()))["initialization_status"]
+            == "completed"
+        ):
+            logger.info(f"♻️ 会话 {session_id} 已初始化，跳过重复初始化")
             # 返回现有会话的统计信息
             engine = sessions[session_id]
+            _ensure_session_agent(engine, session_id)
             nodes_count = len(engine.memory.knowledge_graph.graph.nodes())
             edges_count = len(engine.memory.knowledge_graph.graph.edges())
 
             return InitializeResponse(
                 session_id=session_id,
-                message=f"使用现有会话，当前包含 {nodes_count} 个节点和 {edges_count} 条边",
+                message=(_initialization_state(session_id, nodes_count)["initialization_reason"]
+                         if nodes_count == 0 else f"使用现有会话，当前包含 {nodes_count} 个节点和 {edges_count} 条边"),
                 graph_stats={
                     "nodes_added": nodes_count,
                     "edges_added": edges_count
@@ -536,7 +603,7 @@ async def initialize_session(req: InitializeRequest):
 
         # 检查知识图谱是否已有数据，如果有则直接跳过整个初始化
         existing_nodes = len(engine.memory.knowledge_graph.graph.nodes())
-        if existing_nodes > 0:
+        if existing_nodes > 0 and _initialization_state(session_id, existing_nodes)["initialization_status"] != "failed":
             logger.info(f"♻️ 知识图谱已有 {existing_nodes} 个节点，跳过整个初始化过程")
             existing_edges = len(engine.memory.knowledge_graph.graph.edges())
 
@@ -558,6 +625,7 @@ async def initialize_session(req: InitializeRequest):
         logger.info(f"  - 角色卡数据: {bool(req.character_card)} (有数据)")
         logger.info(f"  - 世界书数据: {bool(req.world_info)} (有数据)")
 
+        _set_initialization_state(session_id, "initializing")
         start_time = time.time()
         is_tavern_request = _is_tavern_init_request(req.is_test, req.character_card)
         try:
@@ -601,13 +669,23 @@ async def initialize_session(req: InitializeRequest):
             except Exception as e:
                 logger.warning(f"⚠️ 滑动窗口系统初始化失败: {e}")
 
-        logger.info(f"🎉 会话 {session_id} 初始化完全成功")
+        nodes_count = len(engine.memory.knowledge_graph.graph.nodes())
+        if nodes_count == 0:
+            detail = (init_result.get("reason") or init_result.get("message") or init_result.get("error")) if isinstance(init_result, dict) else None
+            reason = f"角色卡未提取到实体：{detail or '角色卡或世界书没有可提取的内容，或 LLM 未返回实体'}"
+            logger.warning(f"⚠️ {reason}")
+        else:
+            reason = ""
+        _set_initialization_state(session_id, "completed", reason)
+        logger.info(f"🎉 会话 {session_id} 初始化完全成功：{nodes_count} 个实体")
         return InitializeResponse(
             session_id=session_id,
-            message="Session initialized successfully and knowledge graph created.",
+            message=reason or "知识图谱初始化成功",
             graph_stats=init_result
         )
     except Exception as e:
+        if 'session_id' in locals():
+            _set_initialization_state(session_id, "failed", str(e))
         logger.error(f"❌ 会话初始化失败: {e}")
         import traceback
         logger.error(f"详细错误堆栈: {traceback.format_exc()}")
@@ -646,11 +724,15 @@ async def perform_async_initialization(task_id: str, req: AsyncInitializeRequest
         initialization_tasks[task_id]["message"] = "正在分析角色卡和世界书..."
         logger.info(f"🔄 [Async Task {task_id}] Step 2: Initializing knowledge graph in thread pool...")
 
+        _set_initialization_state(session_id, "initializing")
         init_result = await run_in_threadpool(engine.initialize_from_tavern_data, req.character_card, req.world_info)
         if _is_tavern_init_request(req.is_test, req.character_card):
             if isinstance(init_result, dict) and init_result.get("method") in {"failed", "simple_fallback"}:
                 raise RuntimeError(f"酒馆初始化失败: {init_result.get('error', init_result.get('method'))}")
-        logger.info(f"✅ [Async Task {task_id}] Step 2: Knowledge graph initialized.")
+        nodes_count = len(engine.memory.knowledge_graph.graph.nodes())
+        reason = "" if nodes_count else "角色卡未提取到实体：角色卡或世界书没有可提取的内容，或 LLM 未返回实体"
+        _set_initialization_state(session_id, "completed", reason)
+        logger.info(f"✅ [Async Task {task_id}] Step 2: Knowledge graph initialized: {nodes_count} nodes. {reason}")
 
         # 步骤3: 配置滑动窗口 (80%)
         initialization_tasks[task_id]["progress"] = 0.8
@@ -691,6 +773,8 @@ async def perform_async_initialization(task_id: str, req: AsyncInitializeRequest
         logger.error(f"❌ [Async Task {task_id}] Full traceback: {traceback.format_exc()}")
         initialization_tasks[task_id]["status"] = InitTaskStatus.FAILED
         initialization_tasks[task_id]["error"] = str(e)
+        if 'session_id' in locals():
+            _set_initialization_state(session_id, "failed", str(e))
         initialization_tasks[task_id]["updated_at"] = datetime.now().isoformat()
 
 @app.post("/initialize_async", response_model=AsyncInitializeResponse)
@@ -1695,24 +1779,35 @@ async def submit_character_data(req: SubmitCharacterDataRequest):
                         world_info = character_card.get("world_info", "")
 
                         # 清空知识图谱
+                        _set_initialization_state(session_id, "initializing")
                         logger.info(f"🧹 [Auto-Reinit] Clearing existing knowledge graph for session {session_id}")
                         engine.memory.clear_all()
 
                         # 重新进行LLM初始化
                         logger.info(f"🧠 [Auto-Reinit] Re-running LLM initialization with character: {req.character_name}")
-                        await run_in_threadpool(engine.initialize_from_tavern_data, character_card, world_info)
+                        result = await run_in_threadpool(engine.initialize_from_tavern_data, character_card, world_info)
+                        if isinstance(result, dict) and result.get("method") in {"failed", "simple_fallback"}:
+                            raise RuntimeError(result.get("error") or result["method"])
+                        nodes_count = len(engine.memory.knowledge_graph.graph.nodes())
+                        edges_count = len(engine.memory.knowledge_graph.graph.edges())
+                        reason = "" if nodes_count else "角色卡未提取到实体：角色卡或世界书没有可提取的内容，或 LLM 未返回实体"
+                        _set_initialization_state(session_id, "completed", reason)
 
-                        logger.info(f"🎉 [Auto-Reinit] Auto-reinitialization completed successfully for session {session_id}")
+                        logger.info(f"🎉 [Auto-Reinit] Auto-reinitialization completed successfully for session {session_id}: {nodes_count} nodes, {edges_count} edges. {reason}")
 
                         # 通过WebSocket推送完成通知
                         await manager.send_message(session_id, {
                             "type": "auto_reinitialization_complete",
                             "message": f"角色 {req.character_name} 的知识图谱重新初始化完成",
                             "session_id": session_id,
-                            "character_name": req.character_name
+                            "character_name": req.character_name,
+                            "graph_nodes": nodes_count,
+                            "graph_edges": edges_count,
+                            "reason": reason,
                         })
 
                     except Exception as reinit_error:
+                        _set_initialization_state(session_id, "failed", str(reinit_error))
                         logger.error(f"❌ [Auto-Reinit] Auto-reinitialization failed for {session_id}: {reinit_error}")
                         import traceback
                         logger.error(f"❌ [Auto-Reinit] Full error traceback: {traceback.format_exc()}")
@@ -1850,7 +1945,7 @@ async def health_check():
     # 检查LLM配置状态
     llm_configured = False
     try:
-        from src.utils.config import config
+        reload_config_if_changed()
         llm_configured = bool(config.llm.api_key and config.llm.base_url)
     except Exception:
         pass
@@ -2269,7 +2364,9 @@ async def get_current_tavern_session():
         logger.debug(f"[get_current_tavern_session] All sessions: {list(sessions.keys())}")
         logger.debug(f"[get_current_tavern_session] Tavern sessions with engines: {tavern_sessions}")
 
-        if not tavern_sessions:
+        if not tavern_sessions and not any(
+            sid.startswith("tavern_") for sid in storage_manager.active_sessions
+        ) and not any(sid.startswith("tavern_") for sid in manager.active_connections):
             logger.info(f"[get_current_tavern_session] No active tavern sessions found")
             return {
                 "has_session": False,
@@ -2346,7 +2443,8 @@ async def get_current_tavern_session():
                 "character_name": character_name,
                 "graph_nodes": 0,
                 "graph_edges": 0,
-                "message": "Session detected (initializing)"
+                "message": "Session detected (initializing)",
+                **_initialization_state(latest_session, 0),
             }
 
         # 获取图谱节点和边的数量
@@ -2363,7 +2461,8 @@ async def get_current_tavern_session():
             "character_name": character_name,
             "graph_nodes": nodes_count,
             "graph_edges": edges_count,
-            "message": "Active tavern session found" if nodes_count > 0 else "Session found but knowledge graph is empty"
+            "message": "Active tavern session found" if nodes_count > 0 else "Session found but knowledge graph is empty",
+            **_initialization_state(latest_session, nodes_count),
         }
     except Exception as e:
         logger.error(f"Error getting current tavern session: {e}")
@@ -2842,7 +2941,8 @@ async def _handle_ws_request(session_id: str, message: Dict[str, Any]) -> Dict[s
                     "session_id": session_id,
                     "graph_nodes": nodes_count,
                     "graph_edges": edges_count,
-                    "message": "Active tavern session found" if nodes_count > 0 else "Session found but knowledge graph is empty"
+                    "message": "Active tavern session found" if nodes_count > 0 else "Session found but knowledge graph is empty",
+                    **_initialization_state(session_id, nodes_count),
                 }
             else:
                 logger.info(f"[WS] No session found for: {session_id}, waiting for frontend to send initialization data...")
@@ -2963,7 +3063,7 @@ async def auto_load_character_session(session_id: str, character_name: str, char
 
         # 通知前端刷新
         try:
-            await manager.send_to_session(session_id, {
+            await manager.send_message(session_id, {
                 "type": "session_loaded",
                 "session_id": session_id,
                 "character_name": character_name,
