@@ -73,48 +73,37 @@ logger.add(
 # --- WebSocket 连接管理器 ---
 class ConnectionManager:
     def __init__(self):
-        # Map session_id -> WebSocket (current active socket for that session)
-        self.active_connections: Dict[str, WebSocket] = {}
+        # A session may be open in more than one browser tab.
+        self.active_connections: Dict[str, set[WebSocket]] = {}
 
     async def connect(self, session_id: str, websocket: WebSocket):
         await websocket.accept()
-        # If there is an existing socket for the same session, close it before replacing
-        old_ws = self.active_connections.get(session_id)
-        if old_ws is not None and old_ws is not websocket:
-            try:
-                await old_ws.close(code=1012, reason="Replaced by new connection")
-            except Exception:
-                pass
-        self.active_connections[session_id] = websocket
+        self.active_connections.setdefault(session_id, set()).add(websocket)
         logger.info(f"🔌 [WS] Plugin connected for session {session_id}. Total connections: {len(self.active_connections)}")
 
     def disconnect(self, session_id: str, websocket: Optional[WebSocket] = None):
-        """Remove session mapping only if it is the same websocket (when provided).
-        This avoids deleting a newer connection when an older socket closes later."""
-        if session_id in self.active_connections:
-            if websocket is None or self.active_connections.get(session_id) is websocket:
-                del self.active_connections[session_id]
-                logger.info(f"🔌 [WS] Plugin disconnected for session {session_id}. Total connections: {len(self.active_connections)}")
-
-                # 🔧 Clean up orphaned session if no engine exists
-                if session_id not in sessions and session_id.startswith('tavern_'):
-                    try:
-                        if hasattr(storage_manager, 'active_sessions') and session_id in storage_manager.active_sessions:
-                            del storage_manager.active_sessions[session_id]
-                            storage_manager._save_active_sessions()
-                            logger.info(f"🧹 [Cleanup] Removed orphaned session from active_sessions: {session_id}")
-
-                        # 🔧 CRITICAL: Also clean from any in-memory tracking that prevents proper cleanup
-                        # If this session appears in WebSocket logs but has no engine and no proper storage,
-                        # it's a phantom session that should not influence session selection
-                        logger.info(f"🧹 [Cleanup] Session {session_id} had WebSocket but no engine, preventing future phantom selections")
-
-                    except Exception as e:
-                        logger.error(f"❌ [Cleanup] Failed to clean up orphaned session {session_id}: {e}")
+        connections = self.active_connections.get(session_id)
+        if not connections:
+            return
+        if websocket is None:
+            connections.clear()
+        else:
+            connections.discard(websocket)
+        if connections:
+            return
+        del self.active_connections[session_id]
+        logger.info(f"🔌 [WS] Plugin disconnected for session {session_id}. Total connections: {len(self.active_connections)}")
+        if session_id not in sessions and session_id.startswith('tavern_'):
+            try:
+                if hasattr(storage_manager, 'active_sessions') and session_id in storage_manager.active_sessions:
+                    del storage_manager.active_sessions[session_id]
+                    storage_manager._save_active_sessions()
+                    logger.info(f"🧹 [Cleanup] Removed orphaned session from active_sessions: {session_id}")
+            except Exception as e:
+                logger.error(f"❌ [Cleanup] Failed to clean up orphaned session {session_id}: {e}")
 
     async def send_message(self, session_id: str, message: Dict[str, Any]):
-        if session_id in self.active_connections:
-            websocket = self.active_connections[session_id]
+        for websocket in tuple(self.active_connections.get(session_id, ())):
             try:
                 await websocket.send_json(message)
                 logger.info(f"📤 [WS] Sent message to session {session_id}: {message.get('type')}")
@@ -382,6 +371,7 @@ class ProcessConversationRequest(BaseModel):
     timestamp: Optional[str] = None
     chat_id: Optional[int] = None
     tavern_message_id: Optional[str] = None
+    tavern_chat_id: Optional[str] = None
 
 class ProcessConversationResponse(BaseModel):
     message: str
@@ -856,8 +846,28 @@ async def update_memory(req: UpdateMemoryRequest):
 
 # --- 滑动窗口系统端点 ---
 
+process_conversation_locks: Dict[str, asyncio.Lock] = {}
+processed_conversation_cache: Dict[tuple, ProcessConversationResponse] = {}
+
 @app.post("/process_conversation", response_model=ProcessConversationResponse)
 async def process_conversation(req: ProcessConversationRequest):
+    # Existing callers without a message ID keep the original contract.
+    if not req.tavern_message_id or not req.tavern_chat_id:
+        return await _process_conversation_impl(req)
+    import hashlib
+    content_hash = hashlib.sha256((req.user_input + "\0" + req.llm_response).encode("utf-8")).hexdigest()
+    key = (req.session_id, id(sessions.get(req.session_id)), req.tavern_chat_id, req.tavern_message_id, content_hash)
+    lock = process_conversation_locks.setdefault(req.session_id, asyncio.Lock())
+    async with lock:
+        if key in processed_conversation_cache:
+            return processed_conversation_cache[key]
+        response = await _process_conversation_impl(req)
+        processed_conversation_cache[key] = response
+        if len(processed_conversation_cache) > 512:
+            processed_conversation_cache.pop(next(iter(processed_conversation_cache)))
+        return response
+
+async def _process_conversation_impl(req: ProcessConversationRequest):
     """
     使用滑动窗口系统处理新的对话轮次
     支持延迟处理和冲突解决
@@ -1837,7 +1847,7 @@ async def health_check():
     local_processor_sessions = len(sessions) - agent_sessions
 
     # 检查WebSocket连接状态
-    ws_connections = len(manager.active_connections)
+    ws_connections = sum(len(sockets) for sockets in manager.active_connections.values())
 
     # 检查LLM配置状态
     llm_configured = False
@@ -2668,10 +2678,10 @@ async def full_system_reset():
         logger.info(f"🧼 [Full Reset] 清理了 {plugin_char_count} 个插件角色数据")
 
         # 6. 清理WebSocket连接
-        ws_connection_count = len(manager.active_connections)
+        ws_connection_count = sum(len(sockets) for sockets in manager.active_connections.values())
         for session_id in list(manager.active_connections.keys()):
             try:
-                await manager.active_connections[session_id].close()
+                await asyncio.gather(*(ws.close() for ws in tuple(manager.active_connections[session_id])), return_exceptions=True)
             except:
                 pass
         manager.active_connections.clear()
@@ -2730,7 +2740,7 @@ async def quick_reset():
         session_count = len(sessions)
         sliding_window_count = len(sliding_window_managers)
         conflict_resolver_count = len(conflict_resolvers)
-        ws_connection_count = len(manager.active_connections)
+        ws_connection_count = sum(len(sockets) for sockets in manager.active_connections.values())
         plugin_char_count = len(plugin_character_data)
 
         sessions.clear()
@@ -2741,7 +2751,7 @@ async def quick_reset():
         # 关闭所有WebSocket连接
         for session_id in list(manager.active_connections.keys()):
             try:
-                await manager.active_connections[session_id].close()
+                await asyncio.gather(*(ws.close() for ws in tuple(manager.active_connections[session_id])), return_exceptions=True)
             except:
                 pass
         manager.active_connections.clear()
@@ -2781,7 +2791,9 @@ async def _handle_ws_request(session_id: str, message: Dict[str, Any]) -> Dict[s
         pass
     try:
         # 初始化会话
-        if action == "initialize":
+        if action == "ping":
+            return {"ok": True, "data": {"pong": True}}
+        elif action == "initialize":
             req = InitializeRequest(**payload)
             # 强制使用WebSocket连接的session_id，确保一致性
             req.session_id = session_id
@@ -3039,25 +3051,19 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
         # 主循环：接收请求并路由处理
         logger.info(f"🔌 [WS] Starting message loop for session: {session_id}")
 
-        # 🔧 Add timeout detection for inactive connections
-        import asyncio
-        timeout_task = None
-
-        async def check_activity_timeout():
-            await asyncio.sleep(10)  # 10 seconds timeout
-            logger.warning(f"⚠️ [WS] No requests received within 10s for session: {session_id}")
-            logger.warning(f"⚠️ [WS] Frontend might be stuck or not sending initialization requests")
-
-        timeout_task = asyncio.create_task(check_activity_timeout())
-
         while True:
-            msg = await websocket.receive_json()
-
-            # Cancel timeout since we received a message
-            if timeout_task and not timeout_task.done():
-                timeout_task.cancel()
+            try:
+                msg = await asyncio.wait_for(websocket.receive_json(), timeout=90)
+            except asyncio.TimeoutError:
+                logger.warning(f"⚠️ [WS] Heartbeat timeout for session {session_id}")
+                await websocket.close(code=1001, reason="Heartbeat timeout")
+                break
 
             # 标准化请求结构：{type:'request', action:'...', request_id:'...', payload:{...}}
+            if not TAVERN_MODE_ACTIVE:
+                await websocket.close(code=1008, reason="Tavern mode disabled")
+                break
+
             req_id = msg.get("request_id")
             action = msg.get("action")
             try:
@@ -3079,13 +3085,11 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
             })
             logger.debug(f"📤 [WS] Response sent for action '{action}' to session {session_id}")
 
-            # Reset timeout for next message
-            timeout_task = asyncio.create_task(check_activity_timeout())
     except WebSocketDisconnect:
         logger.info(f"🔌 [WS] WebSocket disconnected normally for session: {session_id}")
-        manager.disconnect(session_id, websocket)
     except Exception as e:
         logger.error(f"❌ [WS] Error in WebSocket connection for session {session_id}: {e}")
+    finally:
         manager.disconnect(session_id, websocket)
 
 # --- 服务器启动 ---
