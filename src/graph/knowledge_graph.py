@@ -81,13 +81,12 @@ class KnowledgeGraph:
             nx.DiGraph: 包含相关实体及其关系的子图。
         """
         relevant_nodes = set()
+        active_graph = nx.subgraph_view(
+            self.graph, filter_node=lambda node: not self.graph.nodes[node].get('_deleted', False)
+        )
         for entity_id in entity_ids:
-            if self.graph.has_node(entity_id) and not self.graph.nodes[entity_id].get('_deleted', False):
-                relevant_nodes.add(entity_id)
-                subgraph = nx.ego_graph(self.graph, entity_id, radius=depth)
-                for node_id in subgraph.nodes:
-                    if not subgraph.nodes[node_id].get('_deleted', False):
-                        relevant_nodes.add(node_id)
+            if entity_id in active_graph:
+                relevant_nodes.update(nx.ego_graph(active_graph, entity_id, radius=depth, undirected=True).nodes)
         
         return self.graph.subgraph(relevant_nodes)
 

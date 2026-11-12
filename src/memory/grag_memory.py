@@ -5,6 +5,7 @@ from loguru import logger
 
 from src.memory.basic_memory import BasicMemory
 from src.graph.knowledge_graph import KnowledgeGraph
+from src.memory.attention import EntityImportanceEvaluator, DEFAULT_CONFIG
 
 class GRAGMemory:
     """
@@ -42,7 +43,7 @@ class GRAGMemory:
         self.knowledge_graph = KnowledgeGraph()
         self.graph_save_path = graph_save_path
         self.entities_json_path = entities_json_path or str(Path(__file__).parent.parent.parent / "data" / "entities.json")
-        # 当前版本尚未启用该配置进行打分，但需要兼容调用方传参，避免初始化失败。
+        # Attention scores rank entities when prompt context exceeds its size limit.
         self.attention_config = attention_config or {}
 
         if self.graph_save_path:
@@ -302,6 +303,58 @@ class GRAGMemory:
             return "No entities provided for knowledge graph retrieval."
         
         subgraph = self.knowledge_graph.get_subgraph_for_context(entity_ids, depth)
+        if self.attention_config and len(subgraph) > int({**DEFAULT_CONFIG, **self.attention_config}["max_context_entities"]):
+            subgraph = self._filter_context_subgraph(subgraph, entity_ids)
+        return self.knowledge_graph.to_text_representation(subgraph)
+
+    def _importance_evaluator(self):
+        history = self.basic_memory.conversation_history
+        text = "\n".join(f"{turn.get('user', '')} {turn.get('ai', '')}" for turn in history)
+        return EntityImportanceEvaluator(self.knowledge_graph.graph, text, self.attention_config)
+
+    def _filter_context_subgraph(self, subgraph, core_entities):
+        """Fill prompt slots by rank; the threshold only informs the importance report."""
+        config = {**DEFAULT_CONFIG, **self.attention_config}
+        evaluator = self._importance_evaluator()
+        core = set(core_entities) & set(subgraph)
+        limit = max(int(config['max_context_entities']), len(core))
+        candidates = sorted(
+            (evaluator.score(node) for node in subgraph if node not in core),
+            key=lambda score: (-score['importance_score'], str(score['name']))
+        )
+        selected = set(core)
+        for score in candidates:
+            if len(selected) >= limit:
+                break
+            selected.add(score['name'])
+        return subgraph.subgraph(selected)
+
+    def get_entity_importance_report(self, entity_id: str) -> dict:
+        subgraph = self.knowledge_graph.get_subgraph_for_context([entity_id])
+        if entity_id not in subgraph:
+            return {'error': f"Entity '{entity_id}' not found or deleted."}
+        config = {**DEFAULT_CONFIG, **self.attention_config}
+        evaluator = self._importance_evaluator()
+        scores = [evaluator.score(node) for node in subgraph]
+        for score in scores:
+            score['above_threshold'] = score['importance_score'] >= config['importance_threshold']
+        scores.sort(key=lambda score: (-score['importance_score'], str(score['name'])))
+        above = sum(score['above_threshold'] for score in scores)
+        return {
+            'character_name': entity_id,
+            'total_entities': len(scores),
+            'entities_above_threshold': above,
+            'filter_ratio': 1 - above / len(scores),
+            'threshold': config['importance_threshold'],
+            'max_context_entities': config['max_context_entities'],
+            'entity_scores': scores,
+            'config': config,
+        }
+
+    def get_optimized_character_context(self, entity_id: str) -> str:
+        subgraph = self.knowledge_graph.get_subgraph_for_context([entity_id])
+        if self.attention_config:
+            subgraph = self._filter_context_subgraph(subgraph, [entity_id])
         return self.knowledge_graph.to_text_representation(subgraph)
 
     # --- Unified Retrieval ---
