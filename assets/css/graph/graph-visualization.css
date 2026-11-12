@@ -55,3 +55,12 @@ button:focus { outline:1px solid var(--accent); }
 .legend i { display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:5px; background:var(--dot); }
 
 @media (max-width:320px) { .force-control { flex-wrap:wrap; } .force-control input { flex-basis:100%; order:2; } .force-control span { margin-left:auto; } }
+
+.relation-dialog-overlay { position:fixed; inset:0; z-index:20; display:grid; place-items:center; background:rgba(0,0,0,.55); }
+.relation-dialog { width:min(360px,calc(100vw - 32px)); padding:20px; background:var(--bg-raised); border:1px solid var(--border-strong); border-radius:12px; box-shadow:0 12px 36px rgba(0,0,0,.4); }
+.relation-dialog h3 { margin:0 0 14px; font-size:14px; font-weight:600; }
+.relation-dialog input { width:100%; padding:9px 10px; color:var(--text-primary); background:var(--bg-input); border:1px solid var(--border-strong); border-radius:6px; font:inherit; }
+.relation-dialog input:focus { outline:1px solid var(--accent); }
+.relation-dialog-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:16px; }
+.relation-dialog-actions .primary { background:var(--accent); color:var(--on-accent); }
+.relation-dialog-actions .danger { color:var(--danger); background:var(--danger-subtle); }

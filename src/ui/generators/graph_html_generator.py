@@ -67,7 +67,7 @@ class GraphHTMLGenerator:
 <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
 <link rel="stylesheet" href="assets/css/graph/graph-visualization.css"></head><body>
 <div id="loading" class="loading"><div class="spinner"></div><p>正在加载图谱...</p></div>
-<div class="controls" id="controls"><button onclick="togglePhysics()">关闭物理效果</button><span title="关系编辑尚未连接到持久化存储"><button onclick="toggleEditMode()" id="editModeBtn" disabled>编辑关系</button></span><button onclick="toggleForcePanel()" id="forcePanelBtn">调节力度</button><button onclick="refreshGraphFromHost()">刷新图谱</button></div>
+<div class="controls" id="controls"><button onclick="togglePhysics()">关闭物理效果</button><button onclick="toggleEditMode()" id="editModeBtn">编辑关系</button><button onclick="toggleForcePanel()" id="forcePanelBtn">调节力度</button><button onclick="refreshGraphFromHost()">刷新图谱</button></div>
 <div class="force-panel" id="forcePanel" style="display:none"><h4>物理参数调节</h4>
 <div class="force-control"><label>排斥力度:</label><input type="range" id="repulsionSlider" min="-1500" max="-20" step="20" value="-400"><span id="repulsionValue">-400</span></div>
 <div class="force-control"><label>连线长度:</label><input type="range" id="linkDistanceSlider" min="60" max="250" step="10" value="120"><span id="linkDistanceValue">120</span></div>

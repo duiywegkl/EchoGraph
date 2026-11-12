@@ -36,3 +36,27 @@ def clear_knowledge_graph(memory):
     memory.knowledge_graph.clear()
     memory.sync_entities_to_json()
     memory.knowledge_graph.save_graph(memory.graph_save_path)
+
+
+def save_local_relationship(memory, action, source, target, relationship=None):
+    """Mutate one local conversation and persist entities.json plus GraphML."""
+    graph = memory.knowledge_graph.graph
+    if action == "create":
+        if not graph.has_node(source) or not graph.has_node(target):
+            raise ValueError("Both nodes must exist")
+        if not relationship or not relationship.strip():
+            raise ValueError("Relationship is required")
+        # DiGraph stores one edge per ordered pair; create replaces its type.
+        memory.add_edge(source, target, relationship.strip())
+    elif action == "update":
+        if not relationship or not relationship.strip():
+            raise ValueError("Relationship is required")
+        if not memory.update_edge(source, target, relationship.strip()):
+            raise ValueError("Relationship does not exist")
+    elif action == "delete":
+        if not memory.delete_edge(source, target):
+            raise ValueError("Relationship does not exist")
+    else:
+        raise ValueError("Unknown relationship action")
+    memory.sync_entities_to_json()
+    memory.knowledge_graph.save_graph(memory.graph_save_path)

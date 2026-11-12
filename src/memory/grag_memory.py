@@ -263,6 +263,22 @@ class GRAGMemory:
         self.knowledge_graph.add_edge(source, target, relationship, **kwargs)
         self._data_changed = True  # 标记数据已变化
 
+    def rename_node(self, old: str, new: str) -> bool:
+        result = self.knowledge_graph.rename_node(old, new)
+        if result:
+            self._data_changed = True
+            self.sync_entities_to_json()
+        return result
+
+    def update_edge(self, source: str, target: str, relationship: str, **attrs) -> bool:
+        graph = self.knowledge_graph.graph
+        if not graph.has_edge(source, target):
+            return False
+        graph.edges[source, target].update(relationship=relationship, **attrs)
+        self._data_changed = True
+        self.sync_entities_to_json()
+        return True
+
     def delete_node(self, node_id: str) -> bool:
         """从知识图谱中删除节点及其所有关系。"""
         result = self.knowledge_graph.delete_node(node_id)
@@ -400,6 +416,7 @@ class GRAGMemory:
             return
         
         # 保存热、温记忆
+        self.sync_entities_to_json()
         self.basic_memory.save_to_file()
         
         # 保存冷记忆 (知识图谱)

@@ -457,27 +457,21 @@ function setupEventHandlers(nodeGroup) {
         console.log('节点被点击:', d.name, '编辑模式:', editMode, '已选中节点:', selectedNode ? selectedNode.datum().name : 'none');
 
         if (editMode) {
-            // 在关系编辑模式下，点击节点弹出编辑对话框
-            if (typeof bridge !== 'undefined' && bridge && bridge.editNode) {
-                bridge.editNode(d.name, d.type);
-            } else {
-                console.warn('WebChannel bridge不可用');
-            }
-        } else {
-            // 普通模式下，点击节点用于选择源/目标节点
             handleRelationEdit(d, d3.select(this));
+        } else if (bridge && bridge.editNode) {
+            bridge.editNode(d.name, d.type);
         }
     });
 
     // 关系连线和标签点击编辑
     link.on("click", function(event, d) {
         event.stopPropagation();
-        openRelationEditDialog(d);
+        if (editMode) openRelationEditDialog(d);
     });
 
     linkLabel.on("click", function(event, d) {
         event.stopPropagation();
-        openRelationEditDialog(d);
+        if (editMode) openRelationEditDialog(d);
     });
 
     // SVG点击取消选择
@@ -771,71 +765,68 @@ function handleRelationEdit(nodeData, nodeElement) {
         selectedNode = nodeElement;
         selectedNode.classed('selected-node', true);
         highlightNeighbours(nodeData);
-        console.log('选择了源节点:', nodeData.name);
+        return;
+    }
+    const sourceData = selectedNode.datum();
+    clearSelection();
+    if (sourceData.id === nodeData.id) return;
+    const existingLink = links.find(link =>
+        link.source.id === sourceData.id && link.target.id === nodeData.id);
+    if (existingLink) {
+        openRelationEditDialog(existingLink);
     } else {
-        const sourceData = selectedNode.datum();
-        const targetData = nodeData;
-
-        if (sourceData.id === targetData.id) {
-            console.log('不能连接到自己');
-            clearSelection();
-            return;
-        }
-
-        const existingLink = links.find(link =>
-            (link.source.id === sourceData.id && link.target.id === targetData.id) ||
-            (link.source.id === targetData.id && link.target.id === sourceData.id)
-        );
-
-        if (existingLink) {
-            console.log('节点间已存在关系，打开关系编辑对话框');
-            openRelationEditDialog(existingLink);
-            clearSelection();
-            return;
-        }
-
-        const relation = prompt('请输入关系类型:', '关联');
-        if (relation && relation.trim()) {
-            createNewRelation(sourceData, targetData, relation.trim());
-        }
-
-        clearSelection();
+        relationDialog(`${sourceData.name} → ${nodeData.name}`, '', false, value => {
+            if (bridge && bridge.createRelationship) bridge.createRelationship(sourceData.id, nodeData.id, value);
+        });
     }
 }
 
-/**
- * 打开关系编辑对话框
- */
-function openRelationEditDialog(linkData) {
-    const newRelation = prompt(
-        `编辑关系: ${linkData.source.name} -> ${linkData.target.name}\n当前关系: ${linkData.relation}\n\n请输入新的关系类型:`,
-        linkData.relation
-    );
-
-    if (newRelation && newRelation.trim() && newRelation.trim() !== linkData.relation) {
-        linkData.relation = newRelation.trim();
-
-        g.selectAll('.relation-label')
-            .text(d => d.relation || '关联');
-
-        console.log('关系已更新:', newRelation);
-    }
-}
-
-/**
- * 创建新关系
- */
-function createNewRelation(source, target, relation) {
-    const newLink = {
-        source: source,
-        target: target,
-        relation: relation
+function relationDialog(title, current, canDelete, onSave, onDelete) {
+    const overlay = document.createElement('div');
+    overlay.className = 'relation-dialog-overlay';
+    const card = document.createElement('div');
+    card.className = 'relation-dialog';
+    const heading = document.createElement('h3');
+    heading.textContent = title;
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = current;
+    input.placeholder = '关系类型';
+    const buttons = document.createElement('div');
+    buttons.className = 'relation-dialog-actions';
+    const makeButton = (label, action, cssClass) => {
+        const button = document.createElement('button');
+        button.textContent = label;
+        if (cssClass) button.className = cssClass;
+        button.onclick = action;
+        buttons.appendChild(button);
     };
+    const close = () => overlay.remove();
+    makeButton('取消', close);
+    if (canDelete) makeButton('删除关系', () => { close(); onDelete(); }, 'danger');
+    makeButton('保存', () => {
+        const value = input.value.trim();
+        if (!value) { input.focus(); return; }
+        close();
+        if (value !== current) onSave(value);
+    }, 'primary');
+    input.onkeydown = event => {
+        if (event.key === 'Enter') buttons.lastChild.click();
+        if (event.key === 'Escape') close();
+    };
+    card.append(heading, input, buttons);
+    overlay.append(card);
+    document.body.append(overlay);
+    input.focus();
+    input.select();
+}
 
-    links.push(newLink);
-    updateVisualization();
-
-    console.log(`创建新关系: ${source.name} -> ${target.name} (${relation})`);
+function openRelationEditDialog(linkData) {
+    const source = linkData.source.id || linkData.source;
+    const target = linkData.target.id || linkData.target;
+    relationDialog(`${source} → ${target}`, linkData.relation || '', true,
+        value => { if (bridge && bridge.updateRelationship) bridge.updateRelationship(source, target, value); },
+        () => { if (bridge && bridge.deleteRelationship) bridge.deleteRelationship(source, target); });
 }
 
 /**

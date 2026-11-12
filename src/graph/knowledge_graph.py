@@ -415,10 +415,10 @@ class KnowledgeGraph:
 
         # 重建所有关系
         for source, edge_data in incoming_edges:
-            self.graph.add_edge(source, new_node_id, **edge_data)
+            self.graph.add_edge(new_node_id if source == old_node_id else source, new_node_id, **edge_data)
 
         for target, edge_data in outgoing_edges:
-            self.graph.add_edge(new_node_id, target, **edge_data)
+            self.graph.add_edge(new_node_id, new_node_id if target == old_node_id else target, **edge_data)
 
         # 删除旧节点（这会自动删除所有相关的边）
         self.graph.remove_node(old_node_id)

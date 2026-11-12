@@ -974,12 +974,19 @@ class GraphBridge(QObject):
 
     @Slot(str, str, str)
     def createRelation(self, source_name, target_name, relation_type):
-        """JavaScript直接调用此方法创建关系"""
-        try:
-            logger.info(f"通过WebChannel创建关系: {source_name} -> {target_name} ({relation_type})")
-            # 可以在这里添加创建关系的逻辑
-        except Exception as e:
-            logger.error(f"WebChannel创建关系失败: {e}")
+        self.graph_page.mutate_relationship("create", source_name, target_name, relation_type)
+
+    @Slot(str, str, str)
+    def createRelationship(self, source_name, target_name, relation_type):
+        self.createRelation(source_name, target_name, relation_type)
+
+    @Slot(str, str, str)
+    def updateRelationship(self, source_name, target_name, relation_type):
+        self.graph_page.mutate_relationship("update", source_name, target_name, relation_type)
+
+    @Slot(str, str)
+    def deleteRelationship(self, source_name, target_name):
+        self.graph_page.mutate_relationship("delete", source_name, target_name)
 
     @Slot(str)
     def log(self, message):
@@ -3190,10 +3197,49 @@ class GraphPage(QWidget):
             logger.error(f"从知识图谱获取实体失败: {e}")
             return []
 
+    def _tavern_mutation(self, method, path, payload=None, params=None):
+        from urllib.parse import quote
+        if not self.tavern_session_id:
+            raise RuntimeError("????????")
+        url = f"{self._api_base_url()}/sessions/{quote(self.tavern_session_id, safe='')}/{path}"
+        response = requests.request(method, url, json=payload, params=params, timeout=30)
+        if not response.ok:
+            try:
+                detail = response.json().get("detail", response.text)
+            except (ValueError, AttributeError):
+                detail = response.text
+            raise RuntimeError(str(detail))
+        self.refresh_from_api_server(self.tavern_session_id, force=True)
+        return response.json()
+
+    def mutate_relationship(self, action, source, target, relation=None):
+        try:
+            if self.tavern_mode:
+                method = {"create": "POST", "update": "PUT", "delete": "DELETE"}[action]
+                body = {"source": source, "target": target}
+                if action != "delete":
+                    body["relationship"] = relation
+                self._tavern_mutation(method, "relationships", None if action == "delete" else body,
+                                      body if action == "delete" else None)
+            else:
+                from src.graph.graph_operations import save_local_relationship
+                save_local_relationship(self.memory, action, source, target, relation)
+                self.refresh_graph()
+        except Exception as exc:
+            QMessageBox.warning(self, "??????", str(exc))
+            return False
+        return True
+
     def save_entities(self, entities, old_name=None, new_name=None):
-        """Persist local edits to the active conversation graph and entity file."""
+        """Persist local or active tavern node edits."""
         if self.tavern_mode:
-            raise RuntimeError("酒馆节点编辑暂不支持会话写入")
+            from urllib.parse import quote
+            if old_name:
+                entity = next(entity for entity in entities if entity["name"] == new_name)
+                self._tavern_mutation("PUT", f"nodes/{quote(old_name, safe='')}", entity)
+            else:
+                self._tavern_mutation("POST", "nodes", entities[-1])
+            return
         from src.graph.graph_operations import save_local_entities
         save_local_entities(self.memory, entities, old_name, new_name)
 
@@ -3460,7 +3506,7 @@ class GraphPage(QWidget):
 
                 for entity in all_entities:
                     if entity['name'] == entity_name and entity['type'] == entity_type:
-                        current_entity = entity
+                        current_entity = {**entity, "attributes": dict(entity.get("attributes", {}))}
                         break
 
                 if not current_entity:
@@ -3788,6 +3834,15 @@ class GraphPage(QWidget):
         )
 
         if reply == QMessageBox.Yes:
+            if self.tavern_mode:
+                from urllib.parse import quote
+                try:
+                    self._tavern_mutation("DELETE", f"nodes/{quote(node_name, safe='')}")
+                    self.current_selected_node = None
+                    self.detail_text.clear()
+                except Exception as exc:
+                    QMessageBox.warning(self, "????", str(exc))
+                return
             # 从实际存储中删除节点
             if '] ' in node_text:
                 entity_type = node_text.split('[')[1].split(']')[0]
@@ -4178,8 +4233,8 @@ class GraphPage(QWidget):
             button.setEnabled(not unavailable)
             button.setToolTip("酒馆图谱暂不可用，请刷新重试" if unavailable else "")
         for button in (self.add_node_btn, self.edit_node_btn, self.delete_node_btn):
-            button.setEnabled(not self.tavern_mode)
-            button.setToolTip("酒馆节点编辑暂不支持会话写入" if self.tavern_mode else "")
+            button.setEnabled(not pending)
+            button.setToolTip("等待酒馆会话连接" if pending else "")
         self.search_input.setEnabled(not unavailable)
         self.entity_list.setEnabled(not unavailable)
 

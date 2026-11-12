@@ -1145,143 +1145,173 @@ async def save_session_data(session_id: str):
         logger.error(f"Error saving session data: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to save session data: {e}")
 
-@app.put("/sessions/{session_id}/nodes/{old_node_name}")
-async def update_node(session_id: str, old_node_name: str, node_data: dict):
-    """更新节点（覆盖信息，支持重命名）"""
+async def _manual_edit_saved(session_id, engine, action, target):
     try:
-        if session_id not in sessions:
-            raise HTTPException(status_code=404, detail=f"Session {session_id} not found.")
-
-        engine = sessions[session_id]
-        if not engine:
-            raise HTTPException(status_code=404, detail="Session engine not found")
-
-        # URL解码节点名称
-        import urllib.parse
-        old_node_name = urllib.parse.unquote(old_node_name)
-        logger.info(f"🔍 [API] URL解码后的旧节点名: {old_node_name}")
-
-        # 提取节点数据
-        new_node_name = node_data.get('name', old_node_name)  # 支持重命名
-        node_type = node_data.get('type', 'concept')
-        description = node_data.get('description', '')
-        attributes = node_data.get('attributes', {})
-
-        logger.info(f"💾 [API] 更新节点: {old_node_name} -> {new_node_name} (类型: {node_type})")
-
-        # 如果节点名称变了，使用重命名功能保持关系
-        if old_node_name != new_node_name:
-            logger.info(f"🔄 [API] 检测到节点重命名: {old_node_name} -> {new_node_name}")
-
-            # 检查旧节点是否存在
-            if engine.memory.knowledge_graph.graph.has_node(old_node_name):
-                logger.info(f"✅ [API] 找到旧节点，执行重命名: {old_node_name}")
-                success = engine.memory.rename_node(old_node_name, new_node_name)
-                if not success:
-                    logger.error(f"❌ [API] 重命名失败: {old_node_name} -> {new_node_name}")
-                    raise HTTPException(status_code=500, detail=f"Failed to rename node from {old_node_name} to {new_node_name}")
-                else:
-                    logger.info(f"✅ [API] 重命名成功: {old_node_name} -> {new_node_name}")
-            else:
-                # 旧节点不存在，记录现有节点并直接创建新节点
-                existing_nodes = list(engine.memory.knowledge_graph.graph.nodes())
-                logger.warning(f"⚠️ [API] 旧节点不存在: {old_node_name}")
-                logger.warning(f"⚠️ [API] 当前图谱中的节点: {existing_nodes[:10]}...")  # 只显示前10个
-                logger.info(f"🆕 [API] 将直接创建新节点: {new_node_name}")
-        else:
-            logger.info(f"📝 [API] 节点名称未变化，直接更新属性: {new_node_name}")
-
-        # 更新节点属性（覆盖）
-        engine.memory.add_or_update_node(
-            new_node_name,
-            node_type,
-            description=description,
-            **attributes
-        )
-
-        # 强制标记数据已变化并保存
-        engine.memory._data_changed = True
+        engine.memory.sync_entities_to_json()
         engine.memory.save_all_memory()
-
-        # 获取统计信息
-        nodes_count = len(engine.memory.knowledge_graph.graph.nodes())
-        edges_count = len(engine.memory.knowledge_graph.graph.edges())
-
-        logger.info(f"✅ [API] 节点更新成功: {new_node_name}")
-
-        return {
-            "success": True,
-            "message": "Node updated successfully",
-            "node_name": new_node_name,
-            "node_type": node_type,
-            "total_nodes": nodes_count,
-            "total_edges": edges_count
-        }
-
-    except HTTPException:
+        graph = engine.memory.knowledge_graph.graph
+        payload = {"type": "graph_updated", "total_nodes": graph.number_of_nodes(),
+                   "total_edges": graph.number_of_edges(), "source": "manual_edit",
+                   "action": action, "target": target}
+        try:
+            await manager.send_message(session_id, payload)
+        except Exception as exc:
+            logger.warning(f"[API] 手动编辑通知失败: session={session_id} action={action} target={target} reason={exc}")
+        logger.info(f"[API] 手动编辑已保存: session={session_id} action={action} target={target} "
+                    f"nodes={payload['total_nodes']} edges={payload['total_edges']}")
+        return payload
+    except HTTPException as exc:
+        if 400 <= exc.status_code < 500:
+            logger.warning(f"[API] 手动编辑保存失败: session={session_id} action={action} target={target} reason={exc.detail}")
         raise
-    except Exception as e:
-        import traceback
-        logger.error(f"❌ [API] 更新节点失败: {e}")
-        logger.error(f"❌ 完整堆栈: {traceback.format_exc()}")
-        logger.error(f"❌ 请求参数: session_id={session_id}, old_node_name={old_node_name}")
-        logger.error(f"❌ 请求数据: {node_data}")
-        raise HTTPException(status_code=500, detail=f"Failed to update node: {e}\n\nStacktrace: {traceback.format_exc()}")
+    except Exception:
+        logger.exception(f"[API] 手动编辑保存异常: session={session_id} action={action} target={target}")
+        raise HTTPException(status_code=500, detail="Failed to save manual edit")
+
+
+def _edit_session(session_id):
+    engine = sessions.get(session_id)
+    if engine is None:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found.")
+    return engine
+
+
+def _required_text(data, field):
+    value = data.get(field)
+    if not isinstance(value, str) or not value.strip():
+        raise HTTPException(status_code=400, detail=f"Missing {field}")
+    return value.strip()
+
+
+def _manual_edit_endpoint(action):
+    from functools import wraps
+
+    def decorate(endpoint):
+        @wraps(endpoint)
+        async def wrapped(session_id, *args, **kwargs):
+            try:
+                result = await endpoint(session_id, *args, **kwargs)
+                logger.info(f"[API] 手动编辑成功: session={session_id} action={action} "
+                            f"target={result['target']} nodes={result['total_nodes']} edges={result['total_edges']}")
+                return result
+            except HTTPException as exc:
+                if 400 <= exc.status_code < 500:
+                    logger.warning(f"[API] 手动编辑请求失败: session={session_id} action={action} "
+                                   f"status={exc.status_code} reason={exc.detail}")
+                else:
+                    logger.error(f"[API] 手动编辑请求失败: session={session_id} action={action} "
+                                 f"status={exc.status_code} reason={exc.detail}")
+                raise
+            except Exception:
+                logger.exception(f"[API] 手动编辑请求异常: session={session_id} action={action}")
+                raise HTTPException(status_code=500, detail="Manual edit failed")
+        return wrapped
+    return decorate
+
+
+@app.post("/sessions/{session_id}/nodes")
+@_manual_edit_endpoint("node_created")
+async def create_node(session_id: str, node_data: dict):
+    engine = _edit_session(session_id)
+    name = _required_text(node_data, "name")
+    kind = _required_text(node_data, "type")
+    graph = engine.memory.knowledge_graph.graph
+    if graph.has_node(name):
+        raise HTTPException(status_code=409, detail=f"Node '{name}' already exists")
+    attributes = node_data.get("attributes", {})
+    if not isinstance(attributes, dict):
+        raise HTTPException(status_code=400, detail="attributes must be an object")
+    engine.memory.add_or_update_node(name, kind, description=node_data.get("description", ""), **attributes)
+    payload = await _manual_edit_saved(session_id, engine, "node_created", name)
+    return {"success": True, "node_name": name, **payload}
+
+
+@app.put("/sessions/{session_id}/nodes/{old_node_name}")
+@_manual_edit_endpoint("node_updated")
+async def update_node(session_id: str, old_node_name: str, node_data: dict):
+    from urllib.parse import unquote
+    engine = _edit_session(session_id)
+    old_node_name = unquote(old_node_name)
+    graph = engine.memory.knowledge_graph.graph
+    if not graph.has_node(old_node_name):
+        raise HTTPException(status_code=404, detail=f"Node '{old_node_name}' not found")
+    name = _required_text(node_data, "name") if "name" in node_data else old_node_name
+    if name != old_node_name and graph.has_node(name):
+        raise HTTPException(status_code=409, detail=f"Node '{name}' already exists")
+    kind = node_data.get("type", graph.nodes[old_node_name].get("type", "concept"))
+    if not isinstance(kind, str) or not kind.strip():
+        raise HTTPException(status_code=400, detail="Missing type")
+    attributes = node_data.get("attributes", {})
+    if not isinstance(attributes, dict):
+        raise HTTPException(status_code=400, detail="attributes must be an object")
+    if name != old_node_name:
+        if not engine.memory.rename_node(old_node_name, name):
+            raise HTTPException(status_code=500, detail=f"Failed to rename node '{old_node_name}' to '{name}'")
+    description = node_data.get("description", graph.nodes[name].get("description", ""))
+    engine.memory.add_or_update_node(name, kind, description=description, **attributes)
+    payload = await _manual_edit_saved(session_id, engine, "node_updated", name)
+    return {"success": True, "message": "Node updated successfully", "node_name": name,
+            "node_type": kind, **payload}
 
 
 @app.delete("/sessions/{session_id}/nodes/{node_name}")
+@_manual_edit_endpoint("node_deleted")
 async def delete_node(session_id: str, node_name: str):
-    """删除节点"""
-    try:
-        if session_id not in sessions:
-            raise HTTPException(status_code=404, detail=f"Session {session_id} not found.")
-
-        engine = sessions[session_id]
-        if not engine:
-            raise HTTPException(status_code=404, detail="Session engine not found")
-
-        # URL解码节点名称
-        import urllib.parse
-        node_name = urllib.parse.unquote(node_name)
-        logger.info(f"🗑️ [API] 删除节点: {node_name} (URL解码后)")
-
-        # 检查节点是否存在
-        if not engine.memory.knowledge_graph.graph.has_node(node_name):
-            logger.warning(f"⚠️ [API] 节点不存在: {node_name}")
-            raise HTTPException(status_code=404, detail=f"Node '{node_name}' not found")
-
-        # 删除节点
-        success = engine.memory.delete_node(node_name)
-
-        if success:
-            # 强制标记数据已变化并保存
-            engine.memory._data_changed = True
-            engine.memory.save_all_memory()
-
-            # 获取删除后的统计信息
-            nodes_count = len(engine.memory.knowledge_graph.graph.nodes())
-            edges_count = len(engine.memory.knowledge_graph.graph.edges())
-
-            logger.info(f"✅ [API] 节点删除成功: {node_name}")
-
-            return {
-                "success": True,
-                "message": "Node deleted successfully",
-                "node_name": node_name,
-                "total_nodes": nodes_count,
-                "total_edges": edges_count
-            }
-        else:
-            logger.error(f"❌ [API] 节点删除失败: {node_name}")
-            raise HTTPException(status_code=500, detail=f"Failed to delete node: {node_name}")
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ [API] 删除节点失败: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to delete node: {e}")
+    from urllib.parse import unquote
+    engine = _edit_session(session_id)
+    node_name = unquote(node_name)
+    if not engine.memory.delete_node(node_name):
+        raise HTTPException(status_code=404, detail=f"Node '{node_name}' not found")
+    payload = await _manual_edit_saved(session_id, engine, "node_deleted", node_name)
+    return {"success": True, "message": "Node deleted successfully", "node_name": node_name, **payload}
 
 
+@app.post("/sessions/{session_id}/relationships")
+@_manual_edit_endpoint("relationship_created")
+async def create_relationship(session_id: str, relationship_data: dict):
+    engine = _edit_session(session_id)
+    source = _required_text(relationship_data, "source")
+    target = _required_text(relationship_data, "target")
+    relation = _required_text(relationship_data, "relationship")
+    graph = engine.memory.knowledge_graph.graph
+    for name in (source, target):
+        if not graph.has_node(name):
+            raise HTTPException(status_code=404, detail=f"Node '{name}' not found")
+    # DiGraph has one edge per ordered pair: create replaces its relationship type.
+    engine.memory.add_edge(source, target, relation, description=relationship_data.get("description", ""))
+    payload = await _manual_edit_saved(session_id, engine, "relationship_created", f"{source}->{target}")
+    return {"success": True, **payload}
+
+
+@app.put("/sessions/{session_id}/relationships")
+@_manual_edit_endpoint("relationship_updated")
+async def update_relationship(session_id: str, relationship_data: dict):
+    engine = _edit_session(session_id)
+    source = _required_text(relationship_data, "source")
+    target = _required_text(relationship_data, "target")
+    relation = _required_text(relationship_data, "relationship")
+    if not engine.memory.knowledge_graph.graph.has_edge(source, target):
+        raise HTTPException(status_code=404, detail=f"Relationship '{source}->{target}' not found")
+    attrs = {}
+    if "description" in relationship_data:
+        attrs["description"] = relationship_data["description"]
+    if not engine.memory.update_edge(source, target, relation, **attrs):
+        raise HTTPException(status_code=500, detail=f"Failed to update relationship '{source}->{target}'")
+    payload = await _manual_edit_saved(session_id, engine, "relationship_updated", f"{source}->{target}")
+    return {"success": True, **payload}
+
+
+@app.delete("/sessions/{session_id}/relationships")
+@_manual_edit_endpoint("relationship_deleted")
+async def delete_relationship(session_id: str, source: str = "", target: str = ""):
+    from urllib.parse import unquote
+    engine = _edit_session(session_id)
+    source = _required_text({"source": unquote(source)}, "source")
+    target = _required_text({"target": unquote(target)}, "target")
+    if not engine.memory.delete_edge(source, target):
+        raise HTTPException(status_code=404, detail=f"Relationship '{source}->{target}' not found")
+    payload = await _manual_edit_saved(session_id, engine, "relationship_deleted", f"{source}->{target}")
+    return {"success": True, **payload}
 
 
 @app.get("/characters/{character_name}/exists")
