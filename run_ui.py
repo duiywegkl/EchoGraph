@@ -4,6 +4,10 @@ EchoGraph 主UI程序
 """
 import sys
 import os
+
+# Capture only variables inherited from the launcher, before imports load .env.
+_EXTERNAL_UI_THEME = os.environ.get("UI_THEME")
+
 import time
 import traceback
 import re
@@ -699,7 +703,7 @@ from src.memory import GRAGMemory
 from src.ui.workers.llm_worker import LLMWorkerThread
 from src.ui.managers.scenario_manager import ScenarioManager
 from src.ui.managers.window_manager import WindowManager
-from src.ui.theme import (BG_BASE, BG_SURFACE, BG_RAISED, BG_INPUT, BORDER, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_MUTED, ACCENT, ACCENT_SUBTLE, DANGER, SUCCESS, INFO, NODE_TYPE_COLORS)
+from src.ui import theme
 from src.ui.managers.resource_cleanup_manager import ResourceCleanupManager
 # 导入酒馆连接器
 from src.tavern.tavern_connector import TavernModeManager, TavernConfig, SillyTavernConnector
@@ -717,18 +721,19 @@ class ChatBubble(QFrame):
         self.is_user = is_user
         self.delete_mode_enabled = False  # 是否处于删除模式
         self.color = color
-        self.text_color = TEXT_PRIMARY
-        self.border_color = BORDER
-        self.setProperty("role", "userBubble" if is_user else "aiBubble")
+        self.text_color = theme.current()["TEXT_PRIMARY"]
+        self.border_color = theme.current()["BORDER"]
+        self.setProperty("role", "chatRow")
         self.setup_ui()
 
     def set_delete_mode(self, enabled: bool):
         """设置删除模式"""
         self.delete_mode_enabled = enabled
         self.setCursor(Qt.PointingHandCursor if enabled else Qt.ArrowCursor)
-        self.setProperty("deleteMode", enabled)
-        self.style().unpolish(self)
-        self.style().polish(self)
+        self.message_label.setCursor(Qt.PointingHandCursor if enabled else Qt.ArrowCursor)
+        self.message_label.setProperty("deleteMode", enabled)
+        self.message_label.style().unpolish(self.message_label)
+        self.message_label.style().polish(self.message_label)
 
     def mousePressEvent(self, event):
         """鼠标点击事件"""
@@ -742,6 +747,7 @@ class ChatBubble(QFrame):
 
         # 创建消息标签
         message_label = QLabel(self.message)
+        self.message_label = message_label
         # Preserve supplied rich text and give ordinary paragraphs compact spacing.
         if re.search(r"<[A-Za-z][^>]*>", self.message):
             content = self.message
@@ -755,7 +761,7 @@ class ChatBubble(QFrame):
         message_label.setWordWrap(True)
 
         message_label.setProperty("role", "userBubble" if self.is_user else "aiBubble")
-        message_label.setMaximumWidth(688 if not self.is_user else 528)
+        message_label.setMaximumWidth(720 if not self.is_user else 560)
         message_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
 
         if self.is_user:
@@ -771,6 +777,7 @@ class LoadingBubble(QFrame):
     """加载动画气泡"""
     def __init__(self):
         super().__init__()
+        self.setProperty("role", "loadingRow")
         self.dots_count = 1
         self.max_dots = 6
         self.setup_ui()
@@ -2714,7 +2721,7 @@ class EntityListDelegate(QStyledItemDelegate):
         super().paint(painter, item_option, index)
         painter.save()
         painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor(NODE_TYPE_COLORS.get(node_type, NODE_TYPE_COLORS["other"])))
+        painter.setBrush(QColor(theme.node_type_colors().get(node_type, theme.node_type_colors()["other"])))
         painter.drawEllipse(option.rect.left() + 6, option.rect.center().y() - 3, 7, 7)
         painter.restore()
 
@@ -3431,14 +3438,14 @@ class GraphPage(QWidget):
                 targetNode.transition().duration(300)
                     .attr('r', 30)
                     .style('stroke-width', '4px')
-                    .style('stroke', '{ACCENT}');
+                    .style('stroke', '{theme.current()['ACCENT']}');
 
                 // 恢复正常大小
                 setTimeout(() => {{
                     targetNode.transition().duration(300)
                         .attr('r', 14)
                         .style('stroke-width', '2px')
-                        .style('stroke', '{BG_BASE}');
+                        .style('stroke', '{theme.current()['BG_BASE']}');
                 }}, 1500);
             }}
             """
@@ -4291,7 +4298,7 @@ class GraphPage(QWidget):
         """清理图谱显示数据"""
         try:
             # 清空图谱显示
-            self.graph_view.setHtml("<html><body><p>Loading...</p></body></html>")
+            self.graph_view.setHtml(f"<html><body style=\"background:{theme.current()['BG_BASE']};color:{theme.current()['TEXT_PRIMARY']}\"><p>Loading...</p></body></html>")
 
             # 清空实体列表
             if hasattr(self, 'entity_list'):
@@ -4489,6 +4496,8 @@ class GraphPage(QWidget):
             self.clear_graph_display()
             self.showing_tavern_placeholder = True
             self._update_mode_controls()
+            self._placeholder_stats = dict(stats)
+            colors = theme.current()
             # 创建简单的酒馆模式信息页面
             html_content = f"""
             <!DOCTYPE html>
@@ -4496,10 +4505,12 @@ class GraphPage(QWidget):
             <head>
                 <title>EchoGraph - 酒馆模式</title>
                 <style>
+                    ::-webkit-scrollbar {{ width: 8px; background: {colors["BG_BASE"]}; }}
+                    ::-webkit-scrollbar-thumb {{ background: {colors["BORDER_STRONG"]}; border-radius: 4px; }}
                     body {{
                         font-family: 'Microsoft YaHei UI', 'Segoe UI', sans-serif;
-                        background: {BG_BASE};
-                        color: {TEXT_PRIMARY};
+                        background: {colors["BG_BASE"]};
+                        color: {colors["TEXT_PRIMARY"]};
                         text-align: center;
                         padding: 50px;
                         margin: 0;
@@ -4507,13 +4518,14 @@ class GraphPage(QWidget):
                     .container {{
                         max-width: 600px;
                         margin: 0 auto;
-                        background: {BG_RAISED};
+                        background: {colors["BG_SURFACE"]};
+                        border: 1px solid {colors["BORDER"]};
                         padding: 40px;
                         border-radius: 20px;
                         backdrop-filter: blur(10px);
                     }}
-                    h1 {{ color: {TEXT_PRIMARY}; margin-bottom: 20px; }}
-                    h2 {{ color: {TEXT_SECONDARY}; margin: 30px 0 15px 0; }}
+                    h1 {{ color: {colors["TEXT_PRIMARY"]}; margin-bottom: 20px; }}
+                    h2 {{ color: {colors["TEXT_SECONDARY"]}; margin: 30px 0 15px 0; }}
                     .stats {{
                         display: flex;
                         justify-content: space-around;
@@ -4521,7 +4533,8 @@ class GraphPage(QWidget):
                     }}
                     .stat {{
                         text-align: center;
-                        background: {BG_RAISED};
+                        background: {colors["BG_RAISED"]};
+                        border: 1px solid {colors["BORDER"]};
                         padding: 20px;
                         border-radius: 10px;
                         min-width: 100px;
@@ -4529,10 +4542,11 @@ class GraphPage(QWidget):
                     .stat-number {{
                         font-size: 2em;
                         font-weight: bold;
-                        color: {ACCENT};
+                        color: {colors["ACCENT_TEXT"]};
                     }}
                     .info {{
-                        background: {BG_RAISED};
+                        background: {colors["BG_RAISED"]};
+                        border: 1px solid {colors["BORDER"]};
                         padding: 20px;
                         border-radius: 10px;
                         margin: 20px 0;
@@ -4597,33 +4611,21 @@ class GraphPage(QWidget):
 class ConfigPage(QWidget):
     """系统配置页面"""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, env_path=None):
         super().__init__(parent)
         self.setObjectName("configPage")
-        self.env_path = Path(__file__).parent / '.env'
+        self.env_path = Path(env_path) if env_path is not None else Path(__file__).resolve().parent / '.env'
         self.init_ui()
         self.load_config()
 
     def load_config_styles(self):
-        """加载配置页面的QSS样式（来自 assets/css/graph.css 中的片段）"""
-        try:
-            css_path = Path(__file__).parent / "assets" / "css" / "graph.css"
-            if css_path.exists():
-                with open(css_path, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                start_marker = "/* QSS_CONFIG_START */"
-                end_marker = "/* QSS_CONFIG_END */"
-                start = content.find(start_marker)
-                end = content.find(end_marker)
-                if start != -1 and end != -1 and end > start:
-                    qss = content[start + len(start_marker): end].strip()
-                    self.setStyleSheet(qss)
-                else:
-                    logger.warning("未找到配置页面QSS片段，使用全局主题")
-            else:
-                logger.warning(f"CSS文件不存在: {css_path}")
-        except Exception as e:
-            logger.error(f"加载CSS样式失败: {e}")
+        """Keep spin controls compact; global theme supplies all colours."""
+        self.setStyleSheet("""
+            #configPage QSpinBox::up-button, #configPage QDoubleSpinBox::up-button,
+            #configPage QSpinBox::down-button, #configPage QDoubleSpinBox::down-button {
+                width: 0px; height: 0px; border: none; background: transparent;
+            }
+        """)
 
     def init_ui(self):
         # 创建滚动区域
@@ -4781,6 +4783,10 @@ class ConfigPage(QWidget):
         self.log_level_combo = QComboBox()
         self.log_level_combo.addItems(["DEBUG", "INFO", "WARNING", "ERROR"])
         self.log_level_combo.setCurrentText("INFO")
+        self.theme_combo = QComboBox()
+        self.theme_combo.addItem("\u6696\u6c99\uff08\u6d45\u8272\uff09", "sand")
+        self.theme_combo.addItem("\u58a8\u8272\uff08\u6df1\u8272\uff09", "ink")
+        system_layout.addRow("\u754c\u9762\u4e3b\u9898:", self.theme_combo)
         system_layout.addRow("日志等级:", self.log_level_combo)
 
         # 保存按钮
@@ -4859,10 +4865,14 @@ class ConfigPage(QWidget):
 
         # 系统配置
         self.log_level_combo.setCurrentText(config.get("LOG_LEVEL", "INFO"))
+        resolved_theme = theme.resolve_ui_theme(self.env_path)
+        active_theme = theme.current_name() if QApplication.instance() else resolved_theme
+        self.theme_combo.setCurrentIndex(self.theme_combo.findData(active_theme))
 
     def save_config(self):
         """保存配置"""
         try:
+            previous_config = dotenv_values(self.env_path)
             # LLM配置
             set_key(self.env_path, "OPENAI_API_BASE_URL", self.api_base_url_input.text())
             set_key(self.env_path, "OPENAI_API_KEY", self.api_key_input.text())
@@ -4898,8 +4908,24 @@ class ConfigPage(QWidget):
 
             # 系统配置
             set_key(self.env_path, "LOG_LEVEL", self.log_level_combo.currentText())
+            selected_theme = self.theme_combo.currentData()
+            set_key(self.env_path, "UI_THEME", selected_theme)
+            theme_changed = theme.needs_switch(selected_theme)
+            if theme_changed:
+                main_window = self.window()
+                if not isinstance(main_window, EchoGraphMainWindow):
+                    raise RuntimeError("Config page is not attached to the EchoGraph main window")
+                main_window.apply_theme(selected_theme)
 
-            QMessageBox.information(self, "成功", "配置保存成功！\n\n注意：某些配置需要重启应用程序才能生效。")
+            updated_config = dotenv_values(self.env_path)
+            other_settings_changed = any(
+                previous_config.get(key) != updated_config.get(key)
+                for key in previous_config.keys() | updated_config.keys() if key != "UI_THEME"
+            )
+            message = "\u914d\u7f6e\u4fdd\u5b58\u6210\u529f\uff01"
+            if other_settings_changed:
+                message += "\n\n\u6ce8\u610f\uff1a\u67d0\u4e9b\u5176\u4ed6\u914d\u7f6e\u9700\u8981\u91cd\u542f\u5e94\u7528\u7a0b\u5e8f\u624d\u80fd\u751f\u6548\u3002"
+            QMessageBox.information(self, "\u6210\u529f", message)
 
         except Exception as e:
             QMessageBox.critical(self, "错误", f"配置保存失败：{str(e)}")
@@ -4981,11 +5007,11 @@ class ConfigPage(QWidget):
 class EchoGraphMainWindow(QMainWindow):
     """EchoGraph主窗口"""
 
-    def __init__(self):
+    def __init__(self, env_path=None):
         super().__init__()
 
         # 读取配置
-        self.env_path = Path(__file__).parent / '.env'
+        self.env_path = Path(env_path) if env_path is not None else Path(__file__).resolve().parent / '.env'
         config = dotenv_values(self.env_path) if self.env_path.exists() else {}
         self.api_server_port = int(config.get("API_SERVER_PORT", "9543"))
 
@@ -5014,6 +5040,20 @@ class EchoGraphMainWindow(QMainWindow):
 
         # 设置窗口属性
         WindowManager.setup_window(self)
+
+    def apply_theme(self, name):
+        WindowManager.apply_theme(QApplication.instance(), name)
+        if self.graph_page.showing_tavern_placeholder:
+            self.graph_page._show_tavern_mode_placeholder(
+                self.graph_page.tavern_session_id or "pending",
+                getattr(self.graph_page, "_placeholder_stats", {"graph_nodes": 0, "graph_edges": 0}),
+            )
+        elif self.graph_page.html_generator.last_graph_data:
+            nodes_json, links_json = self.graph_page.html_generator.last_graph_data
+            self.graph_page.html_generator.generate_graph_html(nodes_json, links_json, self.graph_page.graph_file_path)
+            self.graph_page.graph_view.load(QUrl.fromLocalFile(str(self.graph_page.graph_file_path)))
+        else:
+            self.graph_page.refresh_graph()
 
     def init_components(self):
         """初始化核心组件"""
@@ -5149,7 +5189,7 @@ class EchoGraphMainWindow(QMainWindow):
         self.tabs.addTab(self.graph_page, "知识图谱")
 
         # 系统配置页面
-        self.config_page = ConfigPage()
+        self.config_page = ConfigPage(env_path=self.env_path)
         self.tabs.addTab(self.config_page, "系统配置")
 
         # 设置对话和知识图谱的联动
@@ -5378,19 +5418,37 @@ class EchoGraphMainWindow(QMainWindow):
             event.accept()  # 即使出错也要关闭
 
 
+def create_app_and_window(env_path=None, process_theme=theme._USE_PROCESS_ENV):
+    """Create the real desktop startup UI without entering the event loop."""
+    from dotenv import load_dotenv
+
+    path = Path(env_path) if env_path is not None else Path(__file__).resolve().parent / ".env"
+    if process_theme is theme._USE_PROCESS_ENV:
+        process_theme = _EXTERNAL_UI_THEME
+    selected_theme = theme.resolve_ui_theme(path, process_theme)
+    load_dotenv(path, override=False)
+    os.environ["UI_THEME"] = selected_theme
+    app = QApplication(sys.argv)
+    app.setApplicationName("EchoGraph")
+    app.setApplicationVersion("1.0.0")
+    icon_path = Path(__file__).resolve().parent / "assets" / "icons" / "OIG1.png"
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
+    WindowManager.apply_theme(app, selected_theme)
+    window = EchoGraphMainWindow(env_path=path)
+    window.show()
+    return app, window
+
+
 def main():
     """主函数"""
     # 导入配置
+    external_ui_theme = _EXTERNAL_UI_THEME
     from src.utils.config import config
-    from dotenv import load_dotenv
-    import os
 
     # 加载环境变量
-    load_dotenv()
 
     # 配置详细日志系统
-    from loguru import logger
-
     # 清除默认配置
     logger.remove()
 
@@ -5406,8 +5464,11 @@ def main():
     )
 
     # 添加文件输出（详细记录）
+    logs_dir = Path(__file__).resolve().parent / "logs"
+    logs_dir.mkdir(exist_ok=True)
+
     logger.add(
-        "logs/echograph_ui_{time:YYYY-MM-DD}.log",
+        str(logs_dir / "echograph_ui_{time:YYYY-MM-DD}.log"),
         format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} | {message}",
         level="DEBUG",  # 文件保留DEBUG级别以便调试
         rotation="10 MB",
@@ -5417,7 +5478,7 @@ def main():
 
     # 添加专门的酒馆模式日志
     logger.add(
-        "logs/tavern_mode_{time:YYYY-MM-DD}.log",
+        str(logs_dir / "tavern_mode_{time:YYYY-MM-DD}.log"),
         format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {message}",
         level="INFO",
         filter=lambda record: "酒馆" in record["message"] or "tavern" in record["message"].lower() or "" in record["message"],
@@ -5429,32 +5490,11 @@ def main():
     logger.info(f"📋 Python版本: {sys.version}")
     logger.info(f"📋 启动参数: {sys.argv}")
 
-    # 确保日志目录存在
-    import os
-    os.makedirs("logs", exist_ok=True)
-
     # 创建应用
-    app = QApplication(sys.argv)
-    app.setApplicationName("EchoGraph")
-    app.setApplicationVersion("1.0.0")
-
-    # 设置应用程序图标（用于任务栏）
-    icon_path = Path(__file__).parent / "assets" / "icons" / "OIG1.png"
-    if icon_path.exists():
-        app.setWindowIcon(QIcon(str(icon_path)))
-        logger.info(f"✅ 应用程序图标已设置: {icon_path}")
-    else:
-        logger.warning(f"⚠️ 应用程序图标文件不存在: {icon_path}")
-
-    # 设置深色主题
-    logger.info("🎨 应用深色主题...")
-    WindowManager.apply_dark_theme(app)
-
     # 创建主窗口
     try:
+        app, window = create_app_and_window(process_theme=external_ui_theme)
         logger.info("🏗️ 创建主窗口...")
-        window = EchoGraphMainWindow()
-        window.show()
 
         logger.info("✅ EchoGraph UI 启动完成")
         logger.info("🍺 ========== 准备就绪，等待用户操作 ==========")

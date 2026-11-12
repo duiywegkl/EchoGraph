@@ -5,7 +5,7 @@
 from pathlib import Path
 from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QIcon, QPalette, QColor, QFont
-from src.ui.theme import BG_BASE, BG_SURFACE, BG_INPUT, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_MUTED, ACCENT, build_app_stylesheet
+from src.ui import theme
 from loguru import logger
 
 
@@ -48,19 +48,27 @@ class WindowManager:
         window.move(frame_geometry.topLeft())
     
     @staticmethod
-    def apply_dark_theme(app):
-        """应用深色主题"""
-        app.setStyle("Fusion")
+    def apply_theme(app, name):
+        """Apply the active palette to existing and future widgets."""
+        theme.set_theme(name)
+        colors = theme.current()
+        if app.style().objectName().lower() != "fusion":
+            app.setStyle("Fusion")
         palette = QPalette()
-        for role, value in (
-            (QPalette.Window, BG_BASE), (QPalette.WindowText, TEXT_PRIMARY),
-            (QPalette.Base, BG_INPUT), (QPalette.AlternateBase, BG_SURFACE),
-            (QPalette.Text, TEXT_PRIMARY), (QPalette.Button, BG_SURFACE),
-            (QPalette.ButtonText, TEXT_PRIMARY), (QPalette.Highlight, ACCENT),
-            (QPalette.HighlightedText, BG_BASE),
-            (QPalette.PlaceholderText, TEXT_MUTED),
+        for role, key in (
+            (QPalette.Window, "BG_BASE"), (QPalette.WindowText, "TEXT_PRIMARY"),
+            (QPalette.Base, "BG_INPUT"), (QPalette.AlternateBase, "BG_SURFACE"),
+            (QPalette.Text, "TEXT_PRIMARY"), (QPalette.Button, "BG_SURFACE"),
+            (QPalette.ButtonText, "TEXT_PRIMARY"), (QPalette.Highlight, "ACCENT_FILL"),
+            (QPalette.HighlightedText, "ON_ACCENT"), (QPalette.PlaceholderText, "TEXT_MUTED"),
         ):
-            palette.setColor(role, QColor(value))
+            palette.setColor(role, QColor(colors[key]))
+        for role in (QPalette.Text, QPalette.ButtonText, QPalette.WindowText):
+            palette.setColor(QPalette.Disabled, role, QColor(colors["TEXT_MUTED"]))
         app.setPalette(palette)
         app.setFont(QFont("Microsoft YaHei UI", 10))
-        app.setStyleSheet(build_app_stylesheet())
+        app.setStyleSheet(theme.build_app_stylesheet(colors))
+        for widget in app.allWidgets():
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
+            widget.update()

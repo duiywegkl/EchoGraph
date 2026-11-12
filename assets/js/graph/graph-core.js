@@ -333,8 +333,8 @@ function initializeGraph() {
         svg.attr("width", width).attr("height", height);
 
         const defs = svg.append("defs");
-        [["graphArrow", "rgba(232,227,217,.32)"],
-         ["graphArrowActive", "rgba(232,227,217,.75)"]].forEach(([id, fill]) => {
+        [["graphArrow", graphColor("edge")],
+         ["graphArrowActive", graphColor("edge-highlight")]].forEach(([id, fill]) => {
             defs.append("marker").attr("id", id).attr("viewBox", "0 -4 8 8")
                 .attr("refX", 8).attr("refY", 0).attr("markerWidth", 8)
                 .attr("markerHeight", 8).attr("markerUnits", "userSpaceOnUse")

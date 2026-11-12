@@ -3,6 +3,7 @@
 生成D3.js交互式图谱的HTML页面
 """
 from pathlib import Path
+from src.ui.theme import css_variables
 
 
 class GraphHTMLGenerator:
@@ -10,9 +11,11 @@ class GraphHTMLGenerator:
 
     def __init__(self):
         self.template_path = Path(__file__).parent / ".." / "templates" / "graph-template.html"
+        self.last_graph_data = None
 
     def generate_graph_html(self, nodes_json, links_json, output_path):
         """生成图谱HTML文件"""
+        self.last_graph_data = (nodes_json, links_json)
         try:
             # 如果模板文件存在，使用模板
             if self.template_path.exists():
@@ -42,7 +45,7 @@ class GraphHTMLGenerator:
             template = template.replace('<head>', f'<head>\n    <base href="{base_href}">')
 
         # 替换模板中的占位符
-        html_content = template.replace('{{NODES_DATA}}', nodes_json)
+        html_content = template.replace('/*THEME_VARS*/', css_variables()).replace('{{NODES_DATA}}', nodes_json)
         html_content = html_content.replace('{{LINKS_DATA}}', links_json)
 
         # 注入本地D3绝对路径，确保在受限环境下也能加载
@@ -65,7 +68,7 @@ class GraphHTMLGenerator:
         html_content = """<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="UTF-8"><title>EchoGraph Knowledge Graph</title>
 <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
-<link rel="stylesheet" href="assets/css/graph/graph-visualization.css"></head><body>
+<link rel="stylesheet" href="assets/css/graph/graph-visualization.css"><style>/*THEME_VARS*/</style></head><body>
 <div id="loading" class="loading"><div class="spinner"></div><p>正在加载图谱...</p></div>
 <div class="controls" id="controls"><button onclick="togglePhysics()">关闭物理效果</button><button onclick="toggleEditMode()" id="editModeBtn">编辑关系</button><button onclick="toggleForcePanel()" id="forcePanelBtn">调节力度</button><button onclick="refreshGraphFromHost()">刷新图谱</button></div>
 <div class="force-panel" id="forcePanel" style="display:none"><h4>物理参数调节</h4>
@@ -81,7 +84,7 @@ class GraphHTMLGenerator:
 <button onclick="location.reload()">重新加载</button></div>
 <script>window.graphNodes = {{NODES_DATA}}; window.graphLinks = {{LINKS_DATA}};</script>
 <script src="assets/js/graph/graph-core.js"></script></body></html>"""
-        html_content = html_content.replace('{{NODES_DATA}}', nodes_json).replace('{{LINKS_DATA}}', links_json)
+        html_content = html_content.replace('/*THEME_VARS*/', css_variables()).replace('{{NODES_DATA}}', nodes_json).replace('{{LINKS_DATA}}', links_json)
 
         # 为内置模板注入本地D3绝对路径（若存在对应标签）
         try:
@@ -113,7 +116,7 @@ class GraphHTMLGenerator:
         <head>
             <title>EchoGraph Knowledge Graph</title>
             <style>
-                :root { --bg-base: #141312; --text-primary: #e8e3d9; } body { background-color: var(--bg-base); color: var(--text-primary); font-family: Microsoft YaHei UI, Segoe UI, sans-serif; }
+                /*THEME_VARS*/ body { background-color: var(--bg-base); color: var(--text-primary); font-family: Microsoft YaHei UI, Segoe UI, sans-serif; }
                 .graph-container { display: flex; justify-content: center; align-items: center; height: 100vh; }
                 .placeholder { font-size: 18px; opacity: 0.7; text-align: center; }
             </style>
@@ -131,4 +134,4 @@ class GraphHTMLGenerator:
         """
 
         with open(output_path, 'w', encoding='utf-8') as f:
-            f.write(html_content)
+            f.write(html_content.replace('/*THEME_VARS*/', css_variables()))

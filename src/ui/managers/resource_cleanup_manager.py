@@ -77,7 +77,6 @@ class ResourceCleanupManager:
                         import sys
                         if sys.platform == "win32":
                             try:
-                                import subprocess
                                 subprocess.run(["taskkill", "/F", "/PID", str(pid)],
                                              check=False, capture_output=True)
                                 logger.info("🔨 已使用taskkill强制终止进程")

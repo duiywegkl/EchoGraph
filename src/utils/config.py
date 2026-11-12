@@ -6,11 +6,9 @@ from pydantic import BaseModel
 from typing import Optional
 
 # 强制加载.env文件，覆盖系统环境变量
-env_file = Path('.env')
+env_file = Path(__file__).resolve().parents[2] / '.env'
 if env_file.exists():
-    load_dotenv(env_file, override=True)
-else:
-    load_dotenv(override=True)
+    load_dotenv(env_file, override=False)
 
 class LLMConfig(BaseModel):
     provider: str = "openai"
