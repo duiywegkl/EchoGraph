@@ -11,7 +11,6 @@ import time
 import asyncio
 from threading import Lock
 import argparse
-import asyncio
 from datetime import datetime
 from pathlib import Path
 
@@ -1673,7 +1672,6 @@ async def submit_character_data(req: SubmitCharacterDataRequest):
                 pending_coordinated_reinits.discard(session_id)
 
                 # 创建后台任务来执行重新初始化
-                import asyncio
                 async def _trigger_auto_reinit():
                     try:
                         logger.info(f"🚀 [Auto-Reinit] Starting auto-reinitialization for session {session_id}")
@@ -3029,7 +3027,6 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                             logger.info(f"🔄 [WS] Found existing data for {character_name} at {character_data_path}, auto-loading...")
 
                             # 异步创建engine并加载数据
-                            import asyncio
                             asyncio.create_task(auto_load_character_session(session_id, character_name, character_data_path))
                         else:
                             logger.info(f"📁 [WS] Character mapping exists but no data found for {character_name}")

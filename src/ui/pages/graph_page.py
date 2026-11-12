@@ -303,7 +303,6 @@ class GraphPage(QWidget):
             # 酒馆模式：调用后端保存接口
             if getattr(self, 'tavern_mode', False) and getattr(self, 'tavern_session_id', None):
                 try:
-                    import requests
                     api_base_url = os.getenv("API_BASE_URL", "http://127.0.0.1:9543")
                     save_url = f"{api_base_url}/sessions/{self.tavern_session_id}/save"
                     logger.info(f"[Graph] [酒馆模式] 调用保存接口: {save_url}")
@@ -587,7 +586,6 @@ class GraphPage(QWidget):
             # 酒馆模式：从 API 拉取
             if getattr(self, 'tavern_mode', False) and getattr(self, 'tavern_session_id', None):
                 try:
-                    import requests
                     api_base_url = os.getenv("API_BASE_URL", "http://127.0.0.1:9543")
                     export_url = f"{api_base_url}/sessions/{self.tavern_session_id}/export"
                     api_timeout = int(os.getenv("API_TIMEOUT", "15"))
@@ -738,7 +736,6 @@ class GraphPage(QWidget):
                 logger.warning("⚠️ 不在酒馆模式，跳过API刷新")
                 return
 
-            import requests
             api_base_url = os.getenv("API_BASE_URL", "http://127.0.0.1:9543")
             export_url = f"{api_base_url}/sessions/{session_id}/export"
             api_timeout = int(os.getenv("API_TIMEOUT", "15"))
@@ -1092,7 +1089,6 @@ class GraphPage(QWidget):
                     if getattr(self, 'tavern_mode', False) and getattr(self, 'tavern_session_id', None):
                         # 酒馆模式：通过API保存
                         try:
-                            import requests
                             api_base_url = os.getenv("API_BASE_URL", "http://127.0.0.1:9543")
                             response = requests.post(
                                 f"{api_base_url}/sessions/{self.tavern_session_id}/nodes",
@@ -1292,7 +1288,6 @@ class GraphPage(QWidget):
                     # 酒馆模式：通过API删除
                     logger.info(f"🗑️ [酒馆模式] 删除节点: {entity_name}")
                     try:
-                        import requests
                         api_base_url = os.getenv("API_BASE_URL", "http://127.0.0.1:9543")
                         response = requests.delete(
                             f"{api_base_url}/sessions/{self.tavern_session_id}/nodes/{entity_name}",
@@ -1377,7 +1372,6 @@ class GraphPage(QWidget):
             if getattr(self, 'tavern_mode', False) and getattr(self, 'tavern_session_id', None):
                 logger.info(f"💾 [酒馆模式] 通过API保存实体数据到会话: {self.tavern_session_id}")
 
-                import requests
                 api_base_url = os.getenv("API_BASE_URL", "http://127.0.0.1:9543")
 
                 # 构建实体更新数据

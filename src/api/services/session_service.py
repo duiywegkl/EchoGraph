@@ -375,7 +375,6 @@ class SessionService:
 
                 # 使用线程池执行耗时的LLM初始化
                 from concurrent.futures import ThreadPoolExecutor
-                import asyncio
 
                 def sync_initialize():
                     return engine.initialize_from_tavern_data(character_card, world_info)

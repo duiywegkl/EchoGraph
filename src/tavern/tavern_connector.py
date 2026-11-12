@@ -627,7 +627,6 @@ class TavernModeManager:
             logger.info(f"  - 世界书条目数量: {len(character.world_info)}")
             
             # 首先检查是否已有该角色的活跃会话
-            import requests
             api_base_url = "http://127.0.0.1:9543"
             
             # 1. 检查当前活跃的酒馆会话

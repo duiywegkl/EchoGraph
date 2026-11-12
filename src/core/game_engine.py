@@ -157,7 +157,6 @@ class GameEngine:
             logger.info("="*50)
             
             # 解析结果
-            import json
             logger.info(f"[LLM KG Gen] 开始解析LLM返回的JSON数据...")
             parsed_data = json.loads(analysis_result)
             logger.info(f"[LLM KG Gen] JSON解析成功")

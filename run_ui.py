@@ -131,14 +131,11 @@ class TavernInitWorker(QThread):
 
         except Exception as e:
             logger.error(f"❌ 酒馆初始化线程异常: {e}")
-            import traceback
             logger.error(f"详细错误: {traceback.format_exc()}")
             self.error_occurred.emit(f"初始化过程发生异常: {str(e)}")
 
     def _wait_for_character_from_plugin(self, timeout=10):
         """等待插件提供角色信息"""
-        import time
-        import requests
 
         logger.info("⏳ 等待插件提供角色信息...")
         start_time = time.time()
@@ -211,7 +208,6 @@ class TavernInitWorker(QThread):
         优先按角色名推导的会话ID精确查询，避免误用上一次的会话。
         """
         try:
-            import requests
             import hashlib
             api_base_url = "http://127.0.0.1:9543"
 
@@ -249,9 +245,7 @@ class TavernInitWorker(QThread):
         """基于插件提交的角色数据启动异步初始化任务，返回task_id"""
         logger.info("🚀 ========== 基于插件角色数据启动异步初始化任务 ==========")
         try:
-            import requests
             import hashlib
-            import time
 
             api_base_url = "http://127.0.0.1:9543"
 
@@ -411,7 +405,6 @@ class TavernInitWorker(QThread):
         except Exception as e:
             logger.error("❌ ========== 启动异步初始化异常 ==========")
             logger.error(f"❌ 异常详情: {e}")
-            import traceback
             logger.error(f"❌ 完整堆栈: {traceback.format_exc()}")
             self.error_occurred.emit(f"启动异步初始化异常: {str(e)}")
             return None
@@ -432,9 +425,7 @@ class TavernInitWorker(QThread):
         """启动异步初始化任务，返回task_id"""
         logger.info("🚀 ========== 启动异步初始化任务 ==========")
         try:
-            import requests
             import hashlib
-            import time
 
             api_base_url = "http://127.0.0.1:9543"
 
@@ -590,7 +581,6 @@ class TavernInitWorker(QThread):
         except Exception as e:
             logger.error("❌ ========== 启动异步初始化异常 ==========")
             logger.error(f"❌ 异常详情: {e}")
-            import traceback
             logger.error(f"❌ 完整堆栈: {traceback.format_exc()}")
             self.error_occurred.emit(f"启动异步初始化异常: {str(e)}")
             return None
@@ -598,8 +588,6 @@ class TavernInitWorker(QThread):
     def _poll_initialization_progress(self, task_id: str, character, connector, connection_result):
         """轮询初始化进度直到完成"""
         try:
-            import requests
-            import time
 
             api_base_url = "http://127.0.0.1:9543"
             status_url = f"{api_base_url}/initialize_status/{task_id}"
@@ -693,7 +681,6 @@ class TavernInitWorker(QThread):
 
         except Exception as e:
             self.error_occurred.emit(f"轮询进度异常: {str(e)}")
-            import traceback
             logger.error(f"轮询进度异常: {traceback.format_exc()}")
 
 sys.path.append(str(Path(__file__).parent))
@@ -1044,7 +1031,6 @@ class ConversationManager(QObject):
     def create_conversation(self, name: str = None) -> str:
         """创建新对话"""
         import uuid
-        import time
 
         conv_id = str(uuid.uuid4())
         if not name:
@@ -1108,7 +1094,6 @@ class ConversationManager(QObject):
             return False
 
         try:
-            import time
             self.conversations[conv_id]['name'] = new_name
             self.conversations[conv_id]['last_modified'] = time.time()
             self._save_conversation(self.conversations[conv_id])
@@ -1135,7 +1120,6 @@ class ConversationManager(QObject):
         """添加消息到当前对话"""
         conv = self.get_current_conversation()
         if conv:
-            import time
             message['timestamp'] = time.time()
             conv['messages'].append(message)
             conv['last_modified'] = time.time()
@@ -1149,7 +1133,6 @@ class ConversationManager(QObject):
         messages = conv.get('messages', [])
         if index < 0 or index >= len(messages):
             return False
-        import time
         messages.pop(index)
         conv['last_modified'] = time.time()
         self._save_conversation(conv)
@@ -1159,7 +1142,6 @@ class ConversationManager(QObject):
         """清空当前对话的消息"""
         conv = self.get_current_conversation()
         if conv:
-            import time
             conv['messages'] = []
             conv['last_modified'] = time.time()
             self._save_conversation(conv)
@@ -1241,7 +1223,6 @@ class IntegratedPlayPage(QWidget):
                 logger.debug("📭 [UI] 没有找到现有对话")
         except Exception as e:
             logger.error(f"❌ [UI] 加载现有对话失败: {e}")
-            import traceback
             logger.error(f"详细错误: {traceback.format_exc()}")
 
     def init_ui(self):
@@ -1478,7 +1459,6 @@ class IntegratedPlayPage(QWidget):
                 # 无条件关闭后端酒馆模式并快速清理，确保彻底回到本地隔离
                 backend_errors = []
                 try:
-                    import requests
                     response = requests.post(f"{self.api_base_url}/system/tavern_mode", json={"active": False}, timeout=5)
                     if not response.ok:
                         raise RuntimeError(f"HTTP {response.status_code}")
@@ -1517,7 +1497,6 @@ class IntegratedPlayPage(QWidget):
                 self.update_status_display("正在切换到酒馆模式...")
                 # 确保后端服务器存活；仅检查，不在此处自启，避免端口竞争
                 try:
-                    import requests
                     r = requests.get(f"{self.api_base_url}/system/liveness", timeout=5)
                     if not r.ok:
                         self.update_status_display("会话初始化失败：后端未启动")
@@ -1617,7 +1596,6 @@ class IntegratedPlayPage(QWidget):
 
         except Exception as e:
             logger.error(f"切换对话界面状态失败: {e}")
-            import traceback
             logger.error(f"详细错误: {traceback.format_exc()}")
 
     def enter_tavern_mode(self):
@@ -1686,7 +1664,6 @@ class IntegratedPlayPage(QWidget):
 
         except Exception as e:
             logger.error(f"❌ 酒馆模式初始化准备失败: {e}")
-            import traceback
             logger.error(f"详细错误: {traceback.format_exc()}")
             self.update_status_display(f"初始化失败: {e}")
             self.reset_tavern_ui_state()
@@ -1757,7 +1734,6 @@ class IntegratedPlayPage(QWidget):
 
         except Exception as e:
             logger.error(f"❌ 处理酒馆初始化完成时发生错误: {e}")
-            import traceback
             logger.error(f"详细错误: {traceback.format_exc()}")
 
     @Slot(str)
@@ -1787,7 +1763,6 @@ class IntegratedPlayPage(QWidget):
                 return
 
             try:
-                import requests
                 r = requests.get(f"{self.api_base_url}/tavern/current_session", timeout=poll_interval)
                 if self.is_test_mode:
                     return
@@ -1859,7 +1834,6 @@ class IntegratedPlayPage(QWidget):
 
             # 关闭后端酒馆模式总开关，确保隔离（并快速清理）
             try:
-                import requests
                 requests.post(f"{self.api_base_url}/system/tavern_mode", json={"active": False}, timeout=3)
                 requests.get(f"{self.api_base_url}/system/quick_reset", timeout=3)
                 logger.info("🛑 已关闭后端酒馆模式并请求 quick_reset")
@@ -1899,7 +1873,6 @@ class IntegratedPlayPage(QWidget):
 
         except Exception as e:
             logger.error(f"❌ 自动切换到本地模式失败: {e}")
-            import traceback
             logger.error(f"详细错误: {traceback.format_exc()}")
 
     @Slot()
@@ -2604,7 +2577,6 @@ class IntegratedPlayPage(QWidget):
             return {'status': 'timeout', 'error': 'API request timeout'}
         except Exception as e:
             logger.error(f"💥 [酒馆模式] 消息处理异常: {e}")
-            import traceback
             logger.error(f"详细错误: {traceback.format_exc()}")
             return {'status': 'error', 'error': str(e)}
 
@@ -3984,7 +3956,6 @@ class GraphPage(QWidget):
             try:
                 if self.tavern_mode and self.tavern_session_id:
                     # 酒馆模式下：通过API清空当前会话的图谱
-                    import requests
                     api_url = f"{self._api_base_url()}/sessions/{self.tavern_session_id}/clear"
                     api_timeout = int(os.getenv("API_TIMEOUT", "15"))
                     response = requests.post(api_url, timeout=api_timeout)
@@ -4090,7 +4061,6 @@ class GraphPage(QWidget):
                 return
 
             # 清空当前知识图谱
-            import requests
             api_base_url = self._api_base_url()
 
             # 调用API服务器的角色初始化端点
@@ -4131,7 +4101,6 @@ class GraphPage(QWidget):
 
         except Exception as e:
             logger.error(f"💥 酒馆角色图谱重新初始化异常: {e}")
-            import traceback
             logger.error(f"详细错误: {traceback.format_exc()}")
             QMessageBox.critical(self, "初始化异常", f"重新初始化时发生异常：\n{str(e)}")
 
@@ -4211,7 +4180,6 @@ class GraphPage(QWidget):
 
             def show_result(result):
                 if result:
-                    import json
                     debug_text = json.dumps(result, indent=2, ensure_ascii=False)
                     QMessageBox.information(self, "调试信息", f"图谱状态：\n{debug_text}")
                 else:
@@ -4319,7 +4287,6 @@ class GraphPage(QWidget):
         try:
             logger.info(f"从API服务器获取会话 {session_id} 的知识图谱数据...")
 
-            import requests
 
             # 获取会话统计信息
             api_base_url = self._api_base_url()  # 从配置获取
@@ -5029,7 +4996,6 @@ class EchoGraphMainWindow(QMainWindow):
         self.start_api_server()
         # 在启动或连接到已有API服务器后，强制关闭酒馆模式，确保默认本地隔离
         try:
-            import requests
             requests.post(f"http://localhost:{self.api_server_port}/system/tavern_mode", json={"active": False}, timeout=3)
         except Exception:
             pass
@@ -5131,7 +5097,6 @@ class EchoGraphMainWindow(QMainWindow):
     def check_api_server_running(self):
         """检查API服务器是否已经在运行"""
         try:
-            import requests
             # 尝试连接到健康检查端点
             response = requests.get(f"http://localhost:{self.api_server_port}/system/liveness", timeout=2)
             return response.status_code == 200

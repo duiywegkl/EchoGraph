@@ -186,7 +186,6 @@ class TavernInitWorker(QThread):
 
     def _wait_for_character_from_plugin(self, timeout=10):
         """等待插件提供角色信息"""
-        import os
 
         logger.info("⏳ 等待插件提供角色信息...")
         start_time = time.time()
@@ -259,7 +258,6 @@ class TavernInitWorker(QThread):
         """
         try:
             import hashlib
-            import os
 
             # 如果提供了角色名，则根据一致规则生成会话ID并精确查询
             if character_name and character_name.strip():
