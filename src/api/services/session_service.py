@@ -242,7 +242,8 @@ class SessionService:
             )
 
         engine = self.sessions[session_id]
-        engine.memory.clear_all()
+        from src.graph.graph_operations import clear_knowledge_graph
+        clear_knowledge_graph(engine.memory)
         logger.info(f"会话 {session_id} 的知识图谱已清空")
 
         return {

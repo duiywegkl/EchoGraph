@@ -1,3 +1,45 @@
+const graphStyle = getComputedStyle(document.documentElement);
+const graphColor = name => graphStyle.getPropertyValue('--' + name).trim();
+const GRAPH_TYPE_COLORS = Object.fromEntries(['character','location','item','event','concept','other'].map(t => [t, graphColor(t)]));
+function nodeRadius(d) {
+    const degree = links.filter(l => (l.source.id || l.source) === d.id || (l.target.id || l.target) === d.id).length;
+    return Math.min(22, 14 + Math.sqrt(degree) * 2);
+}
+function edgeEndpoints(d) {
+    const dx = d.target.x - d.source.x;
+    const dy = d.target.y - d.source.y;
+    const distance = Math.hypot(dx, dy);
+    const ux = distance ? dx / distance : 0;
+    const uy = distance ? dy / distance : 0;
+    const sourceOffset = Math.min(nodeRadius(d.source), distance / 2);
+    const targetOffset = Math.min(nodeRadius(d.target) + 2, distance / 2);
+    return {
+        x1: d.source.x + ux * sourceOffset,
+        y1: d.source.y + uy * sourceOffset,
+        x2: d.target.x - ux * targetOffset,
+        y2: d.target.y - uy * targetOffset
+    };
+}
+function positionLinks(selection) {
+    selection.each(function(d) {
+        const edge = edgeEndpoints(d);
+        d3.select(this).attr("x1", edge.x1).attr("y1", edge.y1)
+            .attr("x2", edge.x2).attr("y2", edge.y2);
+    });
+}
+function highlightNeighbours(focus) {
+    if (!node || !link || !linkLabel) return;
+    const id = value => value && (value.id || value);
+    const neighbours = new Set(focus ? [focus.id] : []);
+    if (focus) links.forEach(l => { if (id(l.source) === focus.id) neighbours.add(id(l.target)); if (id(l.target) === focus.id) neighbours.add(id(l.source)); });
+    g.selectAll('.node-group').style('opacity', d => !focus || neighbours.has(d.id) ? 1 : .25);
+    const incident = d => !!focus && (id(d.source) === focus.id || id(d.target) === focus.id);
+    link.classed('active', incident)
+        .style('opacity', d => !focus || incident(d) ? 1 : .25)
+        .attr('marker-end', d => incident(d) ? 'url(#graphArrowActive)' : 'url(#graphArrow)');
+    linkLabel.classed('active', incident)
+        .style('opacity', d => !focus || incident(d) ? 1 : .3);
+}
 /**
  * EchoGraph 知识图谱可视化核心 JavaScript
  */
@@ -39,7 +81,7 @@ function calculateForceParameters(nodeCount, linkCount) {
     }
 
     // 碰撞半径：节点多时需要更大的半径避免重叠
-    const collisionRadius = Math.max(25, 35 + Math.log(nodeCount) * 5);
+    const collisionRadius = Math.round(Math.max(25, 35 + Math.log(Math.max(1, nodeCount)) * 5));
 
     // 连线距离：节点多时需要更长的距离拉开空间
     let linkDistance;
@@ -48,7 +90,7 @@ function calculateForceParameters(nodeCount, linkCount) {
     } else if (nodeCount <= 20) {
         linkDistance = 120;
     } else {
-        linkDistance = 140 + Math.log(nodeCount) * 10;
+        linkDistance = Math.round(140 + Math.log(nodeCount) * 10);
     }
 
     // 中心引力：只有当节点很少时才启用
@@ -252,20 +294,15 @@ function generateEntityCards() {
     }
 
     const entityGrid = document.getElementById('entityGrid');
-    const typeColors = {
-        'character': '#4a90e2',
-        'location': '#27ae60',
-        'item': '#f39c12',
-        'event': '#e74c3c',
-        'concept': '#9b59b6'
-    };
+    const typeColors = GRAPH_TYPE_COLORS;
 
+    const typeNames = {character:'角色',location:'地点',item:'物品',event:'事件',concept:'概念',other:'其他'};
     let cardsHtml = '';
     nodes.forEach(node => {
-        const color = typeColors[node.type] || '#9b59b6';
+        const color = typeColors[node.type] || GRAPH_TYPE_COLORS.other;
         cardsHtml += `
             <div class="entity-card" style="border-color: ${color};">
-                <div class="entity-type" style="color: ${color};">[${node.type}]</div>
+                <div class="entity-type" style="color: ${color};">${typeNames[node.type] || typeNames.other}</div>
                 <div class="entity-name">${node.name}</div>
                 <div class="entity-desc">${node.description || '暂无描述'}</div>
             </div>
@@ -295,6 +332,15 @@ function initializeGraph() {
 
         svg.attr("width", width).attr("height", height);
 
+        const defs = svg.append("defs");
+        [["graphArrow", "rgba(232,227,217,.32)"],
+         ["graphArrowActive", "rgba(232,227,217,.75)"]].forEach(([id, fill]) => {
+            defs.append("marker").attr("id", id).attr("viewBox", "0 -4 8 8")
+                .attr("refX", 8).attr("refY", 0).attr("markerWidth", 8)
+                .attr("markerHeight", 8).attr("markerUnits", "userSpaceOnUse")
+                .attr("orient", "auto")
+                .append("path").attr("d", "M0,-4L8,0L0,4Z").attr("fill", fill);
+        });
         g = svg.append("g");
         console.log('创建SVG组元素');
 
@@ -332,7 +378,8 @@ function initializeGraph() {
             .selectAll("line")
             .data(links)
             .join("line")
-            .attr("class", "link editable-link");
+            .attr("class", "link editable-link")
+            .attr("marker-end", "url(#graphArrow)");
 
         console.log(`创建了 ${links.length} 条连线`);
 
@@ -359,12 +406,12 @@ function initializeGraph() {
         // 在节点组中添加圆圈
         node = nodeGroup.append("circle")
             .attr("class", d => `node ${d.type}`)
-            .attr("r", 20);
+            .attr("r", d => nodeRadius(d));
 
         // 在节点组中添加文字标签
         label = nodeGroup.append("text")
             .attr("class", "node-label")
-            .attr("dy", ".35em")
+            .attr("dy", d => nodeRadius(d) + 12)
             .style("pointer-events", "none")
             .text(d => d.name);
         console.log(`创建了 ${nodes.length} 个节点`);
@@ -391,6 +438,7 @@ function initializeGraph() {
 function setupEventHandlers(nodeGroup) {
     // 节点鼠标悬停
     nodeGroup.on("mouseover", (event, d) => {
+        highlightNeighbours(d);
         tooltip.style("opacity", 1)
             .html(`<strong>${d.name}</strong><br/>
                    类型: ${d.type}<br/>
@@ -400,6 +448,7 @@ function setupEventHandlers(nodeGroup) {
     })
     .on("mouseout", () => {
         tooltip.style("opacity", 0);
+        highlightNeighbours(selectedNode ? selectedNode.datum() : null);
     });
 
     // 节点点击事件
@@ -458,13 +507,15 @@ function setupEventHandlers(nodeGroup) {
  */
 function setupSimulation() {
     simulation.on("tick", () => {
-        link.attr("x1", d => d.source.x)
-            .attr("y1", d => d.source.y)
-            .attr("x2", d => d.target.x)
-            .attr("y2", d => d.target.y);
+        positionLinks(link);
 
-        linkLabel.attr("x", d => (d.source.x + d.target.x) / 2)
-                 .attr("y", d => (d.source.y + d.target.y) / 2 - 5);
+        linkLabel.attr("x", d => {
+            const edge = edgeEndpoints(d);
+            return (edge.x1 + edge.x2) / 2;
+        }).attr("y", d => {
+            const edge = edgeEndpoints(d);
+            return (edge.y1 + edge.y2) / 2;
+        });
 
         // 更新节点组位置（包含圆圈和文字）
         g.selectAll(".node-group")
@@ -495,16 +546,18 @@ function dragged(event, d) {
     d3.select(this).attr("transform", `translate(${d.x}, ${d.y})`);
 
     // 立即更新相关的连线
-    link.filter(l => l.source.id === d.id || l.target.id === d.id)
-        .attr("x1", l => l.source.x)
-        .attr("y1", l => l.source.y)
-        .attr("x2", l => l.target.x)
-        .attr("y2", l => l.target.y);
+    positionLinks(link.filter(l => l.source.id === d.id || l.target.id === d.id));
 
     // 立即更新连线标签位置
     linkLabel.filter(l => l.source.id === d.id || l.target.id === d.id)
-        .attr("x", l => (l.source.x + l.target.x) / 2)
-        .attr("y", l => (l.source.y + l.target.y) / 2 - 5);
+        .attr("x", l => {
+            const edge = edgeEndpoints(l);
+            return (edge.x1 + edge.x2) / 2;
+        })
+        .attr("y", l => {
+            const edge = edgeEndpoints(l);
+            return (edge.y1 + edge.y2) / 2;
+        });
 }
 
 function dragended(event, d) {
@@ -562,13 +615,13 @@ window.togglePhysics = function() {
         console.log('关闭物理效果（仍可拖动但不弹跳）');
         physicsEnabled = false;
         btn.textContent = '启动物理效果';
-        btn.style.backgroundColor = '#95a5a6';
+        btn.classList.toggle('active');
         simulation.stop();
     } else {
         console.log('启动物理效果');
         physicsEnabled = true;
         btn.textContent = '关闭物理效果';
-        btn.style.backgroundColor = '#4a90e2';
+        btn.classList.toggle('active');
         simulation.alpha(0.3).restart();
     }
 }
@@ -580,14 +633,22 @@ window.toggleForcePanel = function() {
     if (panel.style.display === 'none') {
         panel.style.display = 'block';
         btn.textContent = '隐藏调节';
-        btn.style.backgroundColor = '#e74c3c';
+        btn.classList.toggle('active');
 
         // 更新滑块值为当前参数
         updateSliderValues();
     } else {
         panel.style.display = 'none';
         btn.textContent = '调节力度';
-        btn.style.backgroundColor = '#4a90e2';
+        btn.classList.toggle('active');
+    }
+}
+
+window.refreshGraphFromHost = function() {
+    if (typeof bridge !== 'undefined' && bridge && bridge.refreshGraph) {
+        bridge.refreshGraph();
+    } else {
+        location.reload();
     }
 }
 
@@ -626,13 +687,13 @@ function updateSliderValues() {
     const params = calculateForceParameters(nodes.length, links.length);
 
     document.getElementById('repulsionSlider').value = params.repulsion;
-    document.getElementById('repulsionValue').textContent = params.repulsion;
+    document.getElementById('repulsionValue').textContent = Math.round(params.repulsion);
 
     document.getElementById('linkDistanceSlider').value = params.linkDistance;
-    document.getElementById('linkDistanceValue').textContent = params.linkDistance;
+    document.getElementById('linkDistanceValue').textContent = Math.round(params.linkDistance);
 
     document.getElementById('collisionSlider').value = params.collisionRadius;
-    document.getElementById('collisionValue').textContent = params.collisionRadius;
+    document.getElementById('collisionValue').textContent = Math.round(params.collisionRadius);
 
     document.getElementById('centerStrengthSlider').value = params.centerStrength;
     document.getElementById('centerStrengthValue').textContent = params.centerStrength.toFixed(2);
@@ -676,12 +737,12 @@ window.toggleEditMode = function() {
     if (editMode) {
         console.log('✅ 进入关系编辑模式');
         btn.textContent = '退出编辑';
-        btn.style.backgroundColor = '#e74c3c';
+        btn.classList.toggle('active');
         svg.classed('editing-mode', true);
     } else {
         console.log('✅ 退出关系编辑模式');
         btn.textContent = '编辑关系';
-        btn.style.backgroundColor = '#4a90e2';
+        btn.classList.toggle('active');
         svg.classed('editing-mode', false);
         clearSelection();
     }
@@ -699,6 +760,7 @@ function clearSelection() {
         tempLine.remove();
         tempLine = null;
     }
+    highlightNeighbours(null);
 }
 
 /**
@@ -708,6 +770,7 @@ function handleRelationEdit(nodeData, nodeElement) {
     if (!selectedNode) {
         selectedNode = nodeElement;
         selectedNode.classed('selected-node', true);
+        highlightNeighbours(nodeData);
         console.log('选择了源节点:', nodeData.name);
     } else {
         const sourceData = selectedNode.datum();
@@ -784,15 +847,16 @@ function updateVisualization() {
 
     const newLinks = linkSelection.enter()
         .append("line")
-        .attr("class", "link editable-link");
+        .attr("class", "link editable-link")
+        .attr("marker-end", "url(#graphArrow)");
 
     newLinks.on("click", function(event, d) {
-        if (editMode) return;
+        if (!editMode) return;
         event.stopPropagation();
         openRelationEditDialog(d);
     });
 
-    linkSelection.merge(newLinks);
+    link = linkSelection.merge(newLinks);
 
     const labelSelection = g.selectAll(".relation-label")
         .data(links);
@@ -803,13 +867,14 @@ function updateVisualization() {
         .style("cursor", "pointer");
 
     newLabels.on("click", function(event, d) {
-        if (editMode) return;
+        if (!editMode) return;
         event.stopPropagation();
         openRelationEditDialog(d);
     });
 
-    labelSelection.merge(newLabels)
+    linkLabel = labelSelection.merge(newLabels)
         .text(d => d.relation || "关联");
+    highlightNeighbours(selectedNode ? selectedNode.datum() : null);
 
     simulation.nodes(nodes);
     simulation.force("link").links(links);

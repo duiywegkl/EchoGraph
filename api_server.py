@@ -1017,7 +1017,8 @@ async def clear_session_graph(session_id: str):
 
     try:
         engine = sessions[session_id]
-        engine.memory.clear_all()
+        from src.graph.graph_operations import clear_knowledge_graph
+        clear_knowledge_graph(engine.memory)
         logger.info(f"会话 {session_id} 的知识图谱已清空")
 
         return {"success": True, "message": f"Session {session_id} knowledge graph cleared successfully"}

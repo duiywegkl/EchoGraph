@@ -176,6 +176,7 @@ class KnowledgeGraph:
             logger.info(f"Graph saved to {file_path}")
         except Exception as e:
             logger.error(f"Failed to save graph to {file_path}: {e}")
+            raise
 
     def load_graph(self, file_path: str):
         """

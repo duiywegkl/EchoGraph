@@ -14,11 +14,10 @@
     </div>
     
     <div class="controls" id="controls">
-        <button onclick="resetZoom()">重置视图</button>
         <button onclick="togglePhysics()">关闭物理效果</button>
-        <button onclick="toggleEditMode()" id="editModeBtn">编辑关系</button>
-        <button onclick="location.reload()">刷新图谱</button>
+        <span title="关系编辑尚未连接到持久化存储"><button onclick="toggleEditMode()" id="editModeBtn" disabled>编辑关系</button></span>
         <button onclick="toggleForcePanel()" id="forcePanelBtn">调节力度</button>
+        <button onclick="refreshGraphFromHost()">刷新图谱</button>
     </div>
     
     <!-- 力度调节面板 -->
@@ -55,9 +54,10 @@
     </div>
     
     <div class="tooltip" id="tooltip"></div>
+    <div class="legend"><span><i style="--dot:var(--character)"></i>角色</span><span><i style="--dot:var(--location)"></i>地点</span><span><i style="--dot:var(--item)"></i>物品</span><span><i style="--dot:var(--event)"></i>事件</span><span><i style="--dot:var(--concept)"></i>概念</span></div>
     
     <div id="fallback" class="fallback">
-        <h2 style="color: #4a90e2; margin-bottom: 30px;">知识图谱 - 简化视图</h2>
+        <h2>知识图谱 - 简化视图</h2>
         <div class="entity-grid" id="entityGrid">
             <!-- 实体卡片将通过JavaScript动态生成 -->
         </div>
@@ -66,10 +66,7 @@
             <small>已尝试从CDN和本地文件加载D3.js</small><br>
             <small>本地文件路径: ./assets/js/d3.v7.min.js</small>
         </p>
-        <button onclick="location.reload()" style="
-            background: #4a90e2; color: white; border: none; 
-            padding: 10px 20px; border-radius: 5px; cursor: pointer; margin-top: 15px;
-        ">重新加载</button>
+        <button onclick="location.reload()">重新加载</button>
     </div>
     
     <script>

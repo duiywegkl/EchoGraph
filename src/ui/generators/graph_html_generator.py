@@ -60,68 +60,34 @@ class GraphHTMLGenerator:
 
     def _generate_builtin_template(self, nodes_json, links_json, output_path):
         """生成内置HTML模板"""
-        html_content = f"""<!DOCTYPE html>
-<html>
-<head>
-    <title>EchoGraph Knowledge Graph</title>
-    <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
-    <link rel="stylesheet" href="assets/css/graph.css">
-</head>
-<body>
-    <div id="loading" class="loading">
-        <div class="spinner"></div>
-        <p>正在加载图谱...</p>
-    </div>
-
-    <div class="controls" id="controls">
-        <button onclick="resetZoom()">重置视图</button>
-        <button onclick="togglePhysics()">关闭物理效果</button>
-        <button onclick="toggleEditMode()" id="editModeBtn">编辑关系</button>
-        <button onclick="location.reload()">刷新图谱</button>
-    </div>
-
-    <div class="graph-container" id="graphContainer">
-        <svg id="graph" width="100%" height="100%"></svg>
-    </div>
-
-    <div class="tooltip" id="tooltip"></div>
-
-    <div id="fallback" class="fallback">
-        <h2 style="color: #4a90e2; margin-bottom: 30px;">知识图谱 - 简化视图</h2>
-        <div class="entity-grid" id="entityGrid">
-            <!-- 实体卡片将通过JavaScript动态生成 -->
-        </div>
-        <p style="opacity: 0.7; font-size: 14px; margin-top: 20px;">
-            网络访问受限，无法加载D3.js库，显示简化版本<br>
-            <small>已尝试从CDN和本地文件加载D3.js</small>
-        </p>
-        <button onclick="location.reload()" style="
-            background: #4a90e2; color: white; border: none;
-            padding: 10px 20px; border-radius: 5px; cursor: pointer; margin-top: 15px;
-        ">重新加载</button>
-    </div>
-
-    <script src="assets/js/graph.js"></script>
-    <script>
-        // 设置数据
-        window.graphData = {{
-            nodes: {nodes_json},
-            links: {links_json}
-        }};
-
-        // 初始化图谱
-        document.addEventListener('DOMContentLoaded', function() {{
-            initializeGraphWithData(window.graphData.nodes, window.graphData.links);
-        }});
-    </script>
-</body>
-</html>"""
+        # Keep the built-in fallback in sync with the live graph layout.
+        # A missing template file still yields an offline graph with the same assets.
+        html_content = """<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><title>EchoGraph Knowledge Graph</title>
+<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+<link rel="stylesheet" href="assets/css/graph/graph-visualization.css"></head><body>
+<div id="loading" class="loading"><div class="spinner"></div><p>正在加载图谱...</p></div>
+<div class="controls" id="controls"><button onclick="togglePhysics()">关闭物理效果</button><span title="关系编辑尚未连接到持久化存储"><button onclick="toggleEditMode()" id="editModeBtn" disabled>编辑关系</button></span><button onclick="toggleForcePanel()" id="forcePanelBtn">调节力度</button><button onclick="refreshGraphFromHost()">刷新图谱</button></div>
+<div class="force-panel" id="forcePanel" style="display:none"><h4>物理参数调节</h4>
+<div class="force-control"><label>排斥力度:</label><input type="range" id="repulsionSlider" min="-1500" max="-20" step="20" value="-400"><span id="repulsionValue">-400</span></div>
+<div class="force-control"><label>连线长度:</label><input type="range" id="linkDistanceSlider" min="60" max="250" step="10" value="120"><span id="linkDistanceValue">120</span></div>
+<div class="force-control"><label>碰撞半径:</label><input type="range" id="collisionSlider" min="20" max="80" step="2" value="40"><span id="collisionValue">40</span></div>
+<div class="force-control"><label>中心引力:</label><input type="range" id="centerStrengthSlider" min="0" max="0.3" step="0.01" value="0"><span id="centerStrengthValue">0</span></div>
+<div class="force-control"><button onclick="resetToSmart()">智能参数</button><button onclick="applyForceChanges()">应用设置</button></div></div>
+<div class="graph-container" id="graphContainer"><svg id="graph" width="100%" height="100%"></svg></div><div class="tooltip" id="tooltip"></div>
+<div class="legend"><span><i style="--dot:var(--character)"></i>角色</span><span><i style="--dot:var(--location)"></i>地点</span><span><i style="--dot:var(--item)"></i>物品</span><span><i style="--dot:var(--event)"></i>事件</span><span><i style="--dot:var(--concept)"></i>概念</span></div>
+<div id="fallback" class="fallback"><h2>知识图谱 - 简化视图</h2><div class="entity-grid" id="entityGrid"></div>
+<p>网络访问受限，无法加载D3.js库，显示简化版本<br><small>已尝试从CDN和本地文件加载D3.js</small></p>
+<button onclick="location.reload()">重新加载</button></div>
+<script>window.graphNodes = {{NODES_DATA}}; window.graphLinks = {{LINKS_DATA}};</script>
+<script src="assets/js/graph/graph-core.js"></script></body></html>"""
+        html_content = html_content.replace('{{NODES_DATA}}', nodes_json).replace('{{LINKS_DATA}}', links_json)
 
         # 为内置模板注入本地D3绝对路径（若存在对应标签）
         try:
             d3_uri = (self.template_path.resolve().parent.parent.parent.parent / 'assets' / 'js' / 'd3.v7.min.js').resolve().as_uri()
             injection = f'<script>window.localD3PathInjected = "{d3_uri}";</script>'
-            html_content = html_content.replace('<script src="assets/js/graph.js"></script>', injection + '\n    <script src="assets/js/graph.js"></script>')
+            html_content = html_content.replace('<script src="assets/js/graph/graph-core.js"></script>', injection + '\n    <script src="assets/js/graph/graph-core.js"></script>')
         except Exception:
             pass
 
@@ -147,7 +113,7 @@ class GraphHTMLGenerator:
         <head>
             <title>EchoGraph Knowledge Graph</title>
             <style>
-                body { background-color: #2d2d2d; color: white; font-family: Arial, sans-serif; }
+                :root { --bg-base: #141312; --text-primary: #e8e3d9; } body { background-color: var(--bg-base); color: var(--text-primary); font-family: Microsoft YaHei UI, Segoe UI, sans-serif; }
                 .graph-container { display: flex; justify-content: center; align-items: center; height: 100vh; }
                 .placeholder { font-size: 18px; opacity: 0.7; text-align: center; }
             </style>

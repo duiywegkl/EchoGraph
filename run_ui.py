@@ -6,6 +6,8 @@ import sys
 import os
 import time
 import traceback
+import re
+from html import escape
 import subprocess
 import json
 import requests
@@ -17,7 +19,7 @@ from PySide6.QtWidgets import (
     QFormLayout, QLineEdit, QPushButton, QCheckBox, QTabWidget,
     QMessageBox, QSplitter, QListWidget, QListWidgetItem, QLabel, QTextEdit,
     QGroupBox, QComboBox, QInputDialog, QStyle, QDialog, QFileDialog,
-    QRadioButton, QButtonGroup, QScrollArea, QFrame, QSpinBox, QDoubleSpinBox
+    QRadioButton, QButtonGroup, QScrollArea, QFrame, QSpinBox, QDoubleSpinBox, QStyledItemDelegate
 )
 from PySide6.QtCore import Qt, QObject, Signal as pyqtSignal, QUrl, Slot, QTimer, QPropertyAnimation, QRect, QThread, QEvent
 from PySide6.QtWebEngineWidgets import QWebEngineView
@@ -25,6 +27,13 @@ from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtGui import QIcon, QFont, QColor, QIntValidator, QTextCursor, QPainter, QPen, QBrush
 from dotenv import dotenv_values, set_key
 from loguru import logger
+
+ATTENTION_CONFIG = {
+    'collective_weight': 0.6,
+    'holistic_weight': 0.4,
+    'importance_threshold': 0.3,
+    'max_context_entities': 15,
+}
 
 # 添加酒馆初始化工作线程类
 class TavernInitWorker(QThread):
@@ -49,7 +58,7 @@ class TavernInitWorker(QThread):
             logger.info("🧵 开始后台酒馆初始化线程...")
 
             # 步骤1: 连接测试
-            self.progress_updated.emit("🔍 测试SillyTavern连接...", "检查连接可用性")
+            self.progress_updated.emit("测试SillyTavern连接...", "检查连接可用性")
 
             # 测试连接
             connector = SillyTavernConnector(self.tavern_config)
@@ -60,16 +69,16 @@ class TavernInitWorker(QThread):
                 return
 
             # 步骤2: 不再依赖后台API获取角色，而是等待插件提供角色信息
-            self.progress_updated.emit("🎭 等待插件提供角色信息...", "插件会自动检测当前选中的角色")
+            self.progress_updated.emit("等待插件提供角色信息...", "插件会自动检测当前选中的角色")
 
             # 检查插件是否已经提供角色信息
             character_data = self._wait_for_character_from_plugin()
             if not character_data:
-                self.error_occurred.emit("插件未能获取到角色信息，请确保：\n1. 已在SillyTavern中选择了角色\n2. EchoGraph插件正常运行\n3. 刷新页面后重试\n\n⚠️ 如果持续无法获取角色信息，将自动切换回本地测试模式")
+                self.error_occurred.emit("插件未能获取到角色信息，请确保：\n1. 已在SillyTavern中选择了角色\n2. EchoGraph插件正常运行\n3. 刷新页面后重试\n\n 如果持续无法获取角色信息，将自动切换回本地测试模式")
                 return
 
             if not self._has_world_info_content(character_data.get("world_info")):
-                self.progress_updated.emit("⚠️ 未获取到世界书文本", "等待用户确认是否继续")
+                self.progress_updated.emit("未获取到世界书文本", "等待用户确认是否继续")
                 self._continue_without_world_info = False
                 self._world_info_decision_event.clear()
                 self.world_info_confirmation_required.emit(character_data)
@@ -79,10 +88,10 @@ class TavernInitWorker(QThread):
                 if not self._continue_without_world_info:
                     self.error_occurred.emit("未获取到世界书文本，用户已取消初始化。")
                     return
-                self.progress_updated.emit("ℹ️ 已确认继续", "将以空世界书文本继续初始化")
+                self.progress_updated.emit("已确认继续", "将以空世界书文本继续初始化")
 
             # 步骤3: 检查现有会话
-            self.progress_updated.emit("🔍 检查现有会话...", f"查找角色 {character_data['name']} 的现有会话")
+            self.progress_updated.emit("检查现有会话...", f"查找角色 {character_data['name']} 的现有会话")
 
             existing_session = self._check_existing_session(character_data.get('name'))
             if existing_session:
@@ -90,7 +99,7 @@ class TavernInitWorker(QThread):
                 session_id = existing_session["session_id"]
                 nodes_count = existing_session.get("graph_nodes", 0)
 
-                self.progress_updated.emit("✅ 发现现有会话", f"会话ID: {session_id[:8]}... 节点数: {nodes_count}")
+                self.progress_updated.emit("发现现有会话", f"会话ID: {session_id[:8]}... 节点数: {nodes_count}")
 
                 # 通知插件连接状态
                 connector.notify_plugin_connection(session_id)
@@ -107,7 +116,7 @@ class TavernInitWorker(QThread):
                 return
 
             # 步骤4: 启动异步初始化
-            self.progress_updated.emit("🚀 启动异步初始化...", "准备创建新的知识图谱会话")
+            self.progress_updated.emit("启动异步初始化...", "准备创建新的知识图谱会话")
 
             task_id = self._start_async_initialization_with_character_data(character_data)
             if not task_id:
@@ -359,7 +368,7 @@ class TavernInitWorker(QThread):
                 logger.info(f"  - 完整响应: {async_result}")
 
                 self.progress_updated.emit(
-                    f"✅ 初始化任务已启动",
+                    f"初始化任务已启动",
                     f"任务ID: {task_id[:8]}... 预计耗时: {estimated_time}"
                 )
 
@@ -538,7 +547,7 @@ class TavernInitWorker(QThread):
                 logger.info(f"  - 完整响应: {async_result}")
 
                 self.progress_updated.emit(
-                    f"✅ 初始化任务已启动",
+                    f"初始化任务已启动",
                     f"任务ID: {task_id[:8]}... 预计耗时: {estimated_time}"
                 )
 
@@ -595,7 +604,7 @@ class TavernInitWorker(QThread):
             poll_interval = 3   # 每3秒轮询一次
             start_time = time.time()
 
-            self.progress_updated.emit("🔍 开始监控初始化进度...", "每3秒检查一次任务状态")
+            self.progress_updated.emit("开始监控初始化进度...", "每3秒检查一次任务状态")
 
             while time.time() - start_time < max_wait_time:
                 try:
@@ -616,7 +625,7 @@ class TavernInitWorker(QThread):
                         # 实时更新进度到UI
                         progress_percent = int(progress * 100)
                         self.progress_updated.emit(
-                            f"🧠 初始化进度: {progress_percent}%",
+                            f"初始化进度: {progress_percent}%",
                             f"当前步骤: {message}"
                         )
 
@@ -626,7 +635,7 @@ class TavernInitWorker(QThread):
                             nodes_created = result.get("graph_stats", {}).get("nodes_updated", 0)
                             session_id = result.get("session_id")
 
-                            self.progress_updated.emit("🎉 初始化成功！", f"已创建 {nodes_created} 个节点")
+                            self.progress_updated.emit("初始化成功！", f"已创建 {nodes_created} 个节点")
 
                             # 通知插件连接状态
                             connector.notify_plugin_connection(session_id)
@@ -652,7 +661,7 @@ class TavernInitWorker(QThread):
                         elif task_status == "failed":
                             # 任务失败
                             error_message = status_data.get("error", "未知错误")
-                            self.progress_updated.emit("❌ 初始化失败", error_message)
+                            self.progress_updated.emit("初始化失败", error_message)
                             self.error_occurred.emit(f"异步初始化失败: {error_message}")
                             return
 
@@ -661,21 +670,21 @@ class TavernInitWorker(QThread):
 
                     else:
                         self.progress_updated.emit(
-                            "⚠️ 状态查询异常",
+                            "状态查询异常",
                             f"HTTP {status_response.status_code}，将继续重试..."
                         )
                         time.sleep(poll_interval)
 
                 except requests.exceptions.RequestException as e:
                     self.progress_updated.emit(
-                        "⚠️ 网络异常",
+                        "网络异常",
                         f"连接API失败: {str(e)[:50]}...，将继续重试"
                     )
                     time.sleep(poll_interval)
 
             # 超时处理
             elapsed_time = int(time.time() - start_time)
-            self.progress_updated.emit("⏰ 初始化超时", f"已等待 {elapsed_time} 秒，任务可能仍在后台运行")
+            self.progress_updated.emit("初始化超时", f"已等待 {elapsed_time} 秒，任务可能仍在后台运行")
             self.error_occurred.emit(f"初始化超时（超过{max_wait_time}秒），请检查API服务器状态")
 
         except Exception as e:
@@ -690,6 +699,7 @@ from src.memory import GRAGMemory
 from src.ui.workers.llm_worker import LLMWorkerThread
 from src.ui.managers.scenario_manager import ScenarioManager
 from src.ui.managers.window_manager import WindowManager
+from src.ui.theme import (BG_BASE, BG_SURFACE, BG_RAISED, BG_INPUT, BORDER, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_MUTED, ACCENT, ACCENT_SUBTLE, DANGER, SUCCESS, INFO, NODE_TYPE_COLORS)
 from src.ui.managers.resource_cleanup_manager import ResourceCleanupManager
 # 导入酒馆连接器
 from src.tavern.tavern_connector import TavernModeManager, TavernConfig, SillyTavernConnector
@@ -706,35 +716,19 @@ class ChatBubble(QFrame):
         self.message = message
         self.is_user = is_user
         self.delete_mode_enabled = False  # 是否处于删除模式
-        # 统一的深色主题配色
-        if is_user:
-            # 用户消息：简洁的蓝色
-            self.color = color or "#5865f2"  # Discord蓝
-            self.text_color = "#ffffff"
-            self.border_color = "transparent"
-        else:
-            # AI消息：深色背景，浅色文字，微妙边框
-            self.color = color or "#36393f"  # Discord深色
-            self.text_color = "#dcddde"      # 温和的浅色
-            self.border_color = "#40444b"    # 微妙的边框
+        self.color = color
+        self.text_color = TEXT_PRIMARY
+        self.border_color = BORDER
+        self.setProperty("role", "userBubble" if is_user else "aiBubble")
         self.setup_ui()
 
     def set_delete_mode(self, enabled: bool):
         """设置删除模式"""
         self.delete_mode_enabled = enabled
-        if enabled:
-            self.setCursor(Qt.PointingHandCursor)
-            # 添加删除模式的视觉提示
-            self.setStyleSheet(self.styleSheet() + """
-                QFrame:hover {
-                    border: 2px solid #e74c3c !important;
-                    background-color: rgba(231, 76, 60, 0.1) !important;
-                }
-            """)
-        else:
-            self.setCursor(Qt.ArrowCursor)
-            self.setStyleSheet("")  # 重置样式
-            self.setup_ui()  # 重新设置UI样式
+        self.setCursor(Qt.PointingHandCursor if enabled else Qt.ArrowCursor)
+        self.setProperty("deleteMode", enabled)
+        self.style().unpolish(self)
+        self.style().polish(self)
 
     def mousePressEvent(self, event):
         """鼠标点击事件"""
@@ -744,46 +738,24 @@ class ChatBubble(QFrame):
 
     def setup_ui(self):
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(20, 8, 20, 8)
+        layout.setContentsMargins(16, 8, 16, 8)
 
         # 创建消息标签
         message_label = QLabel(self.message)
+        # Preserve supplied rich text and give ordinary paragraphs compact spacing.
+        if re.search(r"<[A-Za-z][^>]*>", self.message):
+            content = self.message
+        else:
+            paragraphs = re.split(r"\n\s*\n", self.message)
+            content = "".join(
+                f'<p style="margin:0 0 8px 0; line-height:155%">{escape(paragraph).replace(chr(10), "<br>")}</p>'
+                for paragraph in paragraphs
+            )
+        message_label.setText(f'<div style="font-size:14px; line-height:155%">{content}</div>')
         message_label.setWordWrap(True)
 
-        if self.is_user:
-            # 用户消息样式 - 简洁的蓝色
-            message_label.setStyleSheet(f"""
-                QLabel {{
-                    background-color: {self.color};
-                    color: {self.text_color};
-                    border-radius: 18px;
-                    padding: 12px 16px;
-                    font-size: 14px;
-                    line-height: 1.4;
-                    max-width: 400px;
-                    min-height: 20px;
-                    border: none;
-                    font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
-                    font-weight: 500;
-                }}
-            """)
-        else:
-            # AI消息样式 - Discord风格深色
-            message_label.setStyleSheet(f"""
-                QLabel {{
-                    background-color: {self.color};
-                    color: {self.text_color};
-                    border: 1px solid {self.border_color};
-                    border-radius: 8px;
-                    padding: 12px 16px;
-                    font-size: 14px;
-                    line-height: 1.5;
-                    max-width: 450px;
-                    min-height: 20px;
-                    font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
-                }}
-            """)
-
+        message_label.setProperty("role", "userBubble" if self.is_user else "aiBubble")
+        message_label.setMaximumWidth(688 if not self.is_user else 528)
         message_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
 
         if self.is_user:
@@ -811,22 +783,11 @@ class LoadingBubble(QFrame):
 
     def setup_ui(self):
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(20, 8, 20, 8)
+        layout.setContentsMargins(16, 8, 16, 8)
 
         self.message_label = QLabel("助手正在思考...")
-        self.message_label.setStyleSheet("""
-            QLabel {
-                background-color: #36393f;
-                color: #72767d;
-                border: 1px solid #40444b;
-                border-radius: 8px;
-                padding: 12px 16px;
-                font-size: 14px;
-                min-width: 120px;
-                font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
-                font-style: italic;
-            }
-        """)
+        self.message_label.setProperty("role", "loadingBubble")
+
 
         layout.addWidget(self.message_label)
         layout.addStretch()
@@ -858,51 +819,23 @@ class ChatDisplayWidget(QScrollArea):
 
         # 创建容器widget
         container = QWidget()
-        container.setStyleSheet("""
-            QWidget {
-                background-color: #2f3136;
-            }
-        """)
+
         container_layout = QVBoxLayout(container)
-        container_layout.setSpacing(5)
-        container_layout.setContentsMargins(0, 10, 0, 10)
+        container_layout.setSpacing(8)
+        container_layout.setContentsMargins(24, 8, 24, 8)
 
         # 添加消息布局
-        container_layout.addLayout(self.messages_layout)
+        reading_column = QWidget()
+        reading_layout = QVBoxLayout(reading_column)
+        reading_layout.setContentsMargins(0, 0, 0, 0)
+        reading_layout.addLayout(self.messages_layout)
+        container_layout.addWidget(reading_column)
         container_layout.addStretch()  # 推到顶部
 
         self.setWidget(container)
 
         # 设置样式 - 现代深色聊天背景（类似Discord/Slack）
-        self.setStyleSheet("""
-            QScrollArea {
-                border: none;
-                border-radius: 0px;
-                background-color: #2f3136;
-            }
-            QWidget {
-                background-color: #2f3136;
-            }
-            QScrollBar:vertical {
-                width: 8px;
-                border-radius: 4px;
-                background-color: #2f3136;
-                border: none;
-            }
-            QScrollBar::handle:vertical {
-                border-radius: 4px;
-                background-color: #202225;
-                min-height: 20px;
-            }
-            QScrollBar::handle:vertical:hover {
-                background-color: #40444b;
-            }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-                border: none;
-                background: none;
-                height: 0px;
-            }
-        """)
+
 
     def add_message(self, message: str, is_user: bool, color: str = None):
         # 限制消息历史大小，防止内存泄漏
@@ -1027,11 +960,17 @@ class GraphBridge(QObject):
     @Slot(str, str)
     def editNode(self, entity_name, entity_type):
         """JavaScript直接调用此方法编辑节点"""
+        if self.graph_page.tavern_mode:
+            return
         try:
             logger.info(f"通过WebChannel编辑节点: {entity_name} ({entity_type})")
             self.graph_page.edit_node_with_python_dialog(entity_name, entity_type)
         except Exception as e:
             logger.error(f"WebChannel编辑节点失败: {e}")
+
+    @Slot()
+    def refreshGraph(self):
+        self.graph_page.refresh_graph()
 
     @Slot(str, str, str)
     def createRelation(self, source_name, target_name, relation_type):
@@ -1294,13 +1233,11 @@ class IntegratedPlayPage(QWidget):
     def init_ui(self):
         """初始化UI"""
         # 设置页面背景为深色
-        self.setStyleSheet("""
-            IntegratedPlayPage {
-                background-color: #2f3136;
-            }
-        """)
+
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(16)
 
         # 顶部工具栏
         toolbar = self.create_toolbar()
@@ -1322,52 +1259,15 @@ class IntegratedPlayPage(QWidget):
         """创建顶部工具栏"""
         toolbar = QWidget()
         layout = QHBoxLayout(toolbar)
+        layout.setContentsMargins(0, 0, 0, 0)
 
         # 模式选择组
         mode_group = QGroupBox("测试模式")
-        mode_group.setStyleSheet("""
-            QGroupBox {
-                color: #dcddde;
-                border: 1px solid #4f545c;
-                border-radius: 8px;
-                margin-top: 1ex;
-                padding-top: 15px;
-                font-weight: bold;
-                background-color: #36393f;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 15px;
-                padding: 0 8px 0 8px;
-                color: #5865f2;
-                font-size: 14px;
-            }
-            QRadioButton {
-                color: #dcddde;
-                font-size: 13px;
-                spacing: 8px;
-                padding: 4px;
-            }
-            QRadioButton::indicator {
-                width: 16px;
-                height: 16px;
-                border-radius: 8px;
-                border: 2px solid #4f545c;
-                background-color: #40444b;
-            }
-            QRadioButton::indicator:checked {
-                background-color: #5865f2;
-                border-color: #5865f2;
-            }
-            QRadioButton::indicator:hover {
-                border-color: #5865f2;
-            }
-            QRadioButton::indicator:disabled {
-                background-color: #2f3136;
-                border-color: #72767d;
-            }
-        """)
-        mode_layout = QVBoxLayout(mode_group)
+        mode_group.setProperty("variant", "flat")
+        mode_group.setTitle("")
+
+        mode_layout = QHBoxLayout(mode_group)
+        mode_layout.setContentsMargins(0, 0, 0, 0)
 
         # 单选按钮组
         self.mode_button_group = QButtonGroup()
@@ -1388,18 +1288,15 @@ class IntegratedPlayPage(QWidget):
 
         # 连接状态指示器
         self.status_label = QLabel("本地测试模式已选择")
-        self.status_label.setStyleSheet("""
-            QLabel {
-                padding: 5px 10px;
-                border-radius: 3px;
-                background-color: #27ae60;
-                color: white;
-                font-weight: bold;
-            }
-        """)
+        self.status_label.setProperty("role", "status")
+        self.status_dot = QLabel("●")
+        self.status_dot.setProperty("role", "statusDot")
+        self.status_dot.setProperty("status", "success")
+
 
         layout.addWidget(mode_group)
         layout.addStretch()
+        layout.addWidget(self.status_dot)
         layout.addWidget(self.status_label)
 
         return toolbar
@@ -1407,29 +1304,11 @@ class IntegratedPlayPage(QWidget):
     def create_conversation_management(self) -> QWidget:
         """创建对话管理区域"""
         group = QGroupBox("对话管理")
-        group.setStyleSheet("""
-            QGroupBox {
-                color: #dcddde;
-                border: 1px solid #4f545c;
-                border-radius: 8px;
-                margin-top: 1ex;
-                padding-top: 15px;
-                font-weight: bold;
-                background-color: #36393f;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 15px;
-                padding: 0 8px 0 8px;
-                color: #5865f2;
-                font-size: 14px;
-            }
-            QLabel {
-                color: #dcddde;
-                font-size: 13px;
-            }
-        """)
+        group.setProperty("variant", "flat")
+        group.setTitle("")
+
         layout = QHBoxLayout(group)
+        layout.setContentsMargins(0, 0, 0, 0)
 
         # 对话选择下拉框
         self.conversation_combo = QComboBox()
@@ -1437,13 +1316,12 @@ class IntegratedPlayPage(QWidget):
 
         # 对话管理按钮
         self.new_conv_btn = QPushButton("新建对话")
-        self.new_conv_btn.setIcon(self.style().standardIcon(QStyle.SP_FileDialogNewFolder))
 
         self.delete_conv_btn = QPushButton("删除对话")
-        self.delete_conv_btn.setIcon(self.style().standardIcon(QStyle.SP_TrashIcon))
+        self.delete_conv_btn.setProperty("variant", "danger")
 
         self.rename_conv_btn = QPushButton("重命名")
-        self.rename_conv_btn.setIcon(self.style().standardIcon(QStyle.SP_FileDialogDetailedView))
+        self.rename_conv_btn.setProperty("variant", "ghost")
 
         layout.addWidget(QLabel("当前对话："))
         layout.addWidget(self.conversation_combo)
@@ -1457,40 +1335,7 @@ class IntegratedPlayPage(QWidget):
     def create_input_area(self) -> QWidget:
         """创建输入区域"""
         widget = QWidget()
-        widget.setStyleSheet("""
-            QWidget {
-                background-color: #36393f;
-                border-radius: 8px;
-                padding: 10px;
-            }
-            QPushButton {
-                background-color: #5865f2;
-                color: #ffffff;
-                border: none;
-                padding: 10px 20px;
-                border-radius: 6px;
-                font-weight: bold;
-                font-size: 13px;
-                min-width: 80px;
-            }
-            QPushButton:hover {
-                background-color: #4752c4;
-            }
-            QPushButton:pressed {
-                background-color: #3c45a5;
-            }
-            QPushButton:disabled {
-                background-color: #4f545c;
-                color: #72767d;
-            }
-            QPushButton:checked {
-                background-color: #e74c3c;
-                color: #ffffff;
-            }
-            QPushButton:checked:hover {
-                background-color: #c0392b;
-            }
-        """)
+
         layout = QVBoxLayout(widget)
 
         # 输入框
@@ -1503,20 +1348,20 @@ class IntegratedPlayPage(QWidget):
 
         # 重新生成按钮
         self.regenerate_btn = QPushButton("重新生成")
-        self.regenerate_btn.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
+        self.regenerate_btn.setProperty("variant", "ghost")
         self.regenerate_btn.setToolTip("重新生成最后一轮AI回复")
 
         # 删除模式切换按钮
         self.delete_mode_btn = QPushButton("删除模式")
-        self.delete_mode_btn.setIcon(self.style().standardIcon(QStyle.SP_TrashIcon))
+        self.delete_mode_btn.setProperty("variant", "danger")
         self.delete_mode_btn.setCheckable(True)
         self.delete_mode_btn.setToolTip("切换删除模式，可以选择删除任意对话")
 
         self.send_btn = QPushButton("发送")
-        self.send_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+        self.send_btn.setProperty("variant", "primary")
 
         self.clear_btn = QPushButton("清空对话")
-        self.clear_btn.setIcon(self.style().standardIcon(QStyle.SP_DialogResetButton))
+        self.clear_btn.setProperty("variant", "danger")
 
         button_layout.addWidget(self.regenerate_btn)
         button_layout.addWidget(self.delete_mode_btn)
@@ -1560,6 +1405,28 @@ class IntegratedPlayPage(QWidget):
                 return True
         return super().eventFilter(obj, event)
 
+    def _restore_local_graph(self, main_window):
+        if not main_window:
+            return
+
+        if hasattr(main_window, 'memory'):
+            current_id = self.conversation_manager.current_conversation_id
+            active_id = getattr(main_window, '_active_local_graph_conversation_id', None)
+            if current_id and active_id and current_id != active_id:
+                main_window._save_conversation_knowledge_graph(active_id)
+                if main_window.load_conversation_knowledge_graph(current_id):
+                    main_window._active_local_graph_conversation_id = current_id
+            main_window.memory.reload_entities_from_json()
+            logger.info("✅ 已恢复本地知识图谱数据")
+
+        if hasattr(main_window, 'graph_page'):
+            graph_page = main_window.graph_page
+            if graph_page.tavern_mode or graph_page.showing_tavern_placeholder:
+                graph_page.exit_tavern_mode(local_memory=main_window.memory)
+            else:
+                graph_page.refresh_graph()
+            logger.info("📊 知识图谱页面已恢复本地显示")
+
     def on_mode_change(self, mode_id):
         """模式切换处理 - 重新设计的完整酒馆模式"""
         # 设置模式切换标志，防止自动初始化干扰
@@ -1572,6 +1439,8 @@ class IntegratedPlayPage(QWidget):
             widget = widget.parent()
 
         if main_window:
+            main_window._mode_switch_generation += 1
+            generation = main_window._mode_switch_generation
             main_window.switching_modes = True
             logger.info("🔄 设置模式切换标志，暂停对话自动初始化")
 
@@ -1587,39 +1456,26 @@ class IntegratedPlayPage(QWidget):
                     result = self.tavern_manager.exit_tavern_mode()
                     if result["success"]:
                         logger.info("✅ 已退出酒馆模式")
-
-                        # *** 关键修复：恢复本地知识图谱 ***
-                        if main_window:
-                            logger.info("🔄 恢复本地知识图谱...")
-                            # 重新加载本地实体数据
-                            if hasattr(main_window, 'memory'):
-                                main_window.memory.reload_entities_from_json()
-                                logger.info("✅ 已恢复本地知识图谱数据")
-
-                                # 刷新图谱页面显示本地数据
-                                if hasattr(main_window, 'graph_page'):
-                                    main_window.graph_page.exit_tavern_mode()  # 切换回本地数据源
-                                    main_window.graph_page.refresh_graph()  # 已包含更新实体列表和统计
-                                    logger.info("📊 知识图谱页面已恢复本地显示")
                     else:
                         logger.error(f"退出酒馆模式失败: {result.get('error')}")
 
+                self._restore_local_graph(main_window)
+
                 # 无条件关闭后端酒馆模式并快速清理，确保彻底回到本地隔离
+                backend_errors = []
                 try:
                     import requests
-                    try:
-                        requests.post(f"{self.api_base_url}/system/tavern_mode", json={"active": False}, timeout=5)
-                        logger.info("🛑 已关闭后端酒馆模式（隔离插件）")
-                    except Exception as gate_err:
-                        logger.warning(f"⚠️ tavern_mode 关闭失败: {gate_err}")
-                    try:
-                        requests.get(f"{self.api_base_url}/system/quick_reset", timeout=5)
-                        logger.info("🧼 已请求后端快速清理（quick_reset）")
-                    except Exception as qr_err:
-                        logger.warning(f"⚠️ quick_reset 请求失败: {qr_err}")
-                except Exception as reset_err:
-                    logger.warning(f"⚠️ 清理流程请求失败: {reset_err}")
-                # 停止可能存在的酒馆会话轮询
+                    response = requests.post(f"{self.api_base_url}/system/tavern_mode", json={"active": False}, timeout=5)
+                    if not response.ok:
+                        raise RuntimeError(f"HTTP {response.status_code}")
+                except Exception as exc:
+                    backend_errors.append(f"mode gate: {exc}")
+                try:
+                    response = requests.get(f"{self.api_base_url}/system/quick_reset", timeout=5)
+                    if not response.ok:
+                        raise RuntimeError(f"HTTP {response.status_code}")
+                except Exception as exc:
+                    backend_errors.append(f"quick reset: {exc}")
                 try:
                     self._stop_tavern_session_polling()
                 except Exception:
@@ -1629,7 +1485,13 @@ class IntegratedPlayPage(QWidget):
                 # 启用对话界面
                 self.enable_chat_interface(True)
 
-                self.update_status_display("本地测试模式已选择")
+                if backend_errors:
+                    warning = "; ".join(backend_errors)
+                    self.update_status_display(f"Local mode selected; backend reset failed: {warning}")
+                    from PySide6.QtWidgets import QMessageBox
+                    QMessageBox.warning(self, "Backend reset failed", warning)
+                else:
+                    self.update_status_display("本地测试模式已选择")
                 self.is_connected_to_api = True
 
             elif mode_id == 1:  # 酒馆模式
@@ -1638,13 +1500,13 @@ class IntegratedPlayPage(QWidget):
                 self.tavern_mode_radio.setEnabled(False)
 
                 # 开始酒馆模式切换流程
-                self.update_status_display("🍺 正在切换到酒馆模式...")
+                self.update_status_display("正在切换到酒馆模式...")
                 # 确保后端服务器存活；仅检查，不在此处自启，避免端口竞争
                 try:
                     import requests
                     r = requests.get(f"{self.api_base_url}/system/liveness", timeout=5)
                     if not r.ok:
-                        self.update_status_display("❌ 会话初始化失败：后端未启动")
+                        self.update_status_display("会话初始化失败：后端未启动")
                         from PySide6.QtWidgets import QMessageBox
                         QMessageBox.warning(self, "EchoGraph", "会话初始化失败: 后端无法访问，请先启动Python服务器。")
 
@@ -1662,13 +1524,20 @@ class IntegratedPlayPage(QWidget):
                         self.is_test_mode = True
                         self.local_mode_radio.setEnabled(False)
                         self.tavern_mode_radio.setEnabled(True)
+                        self._restore_local_graph(main_window)
                         return
 
                     # 启用后端酒馆模式开关（允许插件/WS访问）
-                    requests.post(f"{self.api_base_url}/system/tavern_mode", json={"active": True}, timeout=5)
+                    gate_response = requests.post(f"{self.api_base_url}/system/tavern_mode", json={"active": True}, timeout=5)
+                    if not gate_response.ok:
+                        raise RuntimeError(f"Tavern mode gate returned HTTP {gate_response.status_code}")
                     logger.info("✅ 已开启后端酒馆模式（允许插件访问）")
                 except Exception as gate_err:
-                    logger.warning(f"⚠️ tavern_mode 开启失败: {gate_err}")
+                    logger.error(f"Tavern mode gate failed: {gate_err}")
+                    self.auto_switch_to_local_mode(str(gate_err))
+                    from PySide6.QtWidgets import QMessageBox
+                    QMessageBox.warning(self, "Tavern mode", f"Cannot enable Tavern mode: {gate_err}")
+                    return
 
                 QApplication.processEvents()
 
@@ -1677,7 +1546,7 @@ class IntegratedPlayPage(QWidget):
 
                 # 不再阻塞等待插件提交角色数据；直接进入“酒馆模式占位”界面，由插件与后端自行完成初始化
                 try:
-                    self.update_status_display("✅ 酒馆模式已启用（等待SillyTavern角色提交）")
+                    self.update_status_display("酒馆模式已启用（等待SillyTavern角色提交）")
                     if main_window and hasattr(main_window, 'graph_page'):
                         # 显示占位信息；session_id 暂定为 pending，统计为空
                         placeholder_stats = {"graph_nodes": 0, "graph_edges": 0}
@@ -1692,7 +1561,8 @@ class IntegratedPlayPage(QWidget):
             # 使用QTimer延迟重置标志，确保所有相关的信号处理完成
             if main_window:
                 def reset_switching_flag():
-                    main_window.switching_modes = False
+                    if main_window._mode_switch_generation == generation:
+                        main_window.switching_modes = False
                 # 酒馆模式启动会话监控；本地模式确保停止监控
                 try:
                     if self.is_test_mode:
@@ -1723,7 +1593,7 @@ class IntegratedPlayPage(QWidget):
                 self.send_btn.setEnabled(enabled)
 
             # 禁用/启用其他对话相关控件
-            controls = ['clear_btn', 'new_conv_btn', 'delete_conv_btn', 'rename_conv_btn', 'regenerate_btn', 'delete_mode_btn']
+            controls = ['clear_btn', 'new_conv_btn', 'delete_conv_btn', 'rename_conv_btn', 'regenerate_btn', 'delete_mode_btn', 'conversation_combo']
             for ctrl_name in controls:
                 if hasattr(self, ctrl_name):
                     ctrl = getattr(self, ctrl_name)
@@ -1742,7 +1612,7 @@ class IntegratedPlayPage(QWidget):
 
         try:
             # 立即更新UI状态，告知用户开始初始化
-            self.update_status_display("🍺 正在初始化酒馆模式...")
+            self.update_status_display("正在初始化酒馆模式...")
             QApplication.processEvents()
 
             # 禁用相关UI控件，防止重复操作
@@ -1761,7 +1631,7 @@ class IntegratedPlayPage(QWidget):
                     break
             if not main_window:
                 logger.error("❌ 无法获取主窗口实例")
-                self.update_status_display("❌ 初始化失败：无法获取主窗口")
+                self.update_status_display("初始化失败：无法获取主窗口")
                 return
 
             logger.info("📋 步骤2: 获取酒馆连接配置...")
@@ -1804,7 +1674,7 @@ class IntegratedPlayPage(QWidget):
             logger.error(f"❌ 酒馆模式初始化准备失败: {e}")
             import traceback
             logger.error(f"详细错误: {traceback.format_exc()}")
-            self.update_status_display(f"❌ 初始化失败: {e}")
+            self.update_status_display(f"初始化失败: {e}")
             self.reset_tavern_ui_state()
 
     @Slot(str, str)
@@ -1834,6 +1704,8 @@ class IntegratedPlayPage(QWidget):
     @Slot(dict)
     def on_tavern_init_completed(self, result: dict):
         """处理酒馆初始化成功完成"""
+        if self.is_test_mode:
+            return
         try:
             logger.info("🎉 酒馆模式初始化成功完成！")
 
@@ -1847,7 +1719,7 @@ class IntegratedPlayPage(QWidget):
             logger.info(f"  - 会话ID: {session_id}")
 
             # 更新UI状态
-            self.update_status_display(f"✅ 酒馆模式已启用 - 角色: {character_name}")
+            self.update_status_display(f"酒馆模式已启用 - 角色: {character_name}")
             self.is_connected_to_api = True
 
             # 更新图谱页面
@@ -1878,7 +1750,7 @@ class IntegratedPlayPage(QWidget):
     def on_tavern_init_error(self, error_message: str):
         """处理酒馆初始化错误"""
         logger.error(f"❌ 酒馆初始化失败: {error_message}")
-        self.update_status_display(f"❌ 酒馆模式切换失败")
+        self.update_status_display(f"酒馆模式切换失败")
         QMessageBox.critical(self, "酒馆模式初始化失败", error_message)
         self.auto_switch_to_local_mode(f"酒馆初始化失败: {error_message}")
 
@@ -1903,6 +1775,8 @@ class IntegratedPlayPage(QWidget):
             try:
                 import requests
                 r = requests.get(f"{self.api_base_url}/tavern/current_session", timeout=poll_interval)
+                if self.is_test_mode:
+                    return
                 if r.status_code == 200:
                     data = r.json()
                     if data.get("has_session") and data.get("session_id"):
@@ -1921,15 +1795,20 @@ class IntegratedPlayPage(QWidget):
                                 if main_window and hasattr(main_window, 'graph_page'):
                                     main_window.graph_page.enter_tavern_mode(session_id)
                                     main_window.graph_page.refresh_from_api_server(session_id)
-                                self.update_status_display("🍺 酒馆会话已就绪")
+                                self.update_status_display("酒馆会话已就绪")
                             except Exception as ui_err:
                                 logger.warning(f"⚠️ 切换图谱为酒馆会话失败: {ui_err}")
+                        elif getattr(self.window(), 'graph_page', None):
+                            self.window().graph_page.refresh_from_api_server(session_id)
                     else:
                         # 没有活跃会话时保留监控，等待后续恢复/重连
                         if self._last_polled_tavern_session_id is not None:
                             logger.warning("⚠️ 酒馆活跃会话丢失，等待插件重连...")
-                            self.update_status_display("⚠️ 酒馆会话断开，等待重连...")
+                            self.update_status_display("酒馆会话断开，等待重连...")
                             self._last_polled_tavern_session_id = None
+                            main_window = self.window()
+                            if hasattr(main_window, 'graph_page'):
+                                main_window.graph_page._show_tavern_mode_placeholder("pending", {"graph_nodes": 0, "graph_edges": 0})
             except Exception as poll_err:
                 logger.debug(f"轮询当前会话异常: {poll_err}")
 
@@ -1989,21 +1868,11 @@ class IntegratedPlayPage(QWidget):
                     break
                 widget = widget.parent()
 
-            if main_window and hasattr(main_window, 'memory'):
+            if main_window:
                 try:
-                    main_window.memory.reload_entities_from_json()
-                    logger.info("✅ 已恢复本地知识图谱数据")
+                    self._restore_local_graph(main_window)
                 except Exception as restore_error:
-                    logger.warning(f"⚠️ 恢复本地知识图谱数据失败: {restore_error}")
-
-                # 刷新图谱页面显示本地数据
-                if hasattr(main_window, 'graph_page'):
-                    try:
-                        main_window.graph_page.exit_tavern_mode()
-                        main_window.graph_page.refresh_graph()  # 已包含更新实体列表和统计
-                        logger.info("📊 知识图谱页面已恢复本地显示")
-                    except Exception as graph_restore_error:
-                        logger.warning(f"⚠️ 恢复本地图谱页面失败: {graph_restore_error}")
+                    logger.warning(f"⚠️ 恢复本地图谱页面失败: {restore_error}")
 
             # 启用对话界面
             self.enable_chat_interface(True)
@@ -2072,7 +1941,7 @@ class IntegratedPlayPage(QWidget):
 
             # *** 关键修复：保存当前会话并清空知识图谱 ***
             logger.info("📋 步骤3: 保存当前会话并清空知识图谱...")
-            self.update_status_display("💾 保存当前会话并清空知识图谱...")
+            self.update_status_display("保存当前会话并清空知识图谱...")
             QApplication.processEvents()
 
             # 保存当前对话到历史
@@ -2156,7 +2025,7 @@ class IntegratedPlayPage(QWidget):
                 logger.info(f"  - 创建节点: {nodes_created}")
                 logger.info(f"  - 会话ID: {session_id}")
 
-                self.update_status_display(f"✅ 酒馆模式已启用 - 角色: {character_name}")
+                self.update_status_display(f"酒馆模式已启用 - 角色: {character_name}")
                 self.is_connected_to_api = True
 
                 # 从API服务器获取酒馆会话的知识图谱并更新UI显示
@@ -2198,7 +2067,7 @@ class IntegratedPlayPage(QWidget):
             else:
                 # 切换失败，恢复到本地模式
                 error_msg = result.get("error", "未知错误")
-                self.update_status_display(f"❌ 酒馆模式切换失败")
+                self.update_status_display(f"酒馆模式切换失败")
 
                 # 重新启用对话界面
                 self.enable_chat_interface(True)
@@ -2208,6 +2077,7 @@ class IntegratedPlayPage(QWidget):
                 self.tavern_mode_radio.setEnabled(True)
                 self.local_mode_radio.setEnabled(False)
                 self.is_test_mode = True
+                self._restore_local_graph(main_window)
 
                 # 显示错误消息
                 QMessageBox.warning(
@@ -2228,7 +2098,8 @@ class IntegratedPlayPage(QWidget):
             # 恢复到本地模式
             self.enable_chat_interface(True)
             self.local_mode_radio.setChecked(True)
-            self.update_status_display("❌ 酒馆模式切换异常，已恢复本地模式")
+            self._restore_local_graph(self.window())
+            self.update_status_display("酒馆模式切换异常，已恢复本地模式")
 
             QMessageBox.critical(
                 self,
@@ -2266,40 +2137,17 @@ class IntegratedPlayPage(QWidget):
         """更新状态显示"""
         self.status_label.setText(status_text)
 
-        # 根据状态文本设置不同的样式
-        if ("已连接" in status_text or "已选择" in status_text):
-            # 成功状态 - 绿色
-            self.status_label.setStyleSheet("""
-                QLabel {
-                    padding: 5px 10px;
-                    border-radius: 3px;
-                    background-color: #27ae60;
-                    color: white;
-                    font-weight: bold;
-                }
-            """)
-        elif ("正在连接" in status_text or "等待" in status_text):
-            # 等待状态 - 蓝色
-            self.status_label.setStyleSheet("""
-                QLabel {
-                    padding: 5px 10px;
-                    border-radius: 3px;
-                    background-color: #3498db;
-                    color: white;
-                    font-weight: bold;
-                }
-            """)
+        if any(word in status_text for word in ("失败", "错误", "异常", "断开", "未连接")):
+            state = "danger"
+        elif any(word in status_text for word in ("酒馆", "连接", "等待", "初始化", "切换")):
+            state = "info"
+        elif any(word in status_text for word in ("已选择", "已启用", "在线", "就绪")):
+            state = "success"
         else:
-            # 错误/失败状态 - 红色
-            self.status_label.setStyleSheet("""
-                QLabel {
-                    padding: 5px 10px;
-                    border-radius: 3px;
-                    background-color: #e74c3c;
-                    color: white;
-                    font-weight: bold;
-                }
-            """)
+            state = "idle"
+        self.status_dot.setProperty("status", state)
+        self.status_dot.style().unpolish(self.status_dot)
+        self.status_dot.style().polish(self.status_dot)
 
     def create_new_conversation(self):
         """创建新对话"""
@@ -2323,7 +2171,7 @@ class IntegratedPlayPage(QWidget):
         reply = QMessageBox.question(
             self,
             "确认删除",
-            f"确定要删除对话 \"{current_conv['name']}\" 吗？此操作不可撤销。",
+            f"确定要删除对话 \"{current_conv['name']}\"吗？此操作不可撤销。",
             QMessageBox.Yes | QMessageBox.No
         )
 
@@ -2783,12 +2631,12 @@ class IntegratedPlayPage(QWidget):
         """切换删除模式"""
         if enabled:
             self.delete_mode_btn.setText("退出删除")
-            self.delete_mode_btn.setStyleSheet("QPushButton { background-color: #e74c3c; }")
+
             self.chat_display.set_delete_mode(True)
             QMessageBox.information(self, "删除模式", "删除模式已开启\n点击任意对话气泡可删除该条消息")
         else:
             self.delete_mode_btn.setText("删除模式")
-            self.delete_mode_btn.setStyleSheet("")
+
             self.chat_display.set_delete_mode(False)
 
     def on_chat_message_deleted(self, message_index: int):
@@ -2839,6 +2687,31 @@ class IntegratedPlayPage(QWidget):
                 logger.warning(f"⚠️ 清空知识图谱失败: {e}")
 
 
+class EntityListDelegate(QStyledItemDelegate):
+    """Draw a type dot while retaining the list item's lookup text."""
+
+    def paint(self, painter, option, index):
+        from PySide6.QtWidgets import QStyleOptionViewItem
+        item_option = QStyleOptionViewItem(option)
+        self.initStyleOption(item_option, index)
+        raw = item_option.text
+        entity = index.data(Qt.UserRole)
+        node_type = entity.get("type", "other") if isinstance(entity, dict) else "other"
+        if not isinstance(entity, dict) and raw.startswith("[") and "] " in raw:
+            node_type, item_option.text = raw[1:].split("] ", 1)
+        elif not isinstance(entity, dict) and raw.startswith("【") and "】" in raw:
+            node_type, item_option.text = raw[1:].split("】", 1)
+        type_names = {"角色": "character", "地点": "location", "物品": "item", "事件": "event", "概念": "concept"}
+        node_type = type_names.get(node_type, node_type)
+        item_option.rect.adjust(16, 0, 0, 0)
+        super().paint(painter, item_option, index)
+        painter.save()
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(NODE_TYPE_COLORS.get(node_type, NODE_TYPE_COLORS["other"])))
+        painter.drawEllipse(option.rect.left() + 6, option.rect.center().y() - 3, 7, 7)
+        painter.restore()
+
+
 class GraphPage(QWidget):
     """知识关系图谱页面"""
 
@@ -2851,6 +2724,9 @@ class GraphPage(QWidget):
         # 酒馆模式相关属性
         self.tavern_mode = False
         self.tavern_session_id = None
+        self.showing_tavern_placeholder = False
+        self._tavern_graph_data = None
+        self._tavern_entities = []
 
         # 创建HTML生成器
         self.html_generator = GraphHTMLGenerator()
@@ -2902,24 +2778,24 @@ class GraphPage(QWidget):
         # 标题和快速操作
         header = QHBoxLayout()
         title = QLabel("知识关系图谱")
-        title.setFont(QFont("Arial", 16, QFont.Bold))
-        title.setStyleSheet("color: #4a90e2; margin-bottom: 10px;")
+        title.setProperty("role", "pageTitle")
+
 
         # 快速操作按钮
         self.refresh_btn = QPushButton("刷新图谱")
-        self.refresh_btn.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
+        self.refresh_btn.setProperty("variant", "ghost")
 
         self.export_btn = QPushButton("导出图谱")
-        self.export_btn.setIcon(self.style().standardIcon(QStyle.SP_DialogSaveButton))
+        self.export_btn.setProperty("variant", "ghost")
 
         self.reset_view_btn = QPushButton("重置视图")
-        self.reset_view_btn.setIcon(self.style().standardIcon(QStyle.SP_ComputerIcon))
+        self.reset_view_btn.setProperty("variant", "ghost")
 
         self.init_graph_btn = QPushButton("初始化图谱")
-        self.init_graph_btn.setIcon(self.style().standardIcon(QStyle.SP_FileDialogNewFolder))
+        self.init_graph_btn.setProperty("variant", "ghost")
 
         self.clear_graph_btn = QPushButton("清空图谱")
-        self.clear_graph_btn.setIcon(self.style().standardIcon(QStyle.SP_DialogResetButton))
+        self.clear_graph_btn.setProperty("variant", "danger")
 
         header.addWidget(title)
         header.addStretch()
@@ -3006,6 +2882,7 @@ class GraphPage(QWidget):
         self.search_input.setPlaceholderText("搜索节点或关系...")
         self.search_btn = QPushButton("搜索")
         self.clear_search_btn = QPushButton("清除")
+        self.clear_search_btn.setProperty("variant", "ghost")
 
         search_button_layout = QHBoxLayout()
         search_button_layout.addWidget(self.search_btn)
@@ -3034,6 +2911,7 @@ class GraphPage(QWidget):
 
         for btn in filter_buttons:
             btn.setCheckable(True)
+            btn.setProperty("variant", "ghost")
             btn.setMaximumHeight(30)
             filter_layout.addWidget(btn)
 
@@ -3044,6 +2922,9 @@ class GraphPage(QWidget):
         # 实体列表
         self.entity_list = QListWidget()
         self.entity_list.setMinimumHeight(200)
+        self.entity_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.entity_list.setTextElideMode(Qt.ElideRight)
+        self.entity_list.setItemDelegate(EntityListDelegate(self.entity_list))
         entity_layout.addWidget(self.entity_list)
 
         layout.addWidget(entity_group)
@@ -3064,10 +2945,8 @@ class GraphPage(QWidget):
         self.add_node_btn = QPushButton("添加节点")
         self.edit_node_btn = QPushButton("编辑节点")
         self.delete_node_btn = QPushButton("删除节点")
+        self.delete_node_btn.setProperty("variant", "danger")
 
-        self.add_node_btn.setIcon(self.style().standardIcon(QStyle.SP_FileDialogNewFolder))
-        self.edit_node_btn.setIcon(self.style().standardIcon(QStyle.SP_FileDialogDetailedView))
-        self.delete_node_btn.setIcon(self.style().standardIcon(QStyle.SP_TrashIcon))
 
         node_actions.addWidget(self.add_node_btn)
         node_actions.addWidget(self.edit_node_btn)
@@ -3081,7 +2960,8 @@ class GraphPage(QWidget):
         stats_layout = QVBoxLayout(stats_group)
 
         self.stats_label = QLabel("节点数量: 0\n关系数量: 0\n最后更新: 未知")
-        self.stats_label.setStyleSheet("color: #cccccc; font-size: 12px;")
+        self.stats_label.setProperty("role", "stats")
+
 
         stats_layout.addWidget(self.stats_label)
         layout.addWidget(stats_group)
@@ -3123,10 +3003,11 @@ class GraphPage(QWidget):
     def refresh_graph(self):
         """刷新关系图谱（自动根据模式选择数据源）"""
         try:
-            if getattr(self, 'tavern_mode', False) and getattr(self, 'tavern_session_id', None):
-                logger.debug(f"[Graph] 酒馆模式刷新，session={self.tavern_session_id}")
-                # 使用API服务器的数据刷新，并直接返回，避免覆盖占位页流程
-                self.refresh_from_api_server(self.tavern_session_id)
+            if self.tavern_mode:
+                if self.tavern_session_id:
+                    self.refresh_from_api_server(self.tavern_session_id, force=True)
+                else:
+                    self._show_tavern_mode_placeholder("pending", {"graph_nodes": 0, "graph_edges": 0})
                 return
 
             logger.debug("[Graph] 本地模式刷新知识关系图谱...")
@@ -3137,7 +3018,7 @@ class GraphPage(QWidget):
             entities = self.get_all_entities()
 
             # 更新UI显示（传递数据避免重复获取）
-            self.update_entity_list_with_data(entities)
+            self.update_entity_list_with_data(entities, self._selected_filter_type())
             self.update_stats_with_data(entities)
 
             # 生成图谱HTML（传递数据避免重复获取）
@@ -3146,14 +3027,24 @@ class GraphPage(QWidget):
             # 加载到WebView
             if self.graph_file_path.exists():
                 self.graph_view.load(QUrl.fromLocalFile(str(self.graph_file_path)))
+                self.showing_tavern_placeholder = False
         except Exception as e:
             logger.error(f"刷新图谱失败: {e}")
             QMessageBox.warning(self, "错误", f"刷新图谱失败：{str(e)}")
+
+    def _selected_filter_type(self):
+        for button in (self.filter_all_btn, self.filter_character_btn,
+                       self.filter_location_btn, self.filter_item_btn, self.filter_event_btn):
+            if button.isChecked():
+                return button.text()
+        return self.filter_all_btn.text()
 
     def update_entity_list_with_data(self, entities, filter_type: str = "全部"):
         """使用提供的实体数据更新实体列表（避免重复获取）"""
         try:
             self.entity_list.clear()
+            self.current_selected_node = None
+            self.detail_text.clear()
 
             # 根据筛选条件过滤实体
             filtered_entities = []
@@ -3171,7 +3062,7 @@ class GraphPage(QWidget):
 
             # 添加实体到列表
             for entity in filtered_entities:
-                item_text = f"【{entity.get('type', '未知')}】{entity.get('name', '未命名')}"
+                item_text = entity.get('name', '未命名')
                 if entity.get('description'):
                     item_text += f" - {entity['description'][:50]}{'...' if len(entity['description']) > 50 else ''}"
 
@@ -3188,7 +3079,7 @@ class GraphPage(QWidget):
             node_count = len(entities)
 
             # 计算关系数量（简单估算：每个实体平均2个关系）
-            relation_count = node_count * 2
+            relation_count = self.memory.knowledge_graph.graph.number_of_edges()
 
             import datetime
             current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -3271,38 +3162,9 @@ class GraphPage(QWidget):
             entities = []
 
             # 在酒馆模式下，尝试从API服务器获取数据
-            if hasattr(self, 'tavern_mode') and self.tavern_mode and hasattr(self, 'tavern_session_id') and self.tavern_session_id:
-                try:
-                    import requests
-                    api_base_url = "http://127.0.0.1:9543"
-                    export_url = f"{api_base_url}/sessions/{self.tavern_session_id}/export"
+            if self.tavern_mode:
+                return list(self._tavern_entities)
 
-                    api_timeout = int(os.getenv("API_TIMEOUT", "15"))
-                    response = requests.get(export_url, timeout=api_timeout)
-                    if response.status_code == 200:
-                        graph_data = response.json()
-                        graph_json = graph_data.get('graph_data', {})
-                        nodes_data = graph_json.get('nodes', [])
-
-                        for node_data in nodes_data:
-                            entity = {
-                                'name': node_data.get('id', ''),
-                                'type': node_data.get('type', 'concept'),
-                                'description': node_data.get('description', ''),
-                                'created_time': time.time(),
-                                'last_modified': time.time(),
-                                'attributes': {}
-                            }
-                            entities.append(entity)
-
-                        logger.info(f"📊 从API服务器获取 {len(entities)} 个实体")
-                        return entities
-
-                except Exception as api_error:
-                    logger.warning(f"从API服务器获取实体失败: {api_error}")
-                    # 继续使用本地内存数据作为备用方案
-
-            # 直接从知识图谱内存中获取数据（本地模式或API失败时的备用方案）
             for node_id, attrs in self.memory.knowledge_graph.graph.nodes(data=True):
                 entity = {
                     'name': node_id,
@@ -3328,20 +3190,12 @@ class GraphPage(QWidget):
             logger.error(f"从知识图谱获取实体失败: {e}")
             return []
 
-    def save_entities(self, entities):
-        """保存实体数据"""
-        entities_file = Path(__file__).parent / "data" / "entities.json"
-        entities_file.parent.mkdir(exist_ok=True, parents=True)
-
-        try:
-            data = {
-                'entities': entities,
-                'last_modified': time.time()
-            }
-            with open(entities_file, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            logger.error(f"保存实体数据失败: {e}")
+    def save_entities(self, entities, old_name=None, new_name=None):
+        """Persist local edits to the active conversation graph and entity file."""
+        if self.tavern_mode:
+            raise RuntimeError("酒馆节点编辑暂不支持会话写入")
+        from src.graph.graph_operations import save_local_entities
+        save_local_entities(self.memory, entities, old_name, new_name)
 
     def _add_sample_entities(self):
         """添加示例实体（备用方案）"""
@@ -3355,8 +3209,9 @@ class GraphPage(QWidget):
         ]
 
         for entity in sample_entities:
-            item_text = f"[{entity['type']}] {entity['name']}"
-            self.entity_list.addItem(item_text)
+            list_item = QListWidgetItem(entity['name'])
+            list_item.setData(Qt.UserRole, entity)
+            self.entity_list.addItem(list_item)
 
     def update_stats(self):
         """更新图谱统计信息（向后兼容方法）"""
@@ -3372,9 +3227,16 @@ class GraphPage(QWidget):
         try:
             all_entities = self.get_all_entities()
             matching_entities = []
+            selected_filter = self._selected_filter_type()
+            filter_types = {self.filter_character_btn.text(): 'character',
+                            self.filter_location_btn.text(): 'location',
+                            self.filter_item_btn.text(): 'item',
+                            self.filter_event_btn.text(): 'event'}
 
             # 搜索匹配的实体
             for entity in all_entities:
+                if selected_filter in filter_types and entity['type'] != filter_types[selected_filter]:
+                    continue
                 if (search_term.lower() in entity['name'].lower() or
                     search_term.lower() in entity.get('description', '').lower() or
                     search_term.lower() in entity['type'].lower()):
@@ -3382,9 +3244,12 @@ class GraphPage(QWidget):
 
             # 更新实体列表显示搜索结果
             self.entity_list.clear()
+            self.current_selected_node = None
+            self.detail_text.clear()
             for entity in matching_entities:
-                item_text = f"[{entity['type']}] {entity['name']}"
-                self.entity_list.addItem(item_text)
+                list_item = QListWidgetItem(entity['name'])
+                list_item.setData(Qt.UserRole, entity)
+                self.entity_list.addItem(list_item)
 
             if not matching_entities:
                 self.entity_list.addItem("未找到匹配的节点")
@@ -3398,7 +3263,7 @@ class GraphPage(QWidget):
     def clear_search(self):
         """清除搜索"""
         self.search_input.clear()
-        self.update_entity_list()
+        self.update_entity_list(self._selected_filter_type())
 
     def filter_entities(self):
         """过滤实体"""
@@ -3432,22 +3297,17 @@ class GraphPage(QWidget):
             return
 
         try:
-            # 解析实体信息
-            if '] ' in entity_name:
-                entity_type = entity_name.split('[')[1].split(']')[0]
-                entity_display_name = entity_name.split('] ', 1)[1]
-            else:
-                entity_type = "未知"
-                entity_display_name = entity_name
+            # Resolve the visible row through its stored entity data.
+            row_entity = item.data(Qt.UserRole)
+            entity_display_name = row_entity.get('name', entity_name) if isinstance(row_entity, dict) else entity_name
+            entity_type = row_entity.get('type', 'unknown') if isinstance(row_entity, dict) else 'unknown'
 
-            # 从存储中获取完整实体信息
             all_entities = self.get_all_entities()
-            selected_entity = None
-
-            for entity in all_entities:
-                if entity['name'] == entity_display_name and entity['type'] == entity_type:
-                    selected_entity = entity
-                    break
+            selected_entity = next(
+                (entity for entity in all_entities
+                 if entity['name'] == entity_display_name and entity['type'] == entity_type),
+                row_entity if isinstance(row_entity, dict) else None
+            )
 
             if selected_entity:
                 import datetime
@@ -3483,7 +3343,7 @@ class GraphPage(QWidget):
 属性: 暂无数据"""
 
             self.detail_text.setText(detail_text)
-            self.current_selected_node = entity_name
+            self.current_selected_node = f"[{entity_type}] {entity_display_name}"
 
         except Exception as e:
             logger.error(f"显示节点详情失败: {e}")
@@ -3499,15 +3359,13 @@ class GraphPage(QWidget):
 
         # 在WebView中执行JavaScript来高亮节点
         try:
-            if '] ' in entity_name:
-                node_name = entity_name.split('] ', 1)[1]
-            else:
-                node_name = entity_name
+            row_entity = item.data(Qt.UserRole)
+            node_name = row_entity.get('name', entity_name) if isinstance(row_entity, dict) else entity_name
 
             # 执行JavaScript来聚焦节点
             js_code = f"""
             // 查找并高亮节点
-            const targetNode = d3.selectAll('.node').filter(d => d.name === '{node_name}');
+            const targetNode = d3.selectAll('.node').filter(d => d.name === {json.dumps(node_name)});
             if (!targetNode.empty()) {{
                 const nodeData = targetNode.datum();
 
@@ -3527,14 +3385,14 @@ class GraphPage(QWidget):
                 targetNode.transition().duration(300)
                     .attr('r', 30)
                     .style('stroke-width', '4px')
-                    .style('stroke', '#ff6b6b');
+                    .style('stroke', '{ACCENT}');
 
                 // 恢复正常大小
                 setTimeout(() => {{
                     targetNode.transition().duration(300)
-                        .attr('r', 20)
+                        .attr('r', 14)
                         .style('stroke-width', '2px')
-                        .style('stroke', '#fff');
+                        .style('stroke', '{BG_BASE}');
                 }}, 1500);
             }}
             """
@@ -3657,34 +3515,11 @@ class GraphPage(QWidget):
             scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
             scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
             # 设置滚动条样式
-            scroll_area.setStyleSheet("""
-                QScrollArea {
-                    border: 1px solid #444;
-                    border-radius: 5px;
-                    background-color: #2b2b2b;
-                }
-                QScrollBar:vertical {
-                    background-color: #3c3c3c;
-                    width: 12px;
-                    border-radius: 6px;
-                }
-                QScrollBar::handle:vertical {
-                    background-color: #666;
-                    border-radius: 6px;
-                    min-height: 20px;
-                }
-                QScrollBar::handle:vertical:hover {
-                    background-color: #888;
-                }
-            """)
+
 
             # 属性列表容器widget
             attr_scroll = QWidget()
-            attr_scroll.setStyleSheet("""
-                QWidget {
-                    background-color: #2b2b2b;
-                }
-            """)
+
             attr_scroll_layout = QVBoxLayout(attr_scroll)
             attr_scroll_layout.setSpacing(8)  # 增加行间距
             attr_scroll_layout.setContentsMargins(5, 5, 5, 5)  # 添加边距
@@ -3700,12 +3535,7 @@ class GraphPage(QWidget):
                 row_widget = QWidget()
                 row_widget.setMinimumHeight(40)  # 设置最小高度
                 row_widget.setMaximumHeight(50)  # 设置最大高度
-                row_widget.setStyleSheet("""
-                    QWidget {
-                        background-color: #2b2b2b;
-                        border-radius: 3px;
-                    }
-                """)
+
                 row_layout = QHBoxLayout(row_widget)
                 row_layout.setContentsMargins(2, 2, 2, 2)
                 row_layout.setSpacing(8)
@@ -3724,10 +3554,11 @@ class GraphPage(QWidget):
 
                 # 删除按钮
                 delete_btn = QPushButton("删除")
+                delete_btn.setProperty("variant", "danger")
                 delete_btn.setMinimumWidth(60)
                 delete_btn.setMaximumWidth(80)
                 delete_btn.setMinimumHeight(30)
-                delete_btn.setStyleSheet("QPushButton { background-color: #e74c3c; }")
+
 
                 def remove_row():
                     if len(self.attr_rows) > 1:  # 至少保留一行
@@ -3758,12 +3589,7 @@ class GraphPage(QWidget):
                         new_row_widget = QWidget()
                         new_row_widget.setMinimumHeight(40)
                         new_row_widget.setMaximumHeight(50)
-                        new_row_widget.setStyleSheet("""
-                            QWidget {
-                                background-color: #2b2b2b;
-                                border-radius: 3px;
-                            }
-                        """)
+
                         new_row_layout = QHBoxLayout(new_row_widget)
                         new_row_layout.setContentsMargins(2, 2, 2, 2)
                         new_row_layout.setSpacing(8)
@@ -3780,10 +3606,11 @@ class GraphPage(QWidget):
                         new_value_edit.setMinimumHeight(30)
 
                         new_delete_btn = QPushButton("删除")
+                        new_delete_btn.setProperty("variant", "danger")
                         new_delete_btn.setMinimumWidth(60)
                         new_delete_btn.setMaximumWidth(80)
                         new_delete_btn.setMinimumHeight(30)
-                        new_delete_btn.setStyleSheet("QPushButton { background-color: #e74c3c; }")
+
                         new_delete_btn.clicked.connect(lambda checked, ke=new_key_edit, ve=new_value_edit, rw=new_row_widget: remove_specific_row(ke, ve, rw))
 
                         # 添加到布局
@@ -3844,7 +3671,6 @@ class GraphPage(QWidget):
 
             # 添加属性按钮
             add_attr_btn = QPushButton("+ 添加属性")
-            add_attr_btn.setIcon(self.style().standardIcon(QStyle.SP_FileDialogNewFolder))
             add_attr_btn.clicked.connect(lambda: add_attribute_row())
             attr_layout.addWidget(add_attr_btn)
 
@@ -3855,12 +3681,11 @@ class GraphPage(QWidget):
             button_layout.addStretch()
 
             cancel_btn = QPushButton("取消")
-            cancel_btn.setIcon(self.style().standardIcon(QStyle.SP_DialogCancelButton))
             cancel_btn.clicked.connect(dialog.reject)
 
             save_btn = QPushButton("保存" if not is_new_node else "创建")
-            save_btn.setIcon(self.style().standardIcon(QStyle.SP_DialogApplyButton))
-            save_btn.setStyleSheet("QPushButton { background-color: #4a90e2; font-weight: bold; }")
+            save_btn.setProperty("variant", "primary")
+
 
             def save_changes():
                 # 验证输入
@@ -3889,7 +3714,11 @@ class GraphPage(QWidget):
                     # 添加新实体
                     all_entities = self.get_all_entities()
                     all_entities.append(current_entity)
-                    self.save_entities(all_entities)
+                    try:
+                        self.save_entities(all_entities)
+                    except Exception as exc:
+                        QMessageBox.warning(dialog, "Save failed", str(exc))
+                        return
                     logger.info(f"创建新节点: {new_name} (类型: {type_combo.currentText()})")
                 else:
                     # 更新现有实体
@@ -3910,49 +3739,14 @@ class GraphPage(QWidget):
                         QMessageBox.warning(dialog, "更新失败", f"未找到要更新的实体: {entity_name}")
                         return
 
-                    self.save_entities(all_entities)
+                    try:
+                        self.save_entities(all_entities, old_name=entity_name, new_name=new_name)
+                    except Exception as exc:
+                        QMessageBox.warning(dialog, "Save failed", str(exc))
+                        return
                     logger.info(f"实体更新成功: {new_name} (类型: {type_combo.currentText()})")
 
-                    # 同步更新知识图谱中的节点
-                    try:
-                        # 如果名称改变了，需要先删除旧节点，再创建新节点
-                        if new_name != entity_name:
-                            # 删除旧节点
-                            if self.memory.knowledge_graph.graph.has_node(entity_name):
-                                self.memory.knowledge_graph.graph.remove_node(entity_name)
-                                logger.info(f"删除旧节点: {entity_name}")
-
-                        # 创建或更新新节点
-                        self.memory.knowledge_graph.add_or_update_node(
-                            new_name,
-                            current_entity['type'],
-                            description=current_entity['description'],
-                            **current_entity['attributes']
-                        )
-                        logger.info(f"同步更新知识图谱节点成功: {new_name}")
-                    except Exception as e:
-                        logger.warning(f"同步知识图谱失败: {e}")
-
-                # 更新界面（refresh_graph 已包含更新实体列表和统计）
                 self.refresh_graph()  # 刷新图谱显示
-
-                # 同步到知识图谱
-                try:
-                    # 获取主窗口实例
-                    main_window = None
-                    widget = self.parent()
-                    while widget is not None:
-                        if isinstance(widget, EchoGraphMainWindow):
-                            main_window = widget
-                            break
-                        widget = widget.parent()
-
-                    if main_window and hasattr(main_window, 'memory'):
-                        # 重新加载实体到知识图谱
-                        main_window.memory.reload_entities_from_json()
-                        logger.info("✅ 实体修改已同步到知识图谱")
-                except Exception as e:
-                    logger.warning(f"⚠️ 同步到知识图谱失败: {e}")
 
                 QMessageBox.information(dialog, "成功", success_msg)
                 dialog.accept()
@@ -3989,7 +3783,7 @@ class GraphPage(QWidget):
         reply = QMessageBox.question(
             self,
             "确认删除",
-            f"确定要删除节点 '{node_name}' 吗？\n此操作不可撤销。",
+            f"确定要删除节点 '{node_name}'吗？\n此操作不可撤销。",
             QMessageBox.Yes | QMessageBox.No
         )
 
@@ -4012,7 +3806,12 @@ class GraphPage(QWidget):
             if entity_index >= 0:
                 # 删除实体
                 removed_entity = all_entities.pop(entity_index)
-                self.save_entities(all_entities)
+                try:
+                    self.save_entities(all_entities)
+                except Exception as exc:
+                    QMessageBox.warning(self, "Delete failed", str(exc))
+                    return
+                self.refresh_graph()
 
                 # 清除选择状态
                 self.current_selected_node = None
@@ -4023,7 +3822,7 @@ class GraphPage(QWidget):
                 self.update_entity_list()
                 self.update_stats()
 
-                QMessageBox.information(self, "成功", f"节点 '{entity_name}' 删除成功")
+                QMessageBox.information(self, "成功", f"节点 '{entity_name}'删除成功")
                 logger.info(f"删除节点: {entity_name}")
             else:
                 QMessageBox.warning(self, "错误", "找不到要删除的节点")
@@ -4031,6 +3830,9 @@ class GraphPage(QWidget):
     def export_graph(self):
         """导出图谱"""
         try:
+            if self.tavern_mode and not self.refresh_from_api_server(self.tavern_session_id):
+                QMessageBox.warning(self, "Export failed", "Tavern graph is unavailable")
+                return
             # 选择导出文件位置
             file_path, _ = QFileDialog.getSaveFileName(
                 self,
@@ -4054,6 +3856,12 @@ class GraphPage(QWidget):
                     'version': '1.0.0'
                 },
                 'entities': entities,
+                'relationships': (self._tavern_graph_data or {}).get('graph_data', {}).get(
+                    'links', (self._tavern_graph_data or {}).get('graph_data', {}).get('edges', []))
+                if self.tavern_mode else [
+                    {'source': source, 'target': target, **attrs}
+                    for source, target, attrs in self.memory.knowledge_graph.graph.edges(data=True)
+                ],
                 'statistics': {
                     'total_entities': len(entities),
                     'entity_types': {}
@@ -4100,6 +3908,8 @@ class GraphPage(QWidget):
 
     def clear_graph(self):
         """清空知识图谱"""
+        if self.tavern_mode and not self.tavern_session_id:
+            return
         reply = QMessageBox.question(
             self,
             "确认清空",
@@ -4113,18 +3923,20 @@ class GraphPage(QWidget):
                 if self.tavern_mode and self.tavern_session_id:
                     # 酒馆模式下：通过API清空当前会话的图谱
                     import requests
-                    api_url = f"http://127.0.0.1:9543/sessions/{self.tavern_session_id}/clear"
+                    api_url = f"{self._api_base_url()}/sessions/{self.tavern_session_id}/clear"
                     api_timeout = int(os.getenv("API_TIMEOUT", "15"))
                     response = requests.post(api_url, timeout=api_timeout)
                     if response.status_code == 200:
                         logger.info("通过API成功清空酒馆会话知识图谱")
                         # 刷新显示
-                        self.refresh_from_api_server(self.tavern_session_id)
+                        if not self.refresh_from_api_server(self.tavern_session_id):
+                            raise RuntimeError("Graph cleared but refresh failed")
                     else:
                         raise Exception(f"API清空失败: {response.status_code}")
                 else:
                     # 本地模式下：清空内存中的知识图谱
-                    self.memory.clear_all()
+                    from src.graph.graph_operations import clear_knowledge_graph
+                    clear_knowledge_graph(self.memory)
                     # 刷新显示（已包含统计信息更新）
                     self.refresh_graph()
 
@@ -4157,7 +3969,7 @@ class GraphPage(QWidget):
 
                 # 直接调用重新初始化API
                 logger.debug(f"🔄 [UI] Calling coordinated re-initialization API for session: {self.tavern_session_id}")
-                api_url = f"http://127.0.0.1:9543/tavern/sessions/{self.tavern_session_id}/request_reinitialize"
+                api_url = f"{self._api_base_url()}/tavern/sessions/{self.tavern_session_id}/request_reinitialize"
 
                 api_timeout = int(os.getenv("API_TIMEOUT", "15"))
                 response = requests.post(api_url, timeout=api_timeout)
@@ -4170,7 +3982,9 @@ class GraphPage(QWidget):
                         f"知识图谱重新初始化已开始。\n\n{result.get('message', '请稍等片刻...')}"
                     )
                     # 刷新图谱
-                    QTimer.singleShot(3000, self.refresh_graph)
+                    session_id = self.tavern_session_id
+                    QTimer.singleShot(3000, lambda: self.refresh_graph()
+                                      if self.tavern_mode and self.tavern_session_id == session_id else None)
                 else:
                     try:
                         error_msg = response.json().get("detail", response.text)
@@ -4214,13 +4028,8 @@ class GraphPage(QWidget):
                 return
 
             # 清空当前知识图谱
-            if hasattr(main_window, 'memory'):
-                main_window.memory.clear_all()
-                logger.info("🧹 已清空知识图谱，准备重新获取酒馆数据")
-
-            # 从API服务器重新获取角色数据
             import requests
-            api_base_url = "http://127.0.0.1:9543"
+            api_base_url = self._api_base_url()
 
             # 调用API服务器的角色初始化端点
             init_url = f"{api_base_url}/sessions/{self.tavern_session_id}/reinitialize"
@@ -4241,7 +4050,7 @@ class GraphPage(QWidget):
                 QMessageBox.information(
                     self,
                     "初始化成功",
-                    f"酒馆角色 '{character_name}' 的知识图谱已重新初始化！\n\n"
+                    f"酒馆角色 '{character_name}'的知识图谱已重新初始化！\n\n"
                     f"创建了 {nodes_created} 个节点和 {edges_created} 个关系。"
                 )
 
@@ -4278,10 +4087,12 @@ class GraphPage(QWidget):
 
             if main_window:
                 # 先清空现有图谱
-                self.memory.clear_all()
+                from src.graph.graph_operations import clear_knowledge_graph
+                clear_knowledge_graph(self.memory)
 
                 # 创建默认开局
-                main_window.create_default_game_scenario("manual_init")
+                if not main_window.create_default_game_scenario("manual_init"):
+                    return
 
                 # 只需要刷新图谱显示，refresh_graph内部会更新实体列表和统计信息
                 self.refresh_graph()
@@ -4350,45 +4161,71 @@ class GraphPage(QWidget):
             logger.error(f"显示调试信息失败: {e}")
             QMessageBox.warning(self, "错误", f"获取调试信息失败：{str(e)}")
 
+    def _api_base_url(self):
+        main_window = self.window()
+        port = getattr(main_window, 'api_server_port', 9543)
+        return f"http://127.0.0.1:{port}"
+
+    def _update_mode_controls(self):
+        pending = self.tavern_mode and not self.tavern_session_id
+        unavailable = self.tavern_mode and self.showing_tavern_placeholder
+        self.refresh_btn.setEnabled(not pending)
+        self.refresh_btn.setToolTip("等待酒馆会话连接" if pending else "")
+        for button in (self.export_btn, self.init_graph_btn, self.clear_graph_btn,
+                       self.reset_view_btn, self.search_btn, self.clear_search_btn,
+                       self.filter_all_btn, self.filter_character_btn,
+                       self.filter_location_btn, self.filter_item_btn, self.filter_event_btn):
+            button.setEnabled(not unavailable)
+            button.setToolTip("酒馆图谱暂不可用，请刷新重试" if unavailable else "")
+        for button in (self.add_node_btn, self.edit_node_btn, self.delete_node_btn):
+            button.setEnabled(not self.tavern_mode)
+            button.setToolTip("酒馆节点编辑暂不支持会话写入" if self.tavern_mode else "")
+        self.search_input.setEnabled(not unavailable)
+        self.entity_list.setEnabled(not unavailable)
+
     def enter_tavern_mode(self, session_id: str):
         """进入酒馆模式，切换到使用API服务器的数据源"""
         self.tavern_mode = True
         self.tavern_session_id = session_id
+        self.showing_tavern_placeholder = False
+        self._tavern_graph_data = None
+        self._tavern_entities = []
+        self._update_mode_controls()
 
         # 清理本地模式的数据显示
         self.clear_graph_display()
 
         logger.info(f"GraphPage进入酒馆模式，会话ID: {session_id}")
 
-    def exit_tavern_mode(self):
+    def exit_tavern_mode(self, local_memory=None):
         """退出酒馆模式，切换回本地数据源"""
         self.tavern_mode = False
         self.tavern_session_id = None
+        self.showing_tavern_placeholder = False
+        self._tavern_graph_data = None
+        self._tavern_entities = []
+        self._update_mode_controls()
 
         # 清理酒馆模式的数据显示
         self.clear_graph_display()
 
-        # 重新初始化内存对象，确保指向本地模式路径
-        try:
-            from pathlib import Path
-            from src.memory import GRAGMemory
-
-            base_path = Path(__file__).parent / "data"
-            local_mode_path = base_path / "local_mode"
-            local_mode_path.mkdir(exist_ok=True)
-
-            # 重新创建内存对象，指向本地模式
-            self.memory = GRAGMemory(
-                hot_memory_size=10,
-                graph_save_path=str(local_mode_path / "knowledge_graph.graphml"),
-                entities_json_path=str(local_mode_path / "entities.json"),
-                auto_load_entities=True
-            )
-
-            logger.info(f"已切换内存对象到本地模式路径: {local_mode_path}")
-
-        except Exception as e:
-            logger.error(f"重新初始化本地模式内存对象失败: {e}")
+        if local_memory is not None:
+            self.memory = local_memory
+        else:
+            # 独立使用 GraphPage 时保留原有的本地数据源回退行为。
+            try:
+                local_mode_path = Path(__file__).parent / "data" / "local_mode"
+                local_mode_path.mkdir(exist_ok=True)
+                self.memory = GRAGMemory(
+                    hot_memory_size=10,
+                    graph_save_path=str(local_mode_path / "knowledge_graph.graphml"),
+                    entities_json_path=str(local_mode_path / "entities.json"),
+                    auto_load_entities=True,
+                    attention_config=ATTENTION_CONFIG.copy(),
+                )
+                logger.info(f"已切换内存对象到本地模式路径: {local_mode_path}")
+            except Exception as e:
+                logger.error(f"重新初始化本地模式内存对象失败: {e}")
 
         # 重新加载本地模式的数据
         self.refresh_graph()
@@ -4404,6 +4241,8 @@ class GraphPage(QWidget):
             # 清空实体列表
             if hasattr(self, 'entity_list'):
                 self.entity_list.clear()
+            self.current_selected_node = None
+            self.detail_text.clear()
 
             # 重置统计信息
             if hasattr(self, 'stats_label'):
@@ -4413,7 +4252,7 @@ class GraphPage(QWidget):
         except Exception as e:
             logger.error(f"清理图谱显示失败: {e}")
 
-    def refresh_from_api_server(self, session_id: str):
+    def refresh_from_api_server(self, session_id: str, force: bool = False):
         """从API服务器获取知识图谱数据并刷新显示"""
         try:
             logger.info(f"从API服务器获取会话 {session_id} 的知识图谱数据...")
@@ -4421,11 +4260,13 @@ class GraphPage(QWidget):
             import requests
 
             # 获取会话统计信息
-            api_base_url = "http://127.0.0.1:9543"  # TODO: 从配置获取
+            api_base_url = self._api_base_url()  # 从配置获取
             stats_url = f"{api_base_url}/sessions/{session_id}/stats"
 
             health_check_timeout = int(os.getenv("HEALTH_CHECK_TIMEOUT", "10"))
             response = requests.get(stats_url, timeout=health_check_timeout)
+            if not self.tavern_mode or self.tavern_session_id != session_id:
+                return False
             if response.status_code == 200:
                 stats = response.json()
                 logger.info(f"成功获取会话统计: 节点={stats.get('graph_nodes', 0)}, 边={stats.get('graph_edges', 0)}")
@@ -4434,8 +4275,26 @@ class GraphPage(QWidget):
                 export_url = f"{api_base_url}/sessions/{session_id}/export"
                 export_response = requests.get(export_url, timeout=30)
 
+                if not self.tavern_mode or self.tavern_session_id != session_id:
+                    return False
                 if export_response.status_code == 200:
                     graph_data = export_response.json()
+                    if (not force and not self.showing_tavern_placeholder and self._tavern_graph_data
+                            and graph_data.get('graph_data') == self._tavern_graph_data.get('graph_data')):
+                        return True
+                    self._tavern_graph_data = graph_data
+                    self._tavern_entities = [
+                        {'name': node.get('id', ''), 'type': node.get('type', 'concept'),
+                         'description': node.get('description', ''),
+                         'created_time': node.get('created_time', time.time()),
+                         'last_modified': node.get('last_modified', time.time()),
+                         'attributes': {key: value for key, value in node.items()
+                                        if key not in {'id', 'type', 'description',
+                                                       'created_time', 'last_modified'}}}
+                        for node in graph_data.get('graph_data', {}).get('nodes', [])
+                    ]
+                    self.showing_tavern_placeholder = False
+                    self._update_mode_controls()
                     logger.info("成功获取知识图谱导出数据")
 
                     # 从导出的图谱数据生成HTML显示
@@ -4448,18 +4307,20 @@ class GraphPage(QWidget):
 
                     # 更新实体列表和统计
                     self._update_ui_from_api_data(graph_data)
+                    return True
                 else:
                     logger.warning(f"无法获取图谱导出数据: HTTP {export_response.status_code}")
                     # 尝试仅使用统计数据更新UI
                     self._update_ui_from_stats_only(stats)
                     self._show_tavern_mode_placeholder(session_id, stats)
             else:
-                logger.warning(f"无法获取会话统计: HTTP {response.status_code}")
+                logger.warning(f"Cannot fetch Tavern session stats: HTTP {response.status_code}")
                 self._show_tavern_mode_placeholder(session_id, {"graph_nodes": 0, "graph_edges": 0})
-
-        except Exception as e:
-            logger.error(f"从API服务器刷新图谱失败: {e}")
-            self._show_tavern_mode_placeholder(session_id, {"graph_nodes": 0, "graph_edges": 0})
+        except Exception as exc:
+            logger.error(f"Tavern graph refresh failed: {exc}")
+            if self.tavern_mode and self.tavern_session_id == session_id:
+                self._show_tavern_mode_placeholder(session_id, {"graph_nodes": 0, "graph_edges": 0})
+        return False
 
     def _generate_graph_html_from_api_data(self, graph_data: dict):
         """从API数据生成图谱HTML"""
@@ -4467,7 +4328,7 @@ class GraphPage(QWidget):
             # 解析导出的图谱数据
             graph_json = graph_data.get('graph_data', {})
             nodes_data = graph_json.get('nodes', [])
-            links_data = graph_json.get('links', [])
+            links_data = graph_json.get('links', graph_json.get('edges', []))
 
             # 转换为我们的显示格式
             nodes = []
@@ -4556,28 +4417,9 @@ class GraphPage(QWidget):
             self.stats_label.setText(stats_text)
 
             # 更新实体列表（从图谱数据中提取）
-            self.entity_list.clear()
-            graph_json = graph_data.get('graph_data', {})
-            nodes_data = graph_json.get('nodes', [])
+            self.update_entity_list_with_data(self._tavern_entities, self._selected_filter_type())
 
-            for node_data in nodes_data:
-                node_type = node_data.get('type', 'concept')
-                node_name = node_data.get('id', '')
-
-                # 类型映射
-                type_display_map = {
-                    'character': '角色',
-                    'location': '地点',
-                    'item': '物品',
-                    'event': '事件',
-                    'concept': '概念'
-                }
-
-                display_type = type_display_map.get(node_type, node_type)
-                item_text = f"[{display_type}] {node_name}"
-                self.entity_list.addItem(item_text)
-
-            logger.info(f"已更新UI: {len(nodes_data)} 个实体")
+            logger.info(f"已更新UI: {len(self._tavern_entities)} 个实体")
 
         except Exception as e:
             logger.error(f"从API数据更新UI失败: {e}")
@@ -4585,6 +4427,13 @@ class GraphPage(QWidget):
     def _show_tavern_mode_placeholder(self, session_id: str, stats: dict):
         """显示酒馆模式的占位信息"""
         try:
+            self.tavern_mode = True
+            self.tavern_session_id = None if session_id == "pending" else session_id
+            self._tavern_entities = []
+            self._tavern_graph_data = None
+            self.clear_graph_display()
+            self.showing_tavern_placeholder = True
+            self._update_mode_controls()
             # 创建简单的酒馆模式信息页面
             html_content = f"""
             <!DOCTYPE html>
@@ -4593,9 +4442,9 @@ class GraphPage(QWidget):
                 <title>EchoGraph - 酒馆模式</title>
                 <style>
                     body {{
-                        font-family: 'Microsoft YaHei', Arial, sans-serif;
-                        background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
-                        color: white;
+                        font-family: 'Microsoft YaHei UI', 'Segoe UI', sans-serif;
+                        background: {BG_BASE};
+                        color: {TEXT_PRIMARY};
                         text-align: center;
                         padding: 50px;
                         margin: 0;
@@ -4603,13 +4452,13 @@ class GraphPage(QWidget):
                     .container {{
                         max-width: 600px;
                         margin: 0 auto;
-                        background: rgba(255,255,255,0.1);
+                        background: {BG_RAISED};
                         padding: 40px;
                         border-radius: 20px;
                         backdrop-filter: blur(10px);
                     }}
-                    h1 {{ color: #4fc3f7; margin-bottom: 20px; }}
-                    h2 {{ color: #81c784; margin: 30px 0 15px 0; }}
+                    h1 {{ color: {TEXT_PRIMARY}; margin-bottom: 20px; }}
+                    h2 {{ color: {TEXT_SECONDARY}; margin: 30px 0 15px 0; }}
                     .stats {{
                         display: flex;
                         justify-content: space-around;
@@ -4617,7 +4466,7 @@ class GraphPage(QWidget):
                     }}
                     .stat {{
                         text-align: center;
-                        background: rgba(255,255,255,0.1);
+                        background: {BG_RAISED};
                         padding: 20px;
                         border-radius: 10px;
                         min-width: 100px;
@@ -4625,10 +4474,10 @@ class GraphPage(QWidget):
                     .stat-number {{
                         font-size: 2em;
                         font-weight: bold;
-                        color: #4fc3f7;
+                        color: {ACCENT};
                     }}
                     .info {{
-                        background: rgba(255,255,255,0.1);
+                        background: {BG_RAISED};
                         padding: 20px;
                         border-radius: 10px;
                         margin: 20px 0;
@@ -4638,10 +4487,10 @@ class GraphPage(QWidget):
             </head>
             <body>
                 <div class="container">
-                    <h1>🍺 酒馆模式已激活</h1>
+                    <h1>酒馆模式已激活</h1>
                     <p>EchoGraph正在与SillyTavern协作，提供智能对话增强服务</p>
 
-                    <h2>📊 当前会话统计</h2>
+                    <h2>当前会话统计</h2>
                     <div class="stats">
                         <div class="stat">
                             <div class="stat-number">{stats.get('graph_nodes', 0)}</div>
@@ -4658,14 +4507,14 @@ class GraphPage(QWidget):
                     </div>
 
                     <div class="info">
-                        <h3>🔗 会话信息</h3>
+                        <h3>会话信息</h3>
                         <p><strong>会话ID:</strong> {session_id}</p>
                         <p><strong>状态:</strong> 活跃连接</p>
                         <p><strong>模式:</strong> SillyTavern集成</p>
                     </div>
 
                     <div class="info">
-                        <h3>ℹ️ 使用说明</h3>
+                        <h3>使用说明</h3>
                         <p>• 在SillyTavern中进行对话，EchoGraph会自动提供智能增强</p>
                         <p>• 知识图谱会根据对话内容动态更新</p>
                         <p>• 可以随时在EchoGraph主界面切换回本地模式</p>
@@ -4681,6 +4530,7 @@ class GraphPage(QWidget):
 
             # 加载到WebView
             self.graph_view.load(QUrl.fromLocalFile(str(temp_file.absolute())))
+            self.showing_tavern_placeholder = True
 
             logger.info("酒馆模式占位页面已显示")
 
@@ -4714,13 +4564,7 @@ class ConfigPage(QWidget):
                     qss = content[start + len(start_marker): end].strip()
                     self.setStyleSheet(qss)
                 else:
-                    logger.warning("未找到配置页面QSS片段，使用内置最小样式")
-                    self.setStyleSheet(
-                        "#configPage QSpinBox::up-button, #configPage QDoubleSpinBox::up-button, "
-                        "#configPage QSpinBox::down-button, #configPage QDoubleSpinBox::down-button { "
-                        "width:0px; height:0px; border:none; background:transparent; } "
-                        "#configPage QLabel { background-color: transparent; }"
-                    )
+                    logger.warning("未找到配置页面QSS片段，使用全局主题")
             else:
                 logger.warning(f"CSS文件不存在: {css_path}")
         except Exception as e:
@@ -4767,7 +4611,7 @@ class ConfigPage(QWidget):
         self.request_timeout_input = QSpinBox()
         self.request_timeout_input.setRange(30, 600)
         self.request_timeout_input.setValue(180)
-        self.request_timeout_input.setSuffix(" 秒")
+        self.request_timeout_input.setSuffix("秒")
 
         llm_layout.addRow("API接口地址:", self.api_base_url_input)
         llm_layout.addRow("API密钥:", self.api_key_input)
@@ -4785,12 +4629,12 @@ class ConfigPage(QWidget):
         self.window_size_input = QSpinBox()
         self.window_size_input.setRange(2, 20)
         self.window_size_input.setValue(4)
-        self.window_size_input.setSuffix(" 轮对话")
+        self.window_size_input.setSuffix("轮对话")
 
         self.processing_delay_input = QSpinBox()
         self.processing_delay_input.setRange(0, 10)
         self.processing_delay_input.setValue(1)
-        self.processing_delay_input.setSuffix(" 轮延迟")
+        self.processing_delay_input.setSuffix("轮延迟")
 
         self.enable_enhanced_agent_checkbox = QCheckBox("启用增强Agent")
         self.enable_enhanced_agent_checkbox.setChecked(True)
@@ -4813,12 +4657,12 @@ class ConfigPage(QWidget):
         self.api_timeout_input = QSpinBox()
         self.api_timeout_input.setRange(5, 60)
         self.api_timeout_input.setValue(15)
-        self.api_timeout_input.setSuffix(" 秒")
+        self.api_timeout_input.setSuffix("秒")
 
         self.health_check_timeout_input = QSpinBox()
         self.health_check_timeout_input.setRange(3, 30)
         self.health_check_timeout_input.setValue(10)
-        self.health_check_timeout_input.setSuffix(" 秒")
+        self.health_check_timeout_input.setSuffix("秒")
 
         server_layout.addRow("API服务器端口:", self.api_server_port_input)
         server_layout.addRow("API请求超时:", self.api_timeout_input)
@@ -4835,7 +4679,7 @@ class ConfigPage(QWidget):
         self.tavern_timeout_input = QSpinBox()
         self.tavern_timeout_input.setRange(3, 30)
         self.tavern_timeout_input.setValue(10)
-        self.tavern_timeout_input.setSuffix(" 秒")
+        self.tavern_timeout_input.setSuffix("秒")
 
         # 测试连接按钮
         self.test_tavern_btn = QPushButton("测试酒馆连接")
@@ -4843,7 +4687,8 @@ class ConfigPage(QWidget):
 
         # 连接状态标签
         self.tavern_status_label = QLabel("未测试")
-        self.tavern_status_label.setStyleSheet("color: #888888;")
+        self.tavern_status_label.setProperty("role", "status")
+
 
         tavern_layout.addRow("酒馆地址:", self.tavern_host_input)
         tavern_layout.addRow("酒馆端口:", self.tavern_port_input)
@@ -4858,17 +4703,17 @@ class ConfigPage(QWidget):
         self.max_messages_input = QSpinBox()
         self.max_messages_input.setRange(100, 5000)
         self.max_messages_input.setValue(1000)
-        self.max_messages_input.setSuffix(" 条消息")
+        self.max_messages_input.setSuffix("条消息")
 
         self.animation_interval_input = QSpinBox()
         self.animation_interval_input.setRange(100, 2000)
         self.animation_interval_input.setValue(500)
-        self.animation_interval_input.setSuffix(" 毫秒")
+        self.animation_interval_input.setSuffix("毫秒")
 
         self.poll_interval_input = QSpinBox()
         self.poll_interval_input.setRange(1, 10)
         self.poll_interval_input.setValue(3)
-        self.poll_interval_input.setSuffix(" 秒")
+        self.poll_interval_input.setSuffix("秒")
 
         ui_layout.addRow("最大消息数:", self.max_messages_input)
         ui_layout.addRow("动画间隔:", self.animation_interval_input)
@@ -4885,6 +4730,7 @@ class ConfigPage(QWidget):
 
         # 保存按钮
         self.save_button = QPushButton("保存配置")
+        self.save_button.setProperty("variant", "primary")
         self.save_button.clicked.connect(self.save_config)
 
 
@@ -4896,7 +4742,10 @@ class ConfigPage(QWidget):
         layout.addWidget(tavern_group)
         layout.addWidget(ui_group)
         layout.addWidget(system_group)
-        layout.addWidget(self.save_button)
+        save_row = QHBoxLayout()
+        save_row.addStretch()
+        save_row.addWidget(self.save_button)
+        layout.addLayout(save_row)
         layout.addStretch()
 
         # 设置滚动区域
@@ -5007,7 +4856,10 @@ class ConfigPage(QWidget):
             port = self.tavern_port_input.text().strip() or "8000"
 
             self.tavern_status_label.setText("测试中...")
-            self.tavern_status_label.setStyleSheet("color: #f39c12;")
+            self.tavern_status_label.setProperty("status", "info")
+            self.tavern_status_label.style().unpolish(self.tavern_status_label)
+            self.tavern_status_label.style().polish(self.tavern_status_label)
+
             self.test_tavern_btn.setEnabled(False)
             QApplication.processEvents()
 
@@ -5021,8 +4873,11 @@ class ConfigPage(QWidget):
             result = connector.test_connection()
 
             if result["status"] == "connected":
-                self.tavern_status_label.setText("✅ 连接成功")
-                self.tavern_status_label.setStyleSheet("color: #27ae60;")
+                self.tavern_status_label.setText("连接成功")
+                self.tavern_status_label.setProperty("status", "success")
+                self.tavern_status_label.style().unpolish(self.tavern_status_label)
+                self.tavern_status_label.style().polish(self.tavern_status_label)
+
 
                 version = result.get("version", {})
                 QMessageBox.information(
@@ -5033,8 +4888,11 @@ class ConfigPage(QWidget):
                     f"版本: {version.get('version', '未知')}"
                 )
             else:
-                self.tavern_status_label.setText("❌ 连接失败")
-                self.tavern_status_label.setStyleSheet("color: #e74c3c;")
+                self.tavern_status_label.setText("连接失败")
+                self.tavern_status_label.setProperty("status", "danger")
+                self.tavern_status_label.style().unpolish(self.tavern_status_label)
+                self.tavern_status_label.style().polish(self.tavern_status_label)
+
 
                 QMessageBox.warning(
                     self,
@@ -5046,13 +4904,19 @@ class ConfigPage(QWidget):
             connector.disconnect()
 
         except ValueError as e:
-            self.tavern_status_label.setText("❌ 配置错误")
-            self.tavern_status_label.setStyleSheet("color: #e74c3c;")
+            self.tavern_status_label.setText("配置错误")
+            self.tavern_status_label.setProperty("status", "danger")
+            self.tavern_status_label.style().unpolish(self.tavern_status_label)
+            self.tavern_status_label.style().polish(self.tavern_status_label)
+
             QMessageBox.warning(self, "配置错误", f"端口必须是数字：{e}")
 
         except Exception as e:
-            self.tavern_status_label.setText("❌ 测试异常")
-            self.tavern_status_label.setStyleSheet("color: #e74c3c;")
+            self.tavern_status_label.setText("测试异常")
+            self.tavern_status_label.setProperty("status", "danger")
+            self.tavern_status_label.style().unpolish(self.tavern_status_label)
+            self.tavern_status_label.style().polish(self.tavern_status_label)
+
             QMessageBox.critical(self, "测试异常", f"测试连接时发生异常：{e}")
 
         finally:
@@ -5072,6 +4936,7 @@ class EchoGraphMainWindow(QMainWindow):
 
         # 模式切换标志，防止自动初始化干扰
         self.switching_modes = False
+        self._mode_switch_generation = 0
 
         # 初始化核心组件
         self.init_components()
@@ -5109,7 +4974,8 @@ class EchoGraphMainWindow(QMainWindow):
                 hot_memory_size=10,
                 graph_save_path=str(local_mode_path / "knowledge_graph.graphml"),
                 entities_json_path=str(local_mode_path / "entities.json"),  # 本地模式专用路径
-                auto_load_entities=True  # 本地模式需要加载已有的对话数据
+                auto_load_entities=True,  # 本地模式需要加载已有的对话数据
+                attention_config=ATTENTION_CONFIG.copy(),
             )
             self.perception = PerceptionModule()
             self.rpg_processor = RPGTextProcessor()
@@ -5220,7 +5086,8 @@ class EchoGraphMainWindow(QMainWindow):
 
         # 智能对话页面
         self.play_page = IntegratedPlayPage(self.game_engine)
-        self.tabs.addTab(self.play_page, "智能对话")
+        self.play_page.api_base_url = f"http://127.0.0.1:{self.api_server_port}"
+        self.tabs.addTab(self.play_page, "对话")
 
         # 知识图谱页面
         self.graph_page = GraphPage(self.memory)
@@ -5388,7 +5255,7 @@ class EchoGraphMainWindow(QMainWindow):
             reply = QMessageBox.question(
                 self,
                 "知识图谱初始化",
-                f"对话 \"{conv_name}\" 还没有开始。\n\n是否要创建默认的奇幻游戏开局来开始你的冒险？\n\n点击\"否\"将保持当前知识图谱状态。",
+                f"对话 \"{conv_name}\"还没有开始。\n\n是否要创建默认的奇幻游戏开局来开始你的冒险？\n\n点击\"否\"将保持当前知识图谱状态。",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.Yes
             )
@@ -5405,6 +5272,7 @@ class EchoGraphMainWindow(QMainWindow):
 
             # 使用场景管理器创建超时空之轮场景
             opening_story, entity_count, relationship_count = self.scenario_manager.create_chrono_trigger_scenario()
+            self.memory.knowledge_graph.save_graph(self.memory.graph_save_path)
 
             # 刷新图谱显示（已包含更新实体列表和统计）
             self.graph_page.refresh_graph()
@@ -5421,10 +5289,12 @@ class EchoGraphMainWindow(QMainWindow):
 
             # 显示成功消息
             self.scenario_manager.show_scenario_success_message(self, entity_count, relationship_count)
+            return True
 
         except Exception as e:
             logger.error(f"创建默认游戏开局失败: {e}")
             self.scenario_manager.show_scenario_error_message(self, e)
+            return False
 
 
     def closeEvent(self, event):
@@ -5495,7 +5365,7 @@ def main():
         "logs/tavern_mode_{time:YYYY-MM-DD}.log",
         format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {message}",
         level="INFO",
-        filter=lambda record: "酒馆" in record["message"] or "tavern" in record["message"].lower() or "🍺" in record["message"],
+        filter=lambda record: "酒馆" in record["message"] or "tavern" in record["message"].lower() or "" in record["message"],
         rotation="5 MB",
         retention="7 days"
     )

@@ -8,6 +8,7 @@ sillytavern_plugin/
 
 # 测试文件
 test_*.py
+!tests/test_graph_operations.py
 test_*.js
 test_*.json
 *_test.py

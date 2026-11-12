@@ -212,6 +212,7 @@ class GRAGMemory:
         except Exception as e:
             logger.error(f"❌ 同步实体到 entities.json 失败: {e}")
             logger.exception("详细错误信息:")
+            raise
 
     def set_entities_json_path(self, entities_json_path: str):
         """动态设置entities.json文件路径"""
