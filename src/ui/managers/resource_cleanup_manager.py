@@ -4,6 +4,7 @@
 """
 import subprocess
 from loguru import logger
+from src.ui.graph_temp_files import cleanup_current_graph_pages
 
 
 class ResourceCleanupManager:
@@ -23,6 +24,7 @@ class ResourceCleanupManager:
             
             # 保存数据
             self.save_application_data()
+            cleanup_current_graph_pages()
             
             logger.info("[TARGET] EchoGraph已安全关闭")
             return True

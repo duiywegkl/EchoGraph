@@ -2,6 +2,8 @@
 EchoGraph 主UI程序
 智能角色扮演助手 - 集成对话系统和关系图谱
 """
+from src.graph.node_types import NODE_TYPES, TYPE_IDS, TYPE_LABELS, normalize_type, display_name
+from src.ui.graph_temp_files import graph_page_path, tavern_placeholder_path, cleanup_stale_graph_pages
 import sys
 import os
 
@@ -2709,7 +2711,7 @@ class EntityListDelegate(QStyledItemDelegate):
             node_type, item_option.text = raw[1:].split("] ", 1)
         elif not isinstance(entity, dict) and raw.startswith("【") and "】" in raw:
             node_type, item_option.text = raw[1:].split("】", 1)
-        type_names = {"角色": "character", "地点": "location", "物品": "item", "事件": "event", "概念": "concept"}
+        type_names = {item.label: item.id for item in NODE_TYPES}
         node_type = type_names.get(node_type, node_type)
         item_option.rect.adjust(16, 0, 0, 0)
         super().paint(painter, item_option, index)
@@ -2726,7 +2728,7 @@ class GraphPage(QWidget):
     def __init__(self, memory_system, parent=None):
         super().__init__(parent)
         self.memory = memory_system
-        self.graph_file_path = Path(__file__).parent / "graph.html"
+        self.graph_file_path = graph_page_path()
         self.current_selected_node = None
 
         # 酒馆模式相关属性
@@ -2742,7 +2744,7 @@ class GraphPage(QWidget):
         self.html_generator = GraphHTMLGenerator()
         # 将输出HTML写到模板目录，保证相对assets路径能加载
         try:
-            self.graph_file_path = self.html_generator.template_path.parent / "graph.html"
+            self.graph_file_path = graph_page_path()
             logger.debug(f"[Graph] HTML输出路径: {self.graph_file_path}")
             from pathlib import Path as _P
             _assets_root = _P(__file__).resolve().parent / 'assets'
@@ -2910,14 +2912,14 @@ class GraphPage(QWidget):
         # 实体类型过滤
         filter_layout = QHBoxLayout()
         self.filter_all_btn = QPushButton("全部")
-        self.filter_character_btn = QPushButton("角色")
-        self.filter_location_btn = QPushButton("地点")
-        self.filter_item_btn = QPushButton("物品")
-        self.filter_event_btn = QPushButton("事件")
+        self.filter_type_buttons = {item.id: QPushButton(item.label) for item in NODE_TYPES}
+        self.filter_character_btn = self.filter_type_buttons['character']
+        self.filter_location_btn = self.filter_type_buttons['location']
+        self.filter_item_btn = self.filter_type_buttons['item']
+        self.filter_event_btn = self.filter_type_buttons['event']
 
         # 设置过滤按钮样式
-        filter_buttons = [self.filter_all_btn, self.filter_character_btn,
-                         self.filter_location_btn, self.filter_item_btn, self.filter_event_btn]
+        filter_buttons = [self.filter_all_btn, *self.filter_type_buttons.values()]
 
         for btn in filter_buttons:
             btn.setCheckable(True)
@@ -2995,8 +2997,7 @@ class GraphPage(QWidget):
         self.search_input.returnPressed.connect(self.search_nodes)
 
         # 实体过滤
-        filter_buttons = [self.filter_all_btn, self.filter_character_btn,
-                         self.filter_location_btn, self.filter_item_btn, self.filter_event_btn]
+        filter_buttons = [self.filter_all_btn, *self.filter_type_buttons.values()]
 
         for btn in filter_buttons:
             btn.clicked.connect(self.filter_entities)
@@ -3043,8 +3044,7 @@ class GraphPage(QWidget):
             QMessageBox.warning(self, "错误", f"刷新图谱失败：{str(e)}")
 
     def _selected_filter_type(self):
-        for button in (self.filter_all_btn, self.filter_character_btn,
-                       self.filter_location_btn, self.filter_item_btn, self.filter_event_btn):
+        for button in (self.filter_all_btn, *self.filter_type_buttons.values()):
             if button.isChecked():
                 return button.text()
         return self.filter_all_btn.text()
@@ -3056,23 +3056,13 @@ class GraphPage(QWidget):
             self.current_selected_node = None
             self.detail_text.clear()
 
-            # 根据筛选条件过滤实体
-            filtered_entities = []
-            for entity in entities:
-                if filter_type == "全部":
-                    filtered_entities.append(entity)
-                elif filter_type == "角色" and entity.get('type') == "character":
-                    filtered_entities.append(entity)
-                elif filter_type == "地点" and entity.get('type') == "location":
-                    filtered_entities.append(entity)
-                elif filter_type == "物品" and entity.get('type') == "item":
-                    filtered_entities.append(entity)
-                elif filter_type == "事件" and entity.get('type') == "event":
-                    filtered_entities.append(entity)
+            selected_type = {item.label: item.id for item in NODE_TYPES}.get(filter_type)
+            filtered_entities = [entity for entity in entities
+                                 if selected_type is None or entity.get('type') == selected_type]
 
             # 添加实体到列表
             for entity in filtered_entities:
-                item_text = entity.get('name', '未命名')
+                item_text = entity.get('display_name') or display_name(entity.get('name', ''), entity.get('attributes', {}).get('name'))
                 if entity.get('description'):
                     item_text += f" - {entity['description'][:50]}{'...' if len(entity['description']) > 50 else ''}"
 
@@ -3142,10 +3132,11 @@ class GraphPage(QWidget):
             for i, entity in enumerate(entities):
                 nodes.append({
                     'id': entity['name'],
-                    'name': entity['name'],
-                    'type': entity['type'],
+                    'name': entity.get('display_name') or display_name(entity['name'], entity.get('attributes', {}).get('name')),
+                    'type': normalize_type(entity['type'])[0],
+                    'subtype': entity.get('subtype') or entity.get('attributes', {}).get('subtype', ''),
                     'description': entity.get('description', ''),
-                    'group': self._get_type_group(entity['type']),
+                    'group': self._get_type_group(normalize_type(entity['type'])[0]),
                     'is_main_character': bool(entity.get('attributes', {}).get('is_main_character'))
                 })
 
@@ -3183,14 +3174,7 @@ class GraphPage(QWidget):
 
     def _get_type_group(self, entity_type):
         """获取实体类型的分组ID"""
-        type_groups = {
-            'character': 1,
-            'location': 2,
-            'item': 3,
-            'event': 4,
-            'concept': 5
-        }
-        return type_groups.get(entity_type, 5)
+        return TYPE_IDS.index(entity_type) + 1 if entity_type in TYPE_IDS else TYPE_IDS.index('other') + 1
 
     def update_entity_list(self, filter_type: str = "全部"):
         """更新实体列表（向后兼容方法）"""
@@ -3209,7 +3193,9 @@ class GraphPage(QWidget):
             for node_id, attrs in self.memory.knowledge_graph.graph.nodes(data=True):
                 entity = {
                     'name': node_id,
-                    'type': attrs.get('type', 'concept'),
+                    'type': normalize_type(attrs.get('type', 'other'))[0],
+                    'subtype': attrs.get('subtype', ''),
+                    'display_name': display_name(node_id, attrs.get('name')),
                     'description': attrs.get('description', ''),
                     'created_time': attrs.get('created_time', time.time()),
                     'last_modified': attrs.get('last_modified', time.time()),
@@ -3217,7 +3203,7 @@ class GraphPage(QWidget):
                 }
 
                 # 添加动态属性，排除系统属性
-                excluded_keys = {'type', 'description', 'created_time', 'last_modified'}
+                excluded_keys = {'type', 'subtype', 'description', 'created_time', 'last_modified'}
                 for key, value in attrs.items():
                     if key not in excluded_keys:
                         entity['attributes'][key] = value
@@ -3293,7 +3279,7 @@ class GraphPage(QWidget):
         ]
 
         for entity in sample_entities:
-            list_item = QListWidgetItem(entity['name'])
+            list_item = QListWidgetItem(entity.get('display_name') or display_name(entity['name'], entity.get('attributes', {}).get('name')))
             list_item.setData(Qt.UserRole, entity)
             self.entity_list.addItem(list_item)
 
@@ -3312,10 +3298,7 @@ class GraphPage(QWidget):
             all_entities = self.get_all_entities()
             matching_entities = []
             selected_filter = self._selected_filter_type()
-            filter_types = {self.filter_character_btn.text(): 'character',
-                            self.filter_location_btn.text(): 'location',
-                            self.filter_item_btn.text(): 'item',
-                            self.filter_event_btn.text(): 'event'}
+            filter_types = {item.label: item.id for item in NODE_TYPES}
 
             # 搜索匹配的实体
             for entity in all_entities:
@@ -3331,7 +3314,7 @@ class GraphPage(QWidget):
             self.current_selected_node = None
             self.detail_text.clear()
             for entity in matching_entities:
-                list_item = QListWidgetItem(entity['name'])
+                list_item = QListWidgetItem(entity.get('display_name') or display_name(entity['name'], entity.get('attributes', {}).get('name')))
                 list_item.setData(Qt.UserRole, entity)
                 self.entity_list.addItem(list_item)
 
@@ -3354,8 +3337,7 @@ class GraphPage(QWidget):
         sender = self.sender()
 
         # 取消其他过滤按钮的选中状态
-        filter_buttons = [self.filter_all_btn, self.filter_character_btn,
-                         self.filter_location_btn, self.filter_item_btn, self.filter_event_btn]
+        filter_buttons = [self.filter_all_btn, *self.filter_type_buttons.values()]
 
         for btn in filter_buttons:
             if btn != sender:
@@ -3410,8 +3392,8 @@ class GraphPage(QWidget):
                     attr_text = "  暂无属性"
 
                 detail_text = f"""节点信息:
-名称: {selected_entity['name']}
-类型: {selected_entity['type']}
+名称: {selected_entity.get('display_name') or display_name(selected_entity['name'], selected_entity.get('attributes', {}).get('name'))}
+类型: {TYPE_LABELS.get(selected_entity['type'], TYPE_LABELS['other'])}{' · ' + selected_entity['subtype'] if selected_entity.get('subtype') else ''}
 描述: {selected_entity.get('description', '暂无描述')}
 创建时间: {created_time}
 属性:
@@ -3420,8 +3402,8 @@ class GraphPage(QWidget):
             else:
                 # 备用显示
                 detail_text = f"""节点信息:
-名称: {entity_display_name}
-类型: {entity_type}
+名称: {display_name(entity_display_name)}
+类型: {TYPE_LABELS.get(entity_type, TYPE_LABELS['other'])}
 创建时间: 未知
 描述: 暂无描述
 属性: 暂无数据"""
@@ -3449,7 +3431,7 @@ class GraphPage(QWidget):
             # 执行JavaScript来聚焦节点
             js_code = f"""
             // 查找并高亮节点
-            const targetNode = d3.selectAll('.node').filter(d => d.name === {json.dumps(node_name)});
+            const targetNode = d3.selectAll('.node').filter(d => d.id === {json.dumps(node_name)});
             if (!targetNode.empty()) {{
                 const nodeData = targetNode.datum();
 
@@ -3569,15 +3551,17 @@ class GraphPage(QWidget):
             basic_layout = QFormLayout(basic_group)
 
             # 名称
-            name_edit = QLineEdit(current_entity['name'])
+            name_edit = QLineEdit(current_entity.get('display_name') or display_name(current_entity['name'], current_entity.get('attributes', {}).get('name')))
             name_edit.setPlaceholderText("请输入节点名称")
             basic_layout.addRow("名称 *:", name_edit)
 
             # 类型
             type_combo = QComboBox()
-            type_combo.addItems(["character", "location", "item", "event", "concept"])
+            type_combo.addItems(TYPE_IDS)
             type_combo.setCurrentText(current_entity['type'])
             basic_layout.addRow("类型:", type_combo)
+            subtype_edit = QLineEdit(current_entity.get('subtype', ''))
+            basic_layout.addRow("细分类别:", subtype_edit)
 
             # 描述
             desc_edit = QTextEdit(current_entity.get('description', ''))
@@ -3826,9 +3810,15 @@ class GraphPage(QWidget):
                         new_attributes[key] = value
 
                 # 更新或创建实体数据
+                if not is_new_node and new_name == (current_entity.get('display_name') or display_name(entity_name, current_entity.get('attributes', {}).get('name'))):
+                    new_name = entity_name
                 current_entity['name'] = new_name
                 current_entity['type'] = type_combo.currentText()
+                current_entity['subtype'] = subtype_edit.text().strip()
+                new_name = current_entity['name']
                 current_entity['description'] = desc_edit.toPlainText().strip()
+                if 'name' in current_entity.get('attributes', {}):
+                    new_attributes['name'] = name_edit.text().strip()
                 current_entity['attributes'] = new_attributes
                 current_entity['last_modified'] = time.time()
 
@@ -4306,8 +4296,7 @@ class GraphPage(QWidget):
         self.refresh_btn.setToolTip("等待酒馆会话连接" if pending else "")
         for button in (self.export_btn, self.init_graph_btn, self.clear_graph_btn,
                        self.reset_view_btn, self.search_btn, self.clear_search_btn,
-                       self.filter_all_btn, self.filter_character_btn,
-                       self.filter_location_btn, self.filter_item_btn, self.filter_event_btn):
+                       self.filter_all_btn, *self.filter_type_buttons.values()):
             button.setEnabled(not unavailable)
             button.setToolTip("酒馆图谱暂不可用，请刷新重试" if unavailable else "")
         for button in (self.add_node_btn, self.edit_node_btn, self.delete_node_btn):
@@ -4432,12 +4421,14 @@ class GraphPage(QWidget):
                         return True
                     self._tavern_graph_data = graph_data
                     self._tavern_entities = [
-                        {'name': node.get('id', ''), 'type': node.get('type', 'concept'),
+                        {'name': node.get('id', ''), 'type': normalize_type(node.get('type', 'other'))[0],
+                         'display_name': display_name(node.get('id', ''), node.get('name')),
+                         'subtype': node.get('subtype') or normalize_type(node.get('type', 'other'))[1],
                          'description': node.get('description', ''),
                          'created_time': node.get('created_time', time.time()),
                          'last_modified': node.get('last_modified', time.time()),
                          'attributes': {key: value for key, value in node.items()
-                                        if key not in {'id', 'type', 'description',
+                                        if key not in {'id', 'type', 'subtype', 'description',
                                                        'created_time', 'last_modified'}}}
                         for node in graph_data.get('graph_data', {}).get('nodes', [])
                     ]
@@ -4483,10 +4474,11 @@ class GraphPage(QWidget):
             for node_data in nodes_data:
                 node = {
                     'id': node_data.get('id', ''),
-                    'name': node_data.get('id', ''),
-                    'type': node_data.get('type', 'concept'),
+                    'name': display_name(node_data.get('id', ''), node_data.get('name')),
+                    'type': normalize_type(node_data.get('type', 'other'))[0],
+                    'subtype': node_data.get('subtype') or normalize_type(node_data.get('type', 'other'))[1],
                     'description': node_data.get('description', ''),
-                    'group': self._get_type_group(node_data.get('type', 'concept')),
+                    'group': self._get_type_group(normalize_type(node_data.get('type', 'other'))[0]),
                     'is_main_character': bool(node_data.get('is_main_character'))
                 }
                 nodes.append(node)
@@ -4695,7 +4687,7 @@ class GraphPage(QWidget):
             """
 
             # 写入临时HTML文件
-            temp_file = Path("temp_tavern_graph.html")
+            temp_file = tavern_placeholder_path()
             temp_file.write_text(html_content, encoding='utf-8')
 
             # 加载到WebView
@@ -5645,6 +5637,7 @@ def create_app_and_window(env_path=None, process_theme=theme._USE_PROCESS_ENV):
     """Create the real desktop startup UI without entering the event loop."""
     from dotenv import load_dotenv
 
+    cleanup_stale_graph_pages()
     path = Path(env_path) if env_path is not None else Path(__file__).resolve().parent / ".env"
     if process_theme is theme._USE_PROCESS_ENV:
         process_theme = _EXTERNAL_UI_THEME

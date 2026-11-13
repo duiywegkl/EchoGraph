@@ -1,10 +1,18 @@
 """Persistence helpers shared by graph UI operations."""
 
 import networkx as nx
+from src.graph.node_types import TYPE_IDS, SYNONYMS, normalize_type
 
 
 def save_local_entities(memory, entities, old_name=None, new_name=None):
     """Update one local conversation graph and persist its two representations."""
+    for entity in entities:
+        raw_type = entity.get("type", "other")
+        if not isinstance(raw_type, str) or (raw_type not in TYPE_IDS and raw_type.strip().casefold() not in SYNONYMS):
+            raise ValueError(f"Invalid node type: {raw_type}")
+        entity["type"], subtype = normalize_type(raw_type, entity.get("subtype"))
+        if subtype:
+            entity["subtype"] = subtype
     names = [entity["name"] for entity in entities]
     if len(names) != len(set(names)):
         raise ValueError("Duplicate node names are not allowed")
@@ -19,7 +27,8 @@ def save_local_entities(memory, entities, old_name=None, new_name=None):
             graph.remove_node(node)
     for entity in entities:
         attributes = dict(entity.get("attributes", {}))
-        attributes.update(type=entity.get("type", "concept"),
+        attributes.update(type=entity.get("type", "other"),
+                          subtype=entity.get("subtype", ""),
                           description=entity.get("description", ""))
         for key in ("created_time", "last_modified"):
             if key in entity:

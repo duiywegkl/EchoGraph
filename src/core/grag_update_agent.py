@@ -167,7 +167,8 @@ AI回复: {llm_response}
         {{
             "type": "add_node",
             "node_id": "实体唯一ID",
-            "node_type": "实体类型(character/item/location/skill/organization/event)",
+            "node_type": "character",
+            "subtype": "optional specific category",
             "attributes": {{
                 "name": "实体名称",
                 "其他属性": "值"
@@ -215,7 +216,8 @@ AI回复: {llm_response}
 - 保持节点ID的一致性和可读性
 - 优先考虑显式信息，谨慎推断隐含信息"""
 
-        return prompt
+        from src.graph.node_types import prompt_types
+        return prompt + "\n" + prompt_types()
     
     def _parse_llm_analysis(self, analysis_result: str) -> Dict[str, Any]:
         """Compatibility for direct parsers; live extraction uses request_json."""
@@ -265,7 +267,7 @@ AI回复: {llm_response}
                 nodes_to_add.append({
                     "node_id": operation["node_id"],
                     "type": operation["node_type"],
-                    "attributes": operation["attributes"]
+                    "attributes": {**operation["attributes"], **({"subtype": operation["subtype"]} if operation.get("subtype") else {})}
                 })
             
             elif op_type == "update_node":

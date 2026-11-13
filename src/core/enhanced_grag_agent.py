@@ -423,6 +423,10 @@ class EnhancedGRAGAgent(GRAGUpdateAgent):
     
     def _infer_node_type_from_id(self, node_id: str) -> str:
         """从节点ID推断节点类型"""
+        from src.graph.node_types import TYPE_IDS, SYNONYMS, normalize_type
+        prefix = node_id.split("_", 1)[0]
+        if prefix in TYPE_IDS or prefix.casefold() in SYNONYMS:
+            return normalize_type(prefix)[0]
         node_id_lower = node_id.lower()
         
         # 常见角色关键词
@@ -444,18 +448,9 @@ class EnhancedGRAGAgent(GRAGUpdateAgent):
             return "location"
         
         # 默认为未知
-        return "unknown"
+        return "other"
     
     def _infer_node_name_from_id(self, node_id: str) -> str:
-        """从节点ID推断显示名称"""
-        # 移除常见前缀
-        name = node_id
-        for prefix in ["character_", "item_", "location_", "npc_", "player_"]:
-            if name.startswith(prefix):
-                name = name[len(prefix):]
-                break
-        
-        # 替换下划线为空格并首字母大写
-        name = name.replace("_", " ").title()
-        
-        return name if name else node_id
+        """Infer a readable name without exposing a known type prefix."""
+        from src.graph.node_types import display_name
+        return display_name(node_id)

@@ -3,6 +3,7 @@ from typing import List, Dict, Any, Optional
 from pathlib import Path
 from loguru import logger
 
+from src.graph.node_types import normalize_type, normalize_node
 from src.memory.basic_memory import BasicMemory
 from src.graph.knowledge_graph import KnowledgeGraph
 from src.memory.attention import EntityImportanceEvaluator, DEFAULT_CONFIG
@@ -84,7 +85,7 @@ class GRAGMemory:
             entities_loaded = 0
             for entity in entities:
                 entity_name = entity.get('name')
-                entity_type = entity.get('type', 'concept')
+                entity_type, subtype = normalize_type(entity.get('type', 'other'), entity.get('subtype') or (entity.get('attributes') or {}).get('subtype'))
                 
                 if not entity_name:
                     logger.warning(f"跳过没有名称的实体: {entity}")
@@ -105,6 +106,8 @@ class GRAGMemory:
                         attributes[key] = value
                 
                 # 将实体添加到知识图谱
+                if subtype:
+                    attributes['subtype'] = subtype
                 self.knowledge_graph.add_or_update_node(entity_name, entity_type, **attributes)
                 entities_loaded += 1
             
@@ -168,9 +171,11 @@ class GRAGMemory:
             
             # 从知识图谱中获取所有节点
             for node_id, attrs in self.knowledge_graph.graph.nodes(data=True):
+                normalize_node(attrs)
                 entity = {
                     'name': node_id,
-                    'type': attrs.get('type', 'concept'),
+                    'type': attrs.get('type', 'other'),
+                    **({'subtype': attrs['subtype']} if attrs.get('subtype') else {}),
                     'description': attrs.get('description', ''),
                     'created_time': attrs.get('created_time', time.time()),
                     'last_modified': attrs.get('last_modified', time.time()),
@@ -178,7 +183,7 @@ class GRAGMemory:
                 }
                 
                 # 添加动态属性，排除系统属性
-                excluded_keys = {'type', 'description', 'created_time', 'last_modified'}
+                excluded_keys = {'type', 'subtype', 'description', 'created_time', 'last_modified'}
                 for key, value in attrs.items():
                     if key not in excluded_keys:
                         entity['attributes'][key] = value

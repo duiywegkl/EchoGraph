@@ -3,6 +3,7 @@ import re
 from typing import Dict, Any, List, TYPE_CHECKING
 from loguru import logger
 
+from src.graph.node_types import prompt_types
 from src.utils.config import config
 from src.core.rpg_text_processor import RPGTextProcessor
 from src.core.perception import PerceptionModule
@@ -109,6 +110,7 @@ class GameEngine:
                       '实体需 name/type，可选简短 description/attributes；关系需 source/target/relationship。'
                       '每个描述不超过 60 字；不要重复或编造实体；关系端点使用实体名称。\n'
                       f'角色卡：\n{card}\n世界书条目：\n{world_batch}')
+            prompt += "\n" + prompt_types()
             logger.info(f'📚 KG 批次 {index + 1}/{len(batches)} | 输入长度={len(prompt)}')
             try:
                 parsed, used = request_json(
@@ -201,7 +203,8 @@ class GameEngine:
     "entities": [
         {{
             "name": "实体名称",
-            "type": "类型（character/location/item/skill/organization/concept等）",
+            "type": "character",
+            "subtype": "optional specific category",
             "description": "实体描述",
             "attributes": {{
                 "key": "value"
@@ -232,7 +235,7 @@ class GameEngine:
 
 开始分析并输出完整JSON（确保以}}结尾）：
 """
-        return prompt.strip()
+        return (prompt + "\n" + prompt_types()).strip()
     
     def _apply_llm_analysis_results(self, parsed_data: Dict[str, Any], char_name: str) -> tuple[int, int]:
         """将LLM解析结果应用到知识图谱"""
@@ -273,7 +276,8 @@ class GameEngine:
                 attributes.update({
                     "name": entity["name"],
                     "description": entity.get("description", ""),
-                    "source": "llm_analysis"
+                    "source": "llm_analysis",
+                    **({"subtype": entity["subtype"]} if entity.get("subtype") else {})
                 })
 
                 logger.info(f"[Apply Results] 正在添加实体{i+1}: {entity['name']} ({entity.get('type', 'unknown')}) -> {entity_id}")

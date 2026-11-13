@@ -3,10 +3,9 @@
 import re
 
 
-ENTITY_TYPE_WEIGHTS = {
-    'character': 1.0, 'location': 0.8, 'item': 0.7,
-    'event': 0.6, 'concept': 0.4,
-}
+from src.graph.node_types import TYPE_IDS
+
+ENTITY_TYPE_WEIGHTS = dict(zip(TYPE_IDS, (1.0, 0.8, 0.7, 0.6, 0.4, 0.3)))
 RELATIONSHIP_WEIGHTS = {
     'owns': 0.8, 'controls': 0.9, 'manages': 0.8, 'created': 0.7,
     'located_in': 0.6, 'uses': 0.5, 'follows': 0.3,

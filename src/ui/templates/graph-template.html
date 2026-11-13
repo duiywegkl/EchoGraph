@@ -57,7 +57,7 @@
     </div>
     
     <div class="tooltip" id="tooltip"></div>
-    <div class="legend"><span><i style="--dot:var(--character)"></i>角色</span><span><i style="--dot:var(--location)"></i>地点</span><span><i style="--dot:var(--item)"></i>物品</span><span><i style="--dot:var(--event)"></i>事件</span><span><i style="--dot:var(--concept)"></i>概念</span></div>
+    <div class="legend">{{TYPE_LEGEND}}</div>
     
     <div id="fallback" class="fallback">
         <h2>知识图谱 - 简化视图</h2>
@@ -78,6 +78,7 @@
         window.graphNodes = {{NODES_DATA}};
         window.graphLinks = {{LINKS_DATA}};
         window.graphLayout = {{LAYOUT_DATA}};
+        window.graphTypes = {{TYPE_METADATA}};
         
         console.log('页面加载开始');
         console.log('节点数据:', window.graphNodes);

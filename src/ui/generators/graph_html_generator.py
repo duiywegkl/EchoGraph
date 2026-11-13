@@ -2,8 +2,14 @@
 知识图谱HTML模板生成器
 生成D3.js交互式图谱的HTML页面
 """
+import json
 from pathlib import Path
 from src.ui.theme import css_variables
+from src.graph.node_types import NODE_TYPES
+
+
+def legend_html():
+    return "".join(f'<span><i style="--dot:var(--{kind.id})"></i>{kind.label}</span>' for kind in NODE_TYPES)
 
 
 class GraphHTMLGenerator:
@@ -45,8 +51,8 @@ class GraphHTMLGenerator:
             template = template.replace('<head>', f'<head>\n    <base href="{base_href}">')
 
         # 替换模板中的占位符
-        html_content = template.replace('/*THEME_VARS*/', css_variables()).replace('{{NODES_DATA}}', nodes_json)
-        html_content = html_content.replace('{{LINKS_DATA}}', links_json)
+        html_content = template.replace('/*THEME_VARS*/', css_variables()).replace('{{TYPE_LEGEND}}', legend_html()).replace('{{NODES_DATA}}', nodes_json)
+        html_content = html_content.replace('{{TYPE_METADATA}}', json.dumps([{'id': t.id, 'label': t.label} for t in NODE_TYPES], ensure_ascii=False)).replace('{{LINKS_DATA}}', links_json)
         html_content = html_content.replace('{{LAYOUT_DATA}}', layout_json)
 
         # 注入本地D3绝对路径，确保在受限环境下也能加载
@@ -79,13 +85,13 @@ class GraphHTMLGenerator:
 <div class="force-control"><label>中心引力:</label><input type="range" id="centerStrengthSlider" min="0" max="0.3" step="0.01" value="0"><span id="centerStrengthValue">0</span></div>
 <div class="force-control"><button onclick="resetToSmart()">智能参数</button><button onclick="applyForceChanges()">应用设置</button></div></div>
 <div class="graph-container" id="graphContainer"><svg id="graph" width="100%" height="100%"></svg></div><div class="tooltip" id="tooltip"></div>
-<div class="legend"><span><i style="--dot:var(--character)"></i>角色</span><span><i style="--dot:var(--location)"></i>地点</span><span><i style="--dot:var(--item)"></i>物品</span><span><i style="--dot:var(--event)"></i>事件</span><span><i style="--dot:var(--concept)"></i>概念</span></div>
+<div class="legend">{{TYPE_LEGEND}}</div>
 <div id="fallback" class="fallback"><h2>知识图谱 - 简化视图</h2><div class="entity-grid" id="entityGrid"></div>
 <p>网络访问受限，无法加载D3.js库，显示简化版本<br><small>已尝试从CDN和本地文件加载D3.js</small></p>
 <button onclick="location.reload()">重新加载</button></div>
-<script>window.graphNodes = {{NODES_DATA}}; window.graphLinks = {{LINKS_DATA}}; window.graphLayout = {{LAYOUT_DATA}};</script>
+<script>window.graphNodes = {{NODES_DATA}}; window.graphLinks = {{LINKS_DATA}}; window.graphLayout = {{LAYOUT_DATA}}; window.graphTypes = {{TYPE_METADATA}};</script>
 <script src="assets/js/graph/graph-layout.js"></script><script src="assets/js/graph/graph-core.js"></script></body></html>"""
-        html_content = html_content.replace('/*THEME_VARS*/', css_variables()).replace('{{NODES_DATA}}', nodes_json).replace('{{LINKS_DATA}}', links_json).replace('{{LAYOUT_DATA}}', layout_json)
+        html_content = html_content.replace('/*THEME_VARS*/', css_variables()).replace('{{TYPE_LEGEND}}', legend_html()).replace('{{NODES_DATA}}', nodes_json).replace('{{TYPE_METADATA}}', json.dumps([{'id': t.id, 'label': t.label} for t in NODE_TYPES], ensure_ascii=False)).replace('{{LINKS_DATA}}', links_json).replace('{{LAYOUT_DATA}}', layout_json)
 
         # 为内置模板注入本地D3绝对路径（若存在对应标签）
         try:

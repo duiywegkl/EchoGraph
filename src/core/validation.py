@@ -5,25 +5,14 @@ import os
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from loguru import logger
+from src.graph.node_types import TYPE_IDS, normalize_type
 
 
 class ValidationLayer:
     """Knowledge-graph update validator with structural and semantic checks."""
 
     # Known node types used by current extractors and graph pipeline.
-    KNOWN_NODE_TYPES: Set[str] = {
-        "character",
-        "weapon",
-        "armor",
-        "consumable",
-        "location",
-        "guild_organization",
-        "skill",
-        "item",
-        "organization",
-        "world",
-        "unknown",
-    }
+    KNOWN_NODE_TYPES: Set[str] = set(TYPE_IDS) | {"unknown"}
 
     # Relation -> (allowed source types, allowed target types)
     RELATION_RULES: Dict[str, Tuple[Set[str], Set[str]]] = {
@@ -423,6 +412,8 @@ class ValidationLayer:
             return True
 
         source_allowed, target_allowed = rule
+        source_allowed = {normalize_type(kind)[0] for kind in source_allowed}
+        target_allowed = {normalize_type(kind)[0] for kind in target_allowed}
         source_known = source_type in self.KNOWN_NODE_TYPES and source_type != "unknown"
         target_known = target_type in self.KNOWN_NODE_TYPES and target_type != "unknown"
 
@@ -447,7 +438,7 @@ class ValidationLayer:
         try:
             if graph is None or not graph.has_node(node_id):
                 return ""
-            return str(graph.nodes[node_id].get("type", "")).strip().lower()
+            return normalize_type(graph.nodes[node_id].get("type", ""))[0]
         except Exception:
             return ""
 
@@ -477,7 +468,7 @@ class ValidationLayer:
 
     def _normalize_node_type(self, node_type: Any) -> str:
         cleaned = self._clean_str(node_type)
-        return cleaned.lower() if cleaned else "unknown"
+        return normalize_type(cleaned)[0] if cleaned else "unknown"
 
     def _normalize_relationship(self, relationship: str) -> str:
         normalized = relationship.lower().strip()

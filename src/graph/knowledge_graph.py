@@ -1,5 +1,6 @@
 import networkx as nx
 import json
+from src.graph.node_types import normalize_type, normalize_node
 from loguru import logger
 from typing import List, Dict, Any, Optional, Tuple
 
@@ -25,7 +26,9 @@ class KnowledgeGraph:
             **kwargs: 节点的其他属性，例如 {"health": 100, "status": "alive"}。
         """
         attributes = kwargs.copy()
-        attributes['type'] = node_type
+        attributes['type'], detail = normalize_type(node_type, attributes.get('subtype'))
+        if detail:
+            attributes['subtype'] = detail
 
         if self.graph.has_node(node_id):
             self.graph.nodes[node_id].update(attributes)
@@ -185,6 +188,7 @@ class KnowledgeGraph:
         try:
             self.graph = nx.read_graphml(file_path)
             for _, data in self.graph.nodes(data=True):
+                normalize_node(data)
                 for key, value in data.items():
                     # 检查值是否为字符串，并且看起来像一个JSON列表
                     if isinstance(value, str) and value.startswith('[') and value.endswith(']'):

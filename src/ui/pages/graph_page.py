@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtWebChannel import QWebChannel
 
 from ..generators.graph_html_generator import GraphHTMLGenerator
+from src.ui.graph_temp_files import graph_page_path
 from src.ui.managers.scenario_manager import ScenarioManager
 
 try:
@@ -74,11 +75,7 @@ class GraphPage(QWidget):
         super().__init__(parent)
         self.memory = memory_system
 
-        # 输出HTML位置（仓库根目录/generated/graph.html）
-        repo_root = Path(__file__).resolve().parents[3]
-        out_dir = repo_root / "generated"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        self.graph_file_path = (out_dir / "graph.html").resolve()
+        self.graph_file_path = graph_page_path()
 
         # WebChannel（必须在加载前设置，避免 JS 中 qt 未定义）
         self.channel = QWebChannel()

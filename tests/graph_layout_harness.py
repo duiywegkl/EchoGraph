@@ -14,7 +14,7 @@ from types import SimpleNamespace
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 SOURCE = ROOT / "data/tavern_characters/重生我要成为末世之王/sessions/current"
-SHOTS = Path(tempfile.gettempdir()) / "echograph-layout-shots-v2"
+SHOTS = Path(tempfile.gettempdir()) / "echograph-types-shots"
 
 
 def md5(path):
@@ -23,8 +23,12 @@ def md5(path):
 
 def real_graph(copy_dir):
     import networkx as nx
+    from src.graph.node_types import normalize_node, display_name
     graph = nx.read_graphml(copy_dir / "knowledge_graph.graphml")
-    nodes = [{"id": key, "type": attrs.get("type", "concept"),
+    for _, attrs in graph.nodes(data=True):
+        normalize_node(attrs)
+    nodes = [{"id": key, "name": display_name(key, attrs.get("name")),
+              "type": attrs.get("type", "other"), "subtype": attrs.get("subtype", ""),
               "description": attrs.get("description", ""),
               "is_main_character": bool(attrs.get("is_main_character"))}
              for key, attrs in graph.nodes(data=True)]
@@ -168,9 +172,15 @@ def child(theme, workdir):
         assert page.graph_view.grab().save(str(path))
         return path
 
+    from collections import Counter
+    print(f"{theme} real type distribution: {dict(Counter(n['type'] for n in state['data']['graph_data']['nodes']))}", flush=True)
     for key, session, data in (("a", "session-a", real_graph(workdir / "local")),
                                ("b", "session-b", hub_graph(80))):
         load(session, data)
+        if key == "a":
+            assert js("nodes.every(d => !d.name.startsWith(d.id.split('_')[0] + '_'))")
+            assert js("new Set(nodes.map(d => graphColor(d.type))).size >= 4")
+            assert js("(()=>{const el=[...document.querySelectorAll('.node-group')].find(e=>e.__data__.subtype); el.dispatchEvent(new MouseEvent('mouseover',{bubbles:true})); return document.querySelector('#tooltip').innerHTML.includes(String.fromCharCode(183));})()")
         # Reproduce a previously saved, widely spread force layout as the before state.
         js("""(() => {
           simulation.stop(); nodes.forEach(d => {d.fx=null; d.fy=null});
@@ -203,7 +213,7 @@ def child(theme, workdir):
     page.edit_node_with_python_dialog = lambda *args: edits.append(args)
     js("document.querySelector('.node-group').dispatchEvent(new MouseEvent('click',{bubbles:true,detail:1})); true")
     pump(0.35)
-    assert len(edits) == 1, edits
+    assert len(edits) == 1 and edits[0][0] == state["data"]["graph_data"]["nodes"][0]["id"], edits
     js("(()=>{const n=document.querySelector('.node-group'); n.dispatchEvent(new MouseEvent('click',{bubbles:true,detail:1})); n.dispatchEvent(new MouseEvent('dblclick',{bubbles:true,detail:2})); return true})()")
     pump(0.35)
     assert len(edits) == 2, edits
@@ -273,7 +283,7 @@ def main():
             env.update(QT_QPA_PLATFORM="offscreen", QT_QPA_FONTDIR="C:/Windows/Fonts",
                        QTWEBENGINE_DISABLE_SANDBOX="1", QTWEBENGINE_CHROMIUM_FLAGS="--no-sandbox --disable-gpu")
             result = subprocess.run([sys.executable, str(Path(__file__).resolve()), "--child", theme, str(workdir)],
-                                    cwd=ROOT, env=env, capture_output=True, text=True, timeout=240)
+                                    cwd=workdir, env=env, capture_output=True, text=True, timeout=240)
             print(result.stdout, end="")
             if result.returncode:
                 print(result.stderr[-12000:], file=sys.stderr)

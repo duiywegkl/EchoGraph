@@ -5,6 +5,7 @@ from typing import Callable
 
 import json_repair
 from loguru import logger
+from src.graph.node_types import TYPE_IDS, SYNONYMS, normalize_type
 
 
 def validate_kg(value):
@@ -16,9 +17,24 @@ def validate_kg(value):
     main = value.get('main_character')
     if main is not None and (not isinstance(main, dict) or not isinstance(main.get('name'), str) or not main['name'].strip()):
         raise ValueError('main_character.name 无效')
+    if main is not None:
+        raw_main = main.get('type', 'character')
+        if not isinstance(raw_main, str) or raw_main.strip() not in TYPE_IDS and raw_main.strip().casefold() not in SYNONYMS:
+            raise ValueError('main_character.type ??')
+        main['type'], detail = normalize_type(raw_main, main.get('subtype'))
+        if detail:
+            main['subtype'] = detail
     for index, item in enumerate(value['entities']):
         if not isinstance(item, dict) or any(not isinstance(item.get(k), str) or not item[k].strip() for k in ('name', 'type')):
             raise ValueError(f'entities[{index}] 缺少 name/type')
+        if 'subtype' in item and not isinstance(item['subtype'], str):
+            raise ValueError(f'entities[{index}].subtype ??')
+        raw = item['type'].strip()
+        if raw not in TYPE_IDS and raw.casefold() not in SYNONYMS:
+            raise ValueError(f'entities[{index}].type 无效: {raw}')
+        item['type'], detail = normalize_type(raw, item.get('subtype'))
+        if detail:
+            item['subtype'] = detail
     for index, item in enumerate(value['relationships']):
         if not isinstance(item, dict) or any(not isinstance(item.get(k), str) or not item[k].strip() for k in ('source', 'target', 'relationship')):
             raise ValueError(f'relationships[{index}] 缺少 source/target/relationship')
@@ -30,6 +46,26 @@ def validate_operations(value):
         raise ValueError('operations 必须是数组')
     if any(not isinstance(op, dict) for op in value['operations']):
         raise ValueError('operations 含非对象项目')
+    for index, op in enumerate(value['operations']):
+        if op.get('type') == 'add_node':
+            if 'subtype' in op and not isinstance(op['subtype'], str):
+                raise ValueError(f'operations[{index}].subtype ??')
+            raw = op.get('node_type')
+            if not isinstance(raw, str) or not raw.strip():
+                raise ValueError(f'operations[{index}].node_type 无效')
+            if raw.strip() not in TYPE_IDS and raw.strip().casefold() not in SYNONYMS:
+                raise ValueError(f'operations[{index}].node_type 无效: {raw}')
+            op['node_type'], detail = normalize_type(raw, op.get('subtype'))
+            if detail:
+                op['subtype'] = detail
+        attrs = op.get('attributes')
+        if isinstance(attrs, dict) and 'type' in attrs:
+            raw = attrs['type']
+            if not isinstance(raw, str) or (raw.strip() not in TYPE_IDS and raw.strip().casefold() not in SYNONYMS):
+                raise ValueError(f'operations[{index}].attributes.type ??')
+            attrs['type'], detail = normalize_type(raw, attrs.get('subtype'))
+            if detail:
+                attrs['subtype'] = detail
     return value
 
 

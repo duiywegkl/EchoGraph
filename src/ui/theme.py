@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+from src.graph.node_types import TYPE_IDS
 
 from dotenv import dotenv_values
 
@@ -20,10 +21,9 @@ PALETTES = {
         "OVERLAY": "rgba(62,47,36,0.28)", "SCROLLBAR": "rgba(62,47,36,0.18)",
         "SCROLLBAR_HOVER": "rgba(62,47,36,0.30)",
         "USER_BORDER": "rgba(173,139,115,0.35)",
-        "NODE_TYPE_COLORS": {
-            "character": "#A06A50", "location": "#6F8A5A", "item": "#557C96",
-            "event": "#A8574F", "concept": "#7E6F9E", "other": "#9C8C7C",
-        },
+        "NODE_TYPE_COLORS": dict(zip(TYPE_IDS, (
+            "#A06A50", "#6F8A5A", "#557C96",
+            "#A8574F", "#7E6F9E", "#9C8C7C"))),
     },
     "ink": {
         "BG_BASE": "#141312", "BG_SURFACE": "#1b1a18", "BG_RAISED": "#23211e",
@@ -38,10 +38,9 @@ PALETTES = {
         "OVERLAY": "rgba(0,0,0,0.55)", "SCROLLBAR": "rgba(232,227,217,0.14)",
         "SCROLLBAR_HOVER": "rgba(232,227,217,0.24)",
         "USER_BORDER": "rgba(201,160,99,0.35)",
-        "NODE_TYPE_COLORS": {
-            "character": "#c9a063", "location": "#8fae78", "item": "#7f9fbf",
-            "event": "#c27b86", "concept": "#968cb4", "other": "#8a847a",
-        },
+        "NODE_TYPE_COLORS": dict(zip(TYPE_IDS, (
+            "#c9a063", "#8fae78", "#7f9fbf",
+            "#c27b86", "#968cb4", "#8a847a"))),
     },
 }
 

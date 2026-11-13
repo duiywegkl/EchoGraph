@@ -1,4 +1,5 @@
 import uvicorn
+from src.graph.node_types import TYPE_IDS, SYNONYMS, normalize_type, normalize_node
 from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
@@ -1379,13 +1380,21 @@ def _manual_edit_endpoint(action):
 async def create_node(session_id: str, node_data: dict):
     engine = _edit_session(session_id)
     name = _required_text(node_data, "name")
-    kind = _required_text(node_data, "type")
+    raw_kind = _required_text(node_data, "type")
+    if raw_kind not in TYPE_IDS and raw_kind.casefold() not in SYNONYMS:
+        raise HTTPException(status_code=400, detail=f"Invalid node type: {raw_kind}")
+    if "subtype" in node_data and not isinstance(node_data["subtype"], str):
+        raise HTTPException(status_code=400, detail="subtype must be a string")
+    kind, subtype = normalize_type(raw_kind, node_data.get("subtype"))
     graph = engine.memory.knowledge_graph.graph
     if graph.has_node(name):
         raise HTTPException(status_code=409, detail=f"Node '{name}' already exists")
     attributes = node_data.get("attributes", {})
     if not isinstance(attributes, dict):
         raise HTTPException(status_code=400, detail="attributes must be an object")
+    if subtype:
+        attributes["subtype"] = subtype
+    attributes.setdefault("name", name)
     engine.memory.add_or_update_node(name, kind, description=node_data.get("description", ""), **attributes)
     payload = await _manual_edit_saved(session_id, engine, "node_created", name)
     return {"success": True, "node_name": name, **payload}
@@ -1403,9 +1412,14 @@ async def update_node(session_id: str, old_node_name: str, node_data: dict):
     name = _required_text(node_data, "name") if "name" in node_data else old_node_name
     if name != old_node_name and graph.has_node(name):
         raise HTTPException(status_code=409, detail=f"Node '{name}' already exists")
-    kind = node_data.get("type", graph.nodes[old_node_name].get("type", "concept"))
-    if not isinstance(kind, str) or not kind.strip():
+    raw_kind = node_data.get("type", graph.nodes[old_node_name].get("type", "other"))
+    if not isinstance(raw_kind, str) or not raw_kind.strip():
         raise HTTPException(status_code=400, detail="Missing type")
+    if raw_kind not in TYPE_IDS and raw_kind.strip().casefold() not in SYNONYMS:
+        raise HTTPException(status_code=400, detail=f"Invalid node type: {raw_kind}")
+    if "subtype" in node_data and not isinstance(node_data["subtype"], str):
+        raise HTTPException(status_code=400, detail="subtype must be a string")
+    kind, subtype = normalize_type(raw_kind, node_data.get("subtype", graph.nodes[old_node_name].get("subtype")))
     attributes = node_data.get("attributes", {})
     if not isinstance(attributes, dict):
         raise HTTPException(status_code=400, detail="attributes must be an object")
@@ -1413,6 +1427,9 @@ async def update_node(session_id: str, old_node_name: str, node_data: dict):
         if not engine.memory.rename_node(old_node_name, name):
             raise HTTPException(status_code=500, detail=f"Failed to rename node '{old_node_name}' to '{name}'")
     description = node_data.get("description", graph.nodes[name].get("description", ""))
+    if subtype:
+        attributes["subtype"] = subtype
+    attributes.setdefault("name", name)
     engine.memory.add_or_update_node(name, kind, description=description, **attributes)
     payload = await _manual_edit_saved(session_id, engine, "node_updated", name)
     return {"success": True, "message": "Node updated successfully", "node_name": name,
@@ -2338,6 +2355,8 @@ async def export_session_graph(session_id: str):
         from datetime import datetime
 
         graph_data = json_graph.node_link_data(engine.memory.knowledge_graph.graph)
+        for node in graph_data["nodes"]:
+            normalize_node(node)
 
         # 添加元数据
         export_data = {

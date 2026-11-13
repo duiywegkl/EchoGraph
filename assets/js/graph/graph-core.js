@@ -1,6 +1,8 @@
 const graphStyle = getComputedStyle(document.documentElement);
 const graphColor = name => graphStyle.getPropertyValue('--' + name).trim();
-const GRAPH_TYPE_COLORS = Object.fromEntries(['character','location','item','event','concept','other'].map(t => [t, graphColor(t)]));
+const GRAPH_TYPES = window.graphTypes || [];
+const GRAPH_TYPE_NAMES = Object.fromEntries(GRAPH_TYPES.map(t => [t.id, t.label]));
+const GRAPH_TYPE_COLORS = Object.fromEntries(GRAPH_TYPES.map(t => [t.id, graphColor(t.id)]));
 let nodeDegrees = new Map();
 function updateNodeDegrees() {
     nodeDegrees = new Map(nodes.map(d => [d.id, 0]));
@@ -311,13 +313,13 @@ function generateEntityCards() {
     const entityGrid = document.getElementById('entityGrid');
     const typeColors = GRAPH_TYPE_COLORS;
 
-    const typeNames = {character:'角色',location:'地点',item:'物品',event:'事件',concept:'概念',other:'其他'};
+    const typeNames = GRAPH_TYPE_NAMES;
     let cardsHtml = '';
     nodes.forEach(node => {
         const color = typeColors[node.type] || GRAPH_TYPE_COLORS.other;
         cardsHtml += `
             <div class="entity-card" style="border-color: ${color};">
-                <div class="entity-type" style="color: ${color};">${typeNames[node.type] || typeNames.other}</div>
+                <div class="entity-type" style="color: ${color};">${typeNames[node.type] || typeNames.other}${node.subtype ? ' · ' + node.subtype : ''}</div>
                 <div class="entity-name">${node.name}</div>
                 <div class="entity-desc">${node.description || '暂无描述'}</div>
             </div>
@@ -424,6 +426,7 @@ function initializeGraph() {
         // 在节点组中添加圆圈
         node = nodeGroup.append("circle")
             .attr("class", d => `node ${d.type}`)
+            .style("fill", d => GRAPH_TYPE_COLORS[d.type] || GRAPH_TYPE_COLORS.other)
             .attr("r", d => nodeRadius(d));
 
         // 在节点组中添加文字标签
@@ -482,7 +485,7 @@ function initializeGraph() {
  */
 function openNodeEditor(d) {
     if (bridge && bridge.editNode) {
-        bridge.editNode(d.name, d.type);
+        bridge.editNode(d.id, d.type);
     } else {
         const message = "节点编辑暂不可用：与应用的连接尚未就绪，请刷新图谱后重试。";
         console.error(message);
@@ -496,7 +499,7 @@ function setupEventHandlers(nodeGroup) {
         highlightNeighbours(d);
         tooltip.style("opacity", 1)
             .html(`<strong>${d.name}</strong><br/>
-                   类型: ${d.type}<br/>
+                   类型: ${GRAPH_TYPE_NAMES[d.type] || GRAPH_TYPE_NAMES.other}${d.subtype ? ' · ' + d.subtype : ''}<br/>
                    描述: ${d.description || '暂无描述'}`)
             .style("left", (event.pageX + 10) + "px")
             .style("top", (event.pageY - 10) + "px");
