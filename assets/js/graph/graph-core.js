@@ -24,11 +24,20 @@ function edgeEndpoints(d) {
     const uy = distance ? dy / distance : 0;
     const sourceOffset = Math.min(nodeRadius(d.source), distance / 2);
     const targetOffset = Math.min(nodeRadius(d.target) + 2, distance / 2);
+    const sourceId = d.source.id || d.source;
+    const targetId = d.target.id || d.target;
+    const pair = [sourceId, targetId].sort().join('\u0000');
+    const parallel = links.filter(l => [(l.source.id || l.source), (l.target.id || l.target)].sort().join('\u0000') === pair)
+        .sort((a, b) => String(a.id || '').localeCompare(String(b.id || '')));
+    const rank = parallel.indexOf(d);
+    const offset = (rank - (parallel.length - 1) / 2) * 22 * (sourceId <= targetId ? 1 : -1);
+    const px = distance ? -dy / distance * offset : offset;
+    const py = distance ? dx / distance * offset : 0;
     return {
-        x1: d.source.x + ux * sourceOffset,
-        y1: d.source.y + uy * sourceOffset,
-        x2: d.target.x - ux * targetOffset,
-        y2: d.target.y - uy * targetOffset
+        x1: d.source.x + ux * sourceOffset + px,
+        y1: d.source.y + uy * sourceOffset + py,
+        x2: d.target.x - ux * targetOffset + px,
+        y2: d.target.y - uy * targetOffset + py
     };
 }
 function positionLinks(selection) {
@@ -891,9 +900,31 @@ function openRelationEditDialog(linkData) {
     const source = linkData.source.id || linkData.source;
     const target = linkData.target.id || linkData.target;
     relationDialog(`${source} → ${target}`, linkData.relation || '', true,
-        value => { if (bridge && bridge.updateRelationship) bridge.updateRelationship(source, target, value); },
-        () => { if (bridge && bridge.deleteRelationship) bridge.deleteRelationship(source, target); });
+        value => {
+            if (bridge && linkData.id && bridge.updateRelationshipById)
+                bridge.updateRelationshipById(linkData.id, source, target, value);
+            else if (bridge && bridge.updateRelationship) bridge.updateRelationship(source, target, value);
+        },
+        () => {
+            if (bridge && linkData.id && bridge.deleteRelationshipById)
+                bridge.deleteRelationshipById(linkData.id, source, target);
+            else if (bridge && bridge.deleteRelationship) bridge.deleteRelationship(source, target);
+        });
 }
+
+document.addEventListener('keydown', event => {
+    if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+    const element = document.activeElement;
+    if (element && (element.isContentEditable || ['INPUT', 'TEXTAREA'].includes(element.tagName))) return;
+    const key = event.key.toLowerCase();
+    if (key === 'z' && !event.shiftKey && bridge && bridge.undoManual) {
+        event.preventDefault();
+        bridge.undoManual();
+    } else if ((key === 'y' || (key === 'z' && event.shiftKey)) && bridge && bridge.redoManual) {
+        event.preventDefault();
+        bridge.redoManual();
+    }
+});
 
 /**
  * 更新可视化

@@ -231,7 +231,7 @@ function fitGraphToView() {
     const fitted = Math.min(4, (width - 2 * margin) / Math.max(1, bounds.right - bounds.left),
         (height - topMargin - margin) / Math.max(1, bounds.bottom - bounds.top));
     const fontPx = parseFloat(getComputedStyle(label.node()).fontSize) || 12;
-    const scale = Math.max(MIN_READABLE_LABEL_PX / fontPx, fitted);
+    const scale = Math.min(1.5, Math.max(MIN_READABLE_LABEL_PX / fontPx, fitted));
     const anchor = fitted >= scale ? {x: (bounds.left + bounds.right) / 2, y: (bounds.top + bounds.bottom) / 2} :
         window.currentLayoutKind === 'type' ? {x: d3.mean(nodes, d => d.x), y: d3.mean(nodes, d => d.y)} : mainNode();
     const transform = d3.zoomIdentity.translate(width / 2 - scale * anchor.x,

@@ -157,6 +157,12 @@ def build_app_stylesheet(palette=None) -> str:
     QPushButton[variant="danger"] {{ border-color: {DANGER}; color: {DANGER}; }}
     QPushButton[variant="danger"]:hover, QPushButton[variant="danger"]:checked {{ background: {DANGER_SUBTLE}; }}
     QPushButton:disabled {{ background: transparent; border-color: {BORDER}; color: {TEXT_MUTED}; }}
+    QPushButton[variant="primary"]:disabled, QPushButton[variant="danger"]:disabled {{ background: transparent; border-color: {BORDER}; color: {TEXT_MUTED}; }}
+    QPushButton[variant="ghost"]:disabled {{ background: transparent; border-color: transparent; color: {TEXT_MUTED}; }}
+    QPushButton[role="chatAction"] {{ min-height: 20px; padding: 0 5px; border-color: transparent; color: {TEXT_MUTED}; font-size: 11px; }}
+    QPushButton[role="chatAction"]:hover {{ background: {BG_RAISED}; color: {TEXT_SECONDARY}; }}
+    QPushButton[role="chatAction"]:disabled {{ background: transparent; border-color: transparent; color: {TEXT_MUTED}; }}
+    QLabel[role="chatActionCount"] {{ color: {TEXT_MUTED}; font-size: 11px; padding: 0 2px; }}
     QLineEdit, QTextEdit, QPlainTextEdit, QComboBox, QSpinBox, QDoubleSpinBox {{ min-height: 18px; background: {BG_INPUT}; color: {TEXT_PRIMARY}; border: 1px solid {BORDER_STRONG}; border-radius: 6px; padding: 6px 10px; selection-background-color: {ACCENT_SUBTLE}; selection-color: {TEXT_PRIMARY}; }}
     QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {{ border-color: {ACCENT}; }}
     QComboBox {{ padding-right: 34px; }}

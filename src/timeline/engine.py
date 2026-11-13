@@ -92,6 +92,12 @@ class TimelineEngine:
         with lock:
             return self._sync_locked(chat_uuid, messages)
 
+    def invalidate(self, chat_uuid):
+        """Prevent an in-flight process from publishing a stale head."""
+        lock, _ = self._chat_locks(chat_uuid)
+        with lock:
+            self._generation[chat_uuid] = self._generation.get(chat_uuid, 0) + 1
+
     @staticmethod
     def _validated_ops(raw, turns):
         if not isinstance(raw, list):

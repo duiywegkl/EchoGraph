@@ -11,6 +11,7 @@ import os
 _EXTERNAL_UI_THEME = os.environ.get("UI_THEME")
 
 import time
+import uuid
 import traceback
 import re
 from html import escape
@@ -31,7 +32,7 @@ from PySide6.QtCore import Qt, QObject, Signal as pyqtSignal, QUrl, Slot, QTimer
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebChannel import QWebChannel
-from PySide6.QtGui import QIcon, QFont, QColor, QIntValidator, QTextCursor, QPainter, QPen, QBrush
+from PySide6.QtGui import QIcon, QFont, QColor, QIntValidator, QTextCursor, QPainter, QPen, QBrush, QShortcut, QKeySequence
 from dotenv import dotenv_values, set_key
 from loguru import logger
 
@@ -54,6 +55,16 @@ from src.ui.value_unit_input import UnitSpec, ValueUnitInput
 from src.ui.managers.resource_cleanup_manager import ResourceCleanupManager
 # 导入酒馆连接器
 from src.ui.generators.graph_html_generator import GraphHTMLGenerator
+from src.timeline.store import TimelineStore
+from src.timeline.engine import TimelineEngine
+from src.timeline.extractor import TimelineExtractor
+from src.timeline.manual import ManualLayer, effective_state
+from src.timeline.local import (active_content, normalize_conversation, timeline_messages,
+                                register_local, state_to_memory, example_state)
+
+
+def local_data_root():
+    return Path(os.environ.get('ECHOGRAPH_DATA_ROOT', str(Path(__file__).parent / 'data')))
 
 class ChatBubble(QFrame):
     """聊天气泡组件"""
@@ -90,6 +101,12 @@ class ChatBubble(QFrame):
     def setup_ui(self):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(16, 8, 16, 8)
+        layout.setSpacing(0)
+
+        self.content_column = QWidget(self)
+        self.content_layout = QVBoxLayout(self.content_column)
+        self.content_layout.setContentsMargins(0, 0, 0, 0)
+        self.content_layout.setSpacing(2)
 
         # 创建消息标签
         message_label = QLabel(self.message)
@@ -109,14 +126,15 @@ class ChatBubble(QFrame):
         message_label.setProperty("role", "userBubble" if self.is_user else "aiBubble")
         message_label.setMaximumWidth(720 if not self.is_user else 560)
         message_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.content_layout.addWidget(message_label)
 
         if self.is_user:
             # 用户消息右对齐
             layout.addStretch()
-            layout.addWidget(message_label)
+            layout.addWidget(self.content_column)
         else:
             # AI消息左对齐
-            layout.addWidget(message_label)
+            layout.addWidget(self.content_column)
             layout.addStretch()
 
 class LoadingBubble(QFrame):
@@ -348,6 +366,22 @@ class GraphBridge(QObject):
     def deleteRelationship(self, source_name, target_name):
         self.graph_page.mutate_relationship("delete", source_name, target_name)
 
+    @Slot(str, str, str, str)
+    def updateRelationshipById(self, edge_id, source_name, target_name, relation_type):
+        self.graph_page.mutate_relationship('update', source_name, target_name, relation_type, edge_id)
+
+    @Slot(str, str, str)
+    def deleteRelationshipById(self, edge_id, source_name, target_name):
+        self.graph_page.mutate_relationship('delete', source_name, target_name, edge_id=edge_id)
+
+    @Slot()
+    def undoManual(self):
+        self.graph_page.undo_manual()
+
+    @Slot()
+    def redoManual(self):
+        self.graph_page.redo_manual()
+
     @Slot(str)
     def log(self, message):
         """JavaScript日志输出到Python"""
@@ -362,6 +396,8 @@ class ConversationManager(QObject):
 
     def __init__(self, storage_path: Path):
         super().__init__()
+        self.root = storage_path
+        self.timeline_store = TimelineStore(storage_path / 'timeline')
         self.storage_path = storage_path / "conversations"
         self.storage_path.mkdir(exist_ok=True, parents=True)
         self.current_conversation_id: Optional[str] = None
@@ -376,9 +412,22 @@ class ConversationManager(QObject):
             try:
                 with open(conv_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
+                    graph_path = self.root / 'graphs' / data['id'] / 'knowledge_graph.graphml'
+                    legacy_messages = data.get('messages', [])
+                    if (len(legacy_messages) == 1 and 'swipes' not in legacy_messages[0]
+                            and legacy_messages[0].get('role') == 'assistant'
+                            and graph_path.exists()
+                            and '克罗诺' in legacy_messages[0].get('content', '')
+                            and '千年祭' in legacy_messages[0].get('content', '')):
+                        data['name'] = '0号对话'
+                    normalize_conversation(data)
                     self.conversations[data['id']] = data
+                    register_local(self.timeline_store, data, graph_path)
             except Exception as e:
                 logger.error(f"Failed to load conversation {conv_file}: {e}")
+
+        if not self.conversations:
+            self.create_conversation('0号对话', example=True)
 
         # 按最后修改时间排序
         sorted_conversations = sorted(
@@ -394,10 +443,8 @@ class ConversationManager(QObject):
             self.current_conversation_id = sorted_conversations[0]['id']
             self.conversation_changed.emit(self.current_conversation_id)
 
-    def create_conversation(self, name: str = None) -> str:
+    def create_conversation(self, name: str = None, *, example=False) -> str:
         """创建新对话"""
-        import uuid
-
         conv_id = str(uuid.uuid4())
         if not name:
             name = f"新对话 {len(self.conversations) + 1}"
@@ -408,17 +455,22 @@ class ConversationManager(QObject):
             'messages': [],
             'created_time': time.time(),
             'last_modified': time.time(),
-            'metadata': {}
+            'metadata': {'integrity': str(uuid.uuid4())}
         }
+        if example:
+            opening, _ = example_state()
+            conversation['messages'].append(self._message('assistant', opening))
 
         self.conversations[conv_id] = conversation
+        register_local(self.timeline_store, conversation, example=example)
         self._save_conversation(conversation)
 
         # 切换到新对话
         self.current_conversation_id = conv_id
 
         # 重新加载更新列表，但不要触发自动选择逻辑
-        self.load_conversations()
+        if not example:
+            self.load_conversations()
 
         # 手动发出对话切换信号
         self.conversation_changed.emit(conv_id)
@@ -486,10 +538,57 @@ class ConversationManager(QObject):
         """添加消息到当前对话"""
         conv = self.get_current_conversation()
         if conv:
-            message['timestamp'] = time.time()
-            conv['messages'].append(message)
+            conv['messages'].append(self._message(message['role'], message['content']))
             conv['last_modified'] = time.time()
             self._save_conversation(conv)
+
+    @staticmethod
+    def _message(role, content):
+        return {'msg_id': str(uuid.uuid4()), 'role': role, 'active': 0,
+                'swipes': [{'version_id': str(uuid.uuid4()), 'content': content,
+                            'timestamp': time.time()}]}
+
+    def add_swipe(self, index, content):
+        conv = self.get_current_conversation()
+        msg = conv['messages'][index]
+        msg['swipes'].append({'version_id': str(uuid.uuid4()), 'content': content,
+                              'timestamp': time.time()})
+        msg['active'] = len(msg['swipes']) - 1
+        self._save_conversation(conv)
+
+    def switch_swipe(self, index, active):
+        conv = self.get_current_conversation()
+        msg = conv['messages'][index]
+        if 0 <= active < len(msg['swipes']):
+            msg['active'] = active
+            self._save_conversation(conv)
+
+    def edit_message(self, index, content):
+        conv = self.get_current_conversation()
+        conv['messages'][index]['swipes'][conv['messages'][index]['active']]['content'] = content
+        self._save_conversation(conv)
+
+    def branch_from(self, index):
+        import copy
+        parent = self.get_current_conversation()
+        stem = parent['name'] + ' - 分支 '
+        number = 1
+        names = {conv['name'] for conv in self.conversations.values()}
+        while stem + str(number) in names:
+            number += 1
+        child_id = str(uuid.uuid4())
+        child = {'id': child_id, 'name': stem + str(number), 'created_time': time.time(),
+                 'last_modified': time.time(), 'metadata': {'integrity': str(uuid.uuid4())},
+                 'parent_conversation_id': parent['id'],
+                 'branch_from_message_id': parent['messages'][index]['msg_id'],
+                 'messages': copy.deepcopy(parent['messages'][:index + 1])}
+        register_local(self.timeline_store, child, parent_id=parent['id'])
+        self.conversations[child_id] = child
+        self._save_conversation(child)
+        self.current_conversation_id = child_id
+        self.load_conversations()
+        self.conversation_changed.emit(child_id)
+        return child_id
 
     def delete_message_at(self, index: int) -> bool:
         """删除当前对话指定索引的消息"""
@@ -522,6 +621,22 @@ class ConversationManager(QObject):
             logger.error(f"Failed to save conversation: {e}")
 
 
+class TimelineWorker(QThread):
+    completed = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def __init__(self, engine, chat_uuid, messages, mode):
+        super().__init__()
+        self.engine, self.chat_uuid = engine, chat_uuid
+        self.messages, self.mode = messages, mode
+
+    def run(self):
+        try:
+            self.completed.emit(self.engine.process(self.chat_uuid, self.messages, self.mode))
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
 class IntegratedPlayPage(QWidget):
     """集成的智能对话页面"""
 
@@ -536,7 +651,14 @@ class IntegratedPlayPage(QWidget):
         # 初始化酒馆管理器
 
         # 对话管理器
-        self.conversation_manager = ConversationManager(Path(__file__).parent / "data" / "local_conversations")
+        self.conversation_manager = ConversationManager(local_data_root() / "local_conversations")
+        from src.utils.config import config
+        self.timeline_engine = TimelineEngine(self.conversation_manager.timeline_store,
+                                             TimelineExtractor(LLMClient(), config.llm.context_size))
+        self._timeline_worker = None
+        self._timeline_dirty = False
+        self._timeline_error = None
+        self._regenerating_index = None
 
         self.init_ui()
         self.connect_signals()
@@ -613,7 +735,7 @@ class IntegratedPlayPage(QWidget):
 
         # 输入区域
         input_area = self.create_input_area()
-        layout.addWidget(input_area)
+        layout.addWidget(input_area, 0, Qt.AlignBottom)
 
     def create_toolbar(self) -> QWidget:
         """创建顶部工具栏"""
@@ -697,6 +819,23 @@ class IntegratedPlayPage(QWidget):
         widget = QWidget()
 
         layout = QVBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        self.timeline_status_row = QWidget(widget)
+        status_row = QHBoxLayout(self.timeline_status_row)
+        status_row.setContentsMargins(0, 0, 0, 0)
+        status_row.setSpacing(8)
+        self.timeline_status = QLabel('')
+        self.timeline_status.setProperty('role', 'status')
+        self.timeline_retry = QPushButton('重试')
+        self.timeline_retry.clicked.connect(self.retry_timeline)
+        self.timeline_retry.hide()
+        status_row.addWidget(self.timeline_status)
+        status_row.addWidget(self.timeline_retry)
+        status_row.addStretch()
+        layout.addWidget(self.timeline_status_row)
+        self.timeline_status_row.hide()
 
         # 输入框
         self.input_text = QTextEdit()
@@ -771,12 +910,8 @@ class IntegratedPlayPage(QWidget):
 
         if hasattr(main_window, 'memory'):
             current_id = self.conversation_manager.current_conversation_id
-            active_id = getattr(main_window, '_active_local_graph_conversation_id', None)
-            if current_id and active_id and current_id != active_id:
-                main_window._save_conversation_knowledge_graph(active_id)
-                if main_window.load_conversation_knowledge_graph(current_id):
-                    main_window._active_local_graph_conversation_id = current_id
-            main_window.memory.reload_entities_from_json()
+            if current_id:
+                main_window.load_conversation_knowledge_graph(current_id)
             logger.info("✅ 已恢复本地知识图谱数据")
 
         if hasattr(main_window, 'graph_page'):
@@ -785,6 +920,7 @@ class IntegratedPlayPage(QWidget):
                 graph_page.exit_tavern_mode(local_memory=main_window.memory)
             else:
                 graph_page.refresh_graph()
+            graph_page.update_manual_controls()
             logger.info("📊 知识图谱页面已恢复本地显示")
 
     def on_mode_change(self, mode_id):
@@ -1137,16 +1273,7 @@ class IntegratedPlayPage(QWidget):
 
     def create_new_conversation(self):
         """创建新对话"""
-        name, ok = QInputDialog.getText(
-            self,
-            "新建对话",
-            "请输入对话名称：",
-            text=f"新对话 {len(self.conversation_manager.conversations) + 1}"
-        )
-
-        if ok and name.strip():
-            conv_id = self.conversation_manager.create_conversation(name.strip())
-            QMessageBox.information(self, "成功", "对话创建成功")
+        self.conversation_manager.create_conversation()
 
     def delete_current_conversation(self):
         """删除当前对话"""
@@ -1163,29 +1290,6 @@ class IntegratedPlayPage(QWidget):
 
         if reply == QMessageBox.Yes:
             if self.conversation_manager.delete_conversation(current_conv['id']):
-                # 删除对话时也清空知识图谱
-                try:
-                    # 获取主窗口实例
-                    main_window = None
-                    widget = self.parent()
-                    while widget is not None:
-                        if isinstance(widget, EchoGraphMainWindow):
-                            main_window = widget
-                            break
-                        widget = widget.parent()
-
-                    if main_window and hasattr(main_window, 'memory'):
-                        main_window.memory.clear_all()
-                        logger.info("✅ 删除对话时已清空知识图谱")
-
-                        # 刷新知识图谱页面显示
-                        if hasattr(main_window, 'graph_page'):
-                            main_window.graph_page.refresh_graph()  # 已包含更新实体列表和统计
-                            logger.info("✅ 知识图谱页面显示已刷新")
-
-                except Exception as e:
-                    logger.warning(f"⚠️ 清空知识图谱失败: {e}")
-
                 QMessageBox.information(self, "成功", "对话删除成功")
 
     def rename_current_conversation(self):
@@ -1281,21 +1385,132 @@ class IntegratedPlayPage(QWidget):
         messages = conv.get('messages', [])
         logger.debug(f"💬 [UI] 对话包含 {len(messages)} 条消息")
 
-        # 显示消息历史
-        loaded_messages = 0
-        for msg in messages:
-            if msg['role'] == 'user':
-                self.append_message(msg['content'], is_user=True)
-                loaded_messages += 1
-            elif msg['role'] == 'assistant':
-                self.append_message(msg['content'], is_user=False)
-                loaded_messages += 1
-            elif msg['role'] == 'system':
-                self.append_message(f"系统: {msg['content']}", is_user=False)
-                loaded_messages += 1
+        for index, msg in enumerate(messages):
+            self._show_local_message(index, msg)
 
-        logger.debug(f"✅ [UI] 成功加载 {loaded_messages} 条消息到聊天界面")
+        logger.debug(f"✅ [UI] 成功加载 {len(messages)} 条消息到聊天界面")
         self._sync_engine_hot_memory_from_current_conversation()
+        if hasattr(self, 'timeline_engine'):
+            self.queue_timeline()
+
+    def _show_local_message(self, index, msg):
+        content = active_content(msg)
+        self.chat_display.add_message(content, msg['role'] == 'user')
+        bubble = self.chat_display.message_widgets[-1]['widget']
+        actions = QWidget(bubble)
+        row = QHBoxLayout(actions)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(3)
+        row.setAlignment(Qt.AlignRight if msg['role'] == 'user' else Qt.AlignLeft)
+        if msg['role'] == 'assistant' and len(msg['swipes']) > 1:
+            previous = QPushButton('‹')
+            previous.setProperty('role', 'chatAction')
+            previous.setEnabled(msg['active'] > 0)
+            previous.clicked.connect(lambda _, i=index: self.switch_message_swipe(i, -1))
+            count = QLabel(f"{msg['active'] + 1}/{len(msg['swipes'])}")
+            count.setProperty('role', 'chatActionCount')
+            following = QPushButton('›')
+            following.setProperty('role', 'chatAction')
+            following.setEnabled(msg['active'] < len(msg['swipes']) - 1)
+            following.clicked.connect(lambda _, i=index: self.switch_message_swipe(i, 1))
+            for control in (previous, count, following):
+                row.addWidget(control)
+        edit = QPushButton('编辑')
+        edit.setProperty('role', 'chatAction')
+        edit.clicked.connect(lambda _, i=index: self.edit_chat_message(i))
+        branch = QPushButton('从此处创建分支')
+        branch.setProperty('role', 'chatAction')
+        branch.clicked.connect(lambda _, i=index: self.branch_chat_message(i))
+        row.addWidget(edit)
+        row.addWidget(branch)
+        bubble.content_layout.addWidget(actions)
+
+    def switch_message_swipe(self, index, offset):
+        msg = self.conversation_manager.get_current_conversation()['messages'][index]
+        self.conversation_manager.switch_swipe(index, msg['active'] + offset)
+        self.load_conversation(self.conversation_manager.current_conversation_id)
+
+    def edit_chat_message(self, index):
+        conv = self.conversation_manager.get_current_conversation()
+        old = active_content(conv['messages'][index])
+        value, ok = QInputDialog.getMultiLineText(self, '编辑消息', '内容：', old)
+        if ok and value != old:
+            self.conversation_manager.edit_message(index, value)
+            self.load_conversation(conv['id'])
+
+    def branch_chat_message(self, index):
+        self.conversation_manager.branch_from(index)
+
+    def queue_timeline(self):
+        if not self.is_test_mode:
+            return
+        conv = self.conversation_manager.get_current_conversation()
+        if not conv:
+            return
+        self.timeline_engine.invalidate(conv['id'])
+        self._timeline_dirty = True
+        self._start_timeline()
+
+    def _start_timeline(self):
+        if not self._timeline_dirty or self._timeline_worker is not None:
+            return
+        conv = self.conversation_manager.get_current_conversation()
+        if not conv:
+            return
+        from src.utils.config import config
+        self._timeline_dirty = False
+        self.timeline_status.setText('图谱更新中…')
+        self.timeline_status_row.show()
+        self.timeline_retry.hide()
+        self._timeline_worker = TimelineWorker(self.timeline_engine, conv['id'],
+                                              timeline_messages(conv),
+                                              'per_turn' if config.timeline.per_turn_regen else 'batch')
+        self._timeline_worker.completed.connect(lambda result, cid=conv['id']: self._timeline_complete(cid, result))
+        self._timeline_worker.failed.connect(self._timeline_failed)
+        self._timeline_worker.finished.connect(self._timeline_finished)
+        self._timeline_worker.start()
+
+    def _timeline_complete(self, chat_uuid, result):
+        if self._timeline_dirty or chat_uuid != self.conversation_manager.current_conversation_id:
+            return
+        if not result.consistent:
+            self._timeline_failed('时间线已变更')
+            return
+        self._timeline_error = None
+        self.timeline_status.setText('')
+        self.timeline_retry.hide()
+        self.timeline_status_row.hide()
+        self._show_effective_graph(chat_uuid, result.state)
+
+    def _show_effective_graph(self, chat_uuid, head_state):
+        layer = ManualLayer(self.conversation_manager.timeline_store, chat_uuid)
+        effective, skipped = effective_state(head_state, layer.data)
+        window = self.window()
+        if hasattr(window, 'memory') and hasattr(window, 'graph_page'):
+            state_to_memory(effective, window.memory)
+            window.graph_page.local_head_state = head_state
+            window.graph_page.local_layer = layer
+            window.graph_page.refresh_graph()
+            window.graph_page.update_manual_controls(len(skipped))
+
+    def _timeline_failed(self, error):
+        if self._timeline_dirty:
+            return
+        self._timeline_error = error
+        self.timeline_status.setText(f'图谱与聊天不一致：{error}')
+        self.timeline_retry.show()
+        self.timeline_status_row.show()
+
+    def _timeline_finished(self):
+        worker = self._timeline_worker
+        self._timeline_worker = None
+        if worker is not None:
+            worker.deleteLater()
+        QTimer.singleShot(0, self._start_timeline)
+
+    def retry_timeline(self):
+        self._timeline_dirty = True
+        self._start_timeline()
 
     def _sync_engine_hot_memory_from_current_conversation(self):
         """按当前对话重建热记忆，避免删除/切换后上下文继续引用旧消息。"""
@@ -1315,7 +1530,7 @@ class IntegratedPlayPage(QWidget):
         pending_user = None
         for msg in messages:
             role = msg.get("role")
-            content = msg.get("content", "")
+            content = active_content(msg)
             if role == "user":
                 if pending_user is not None:
                     basic_memory.add_conversation(pending_user, "")
@@ -1367,14 +1582,12 @@ class IntegratedPlayPage(QWidget):
         # 清空输入框
         self.input_text.clear()
 
-        # 显示用户消息
-        self.append_message(message, is_user=True)
-
         # 添加到对话历史
         self.conversation_manager.add_message({
             'role': 'user',
             'content': message
         })
+        self.load_conversation(self.conversation_manager.current_conversation_id)
 
         # 显示动态加载状态
         self.loading_message_widget = self.show_loading_animation()
@@ -1428,49 +1641,14 @@ class IntegratedPlayPage(QWidget):
         try:
             logger.debug(f"✅ [UI] 收到LLM回复，开始处理UI更新")
 
-            # 移除加载动画并显示回复
+            # 移除加载动画并保存 the active reply version.
             self.remove_loading_animation()
-            self.append_message(llm_response, is_user=False)
-
-            # 添加到对话历史
-            self.conversation_manager.add_message({
-                'role': 'assistant',
-                'content': llm_response
-            })
-
-            # 处理LLM回复，更新知识图谱
-            try:
-                logger.info(f"🔄 [GRAG] 开始更新知识图谱...")
-                update_results = self.engine.extract_updates_from_response(llm_response, self.llm_worker.message)
-                self.engine.memory.add_conversation(self.llm_worker.message, llm_response)
-                self.engine.memory.save_all_memory()
-
-                logger.info(f"✅ [GRAG] 知识图谱更新成功: {update_results}")
-                logger.info(f"📈 [GRAG] 更新统计: 节点更新={update_results.get('nodes_updated', 0)}, 边添加={update_results.get('edges_added', 0)}")
-
-                # 实时刷新知识图谱页面显示
-                try:
-                    # 获取主窗口实例
-                    main_window = None
-                    widget = self.parent()
-                    while widget is not None:
-                        if isinstance(widget, EchoGraphMainWindow):
-                            main_window = widget
-                            break
-                        widget = widget.parent()
-
-                    if main_window and hasattr(main_window, 'graph_page'):
-                        # 重新加载实体数据到知识图谱（这一步已经在GameEngine中通过sync_entities_to_json完成了）
-                        # 这里只需要重新加载UI的显示
-                        main_window.memory.reload_entities_from_json()
-                        # 刷新图谱显示
-                        main_window.graph_page.refresh_graph()  # 已包含更新实体列表和统计
-                        logger.info("✅ [GRAG] 知识图谱页面已实时刷新")
-                except Exception as refresh_error:
-                    logger.warning(f"⚠️ [GRAG] 实时刷新知识图谱页面失败: {refresh_error}")
-
-            except Exception as e:
-                logger.warning(f"⚠️ [GRAG] 知识图谱更新失败: {e}")
+            if self._regenerating_index is not None:
+                self.conversation_manager.add_swipe(self._regenerating_index, llm_response)
+                self._regenerating_index = None
+            else:
+                self.conversation_manager.add_message({'role': 'assistant', 'content': llm_response})
+            self.load_conversation(self.conversation_manager.current_conversation_id)
 
         except Exception as e:
             logger.error(f"❌ [UI] 处理LLM回复时出错: {e}")
@@ -1479,6 +1657,7 @@ class IntegratedPlayPage(QWidget):
         """LLM处理出错的回调"""
         logger.error(f"❌ [UI] LLM处理出错: {error_message}")
         self.remove_loading_animation()
+        self._regenerating_index = None
         error_response = "抱歉，系统遇到了一些问题。让我们重新开始吧。"
         self.append_message(error_response, is_user=False)
 
@@ -1584,29 +1763,18 @@ class IntegratedPlayPage(QWidget):
     def regenerate_last_response(self):
         """重新生成最后一轮AI回复"""
         try:
-            # 获取最后一条用户消息
-            last_user_message = self.chat_display.get_last_user_message()
-            if not last_user_message:
-                QMessageBox.information(self, "提示", "没有找到可重新生成的对话")
+            conv = self.conversation_manager.get_current_conversation()
+            if not conv or not conv['messages'] or conv['messages'][-1]['role'] != 'assistant':
+                QMessageBox.information(self, '提示', '最后一条消息不是助手回复')
                 return
-
-            # 删除最后一条AI回复
-            if not self.chat_display.remove_last_ai_message():
-                QMessageBox.information(self, "提示", "没有找到可删除的AI回复")
+            last_user = next((active_content(m) for m in reversed(conv['messages'][:-1])
+                              if m['role'] == 'user'), None)
+            if last_user is None:
+                QMessageBox.information(self, '提示', '没有可重新生成的用户消息')
                 return
-
-            # 从对话历史中删除最后一条AI回复
-            current_conv = self.conversation_manager.get_current_conversation()
-            if current_conv and current_conv.get('messages'):
-                # 从后往前找最后一条AI回复并删除
-                for i in range(len(current_conv['messages']) - 1, -1, -1):
-                    if current_conv['messages'][i]['role'] == 'assistant':
-                        current_conv['messages'].pop(i)
-                        self.conversation_manager._save_conversation(current_conv)
-                        break
-
-            # 重新发送用户消息（触发新的AI回复）
-            self.process_message(last_user_message)
+            self._regenerating_index = len(conv['messages']) - 1
+            self.show_loading_animation()
+            self.process_test_message(last_user)
 
         except Exception as e:
             logger.error(f"重新生成回复失败: {e}")
@@ -1629,6 +1797,7 @@ class IntegratedPlayPage(QWidget):
         try:
             if self.conversation_manager.delete_message_at(message_index):
                 self._sync_engine_hot_memory_from_current_conversation()
+                self.queue_timeline()
                 logger.info(f"✅ 已同步删除对话历史消息，索引={message_index}")
             else:
                 logger.warning(f"⚠️ 删除同步失败：无效索引 {message_index}")
@@ -1646,30 +1815,7 @@ class IntegratedPlayPage(QWidget):
 
         if reply == QMessageBox.Yes:
             self.conversation_manager.clear_current_conversation()
-            self.chat_display.clear_messages()
-
-            # 清空对话时也清空知识图谱
-            try:
-                # 获取主窗口实例
-                main_window = None
-                widget = self.parent()
-                while widget is not None:
-                    if isinstance(widget, EchoGraphMainWindow):
-                        main_window = widget
-                        break
-                    widget = widget.parent()
-
-                if main_window and hasattr(main_window, 'memory'):
-                    main_window.memory.clear_all()
-                    logger.info("✅ 清空对话时已清空知识图谱")
-
-                    # 刷新知识图谱页面显示
-                    if hasattr(main_window, 'graph_page'):
-                        main_window.graph_page.refresh_graph()  # 已包含更新实体列表和统计
-                        logger.info("✅ 知识图谱页面显示已刷新")
-
-            except Exception as e:
-                logger.warning(f"⚠️ 清空知识图谱失败: {e}")
+            self.load_conversation(self.conversation_manager.current_conversation_id)
 
 
 class EntityListDelegate(QStyledItemDelegate):
@@ -1712,7 +1858,7 @@ class GraphPage(QWidget):
         self.showing_tavern_placeholder = False
         self._tavern_graph_data = None
         self._tavern_entities = []
-        self.layout_storage_root = Path.cwd() / "data"
+        self.layout_storage_root = local_data_root()
         self._layout_node_ids = set()
 
         # 创建HTML生成器
@@ -1780,9 +1926,18 @@ class GraphPage(QWidget):
 
         self.init_graph_btn = QPushButton("初始化图谱")
         self.init_graph_btn.setProperty("variant", "ghost")
+        self.init_graph_btn.setEnabled(False)
 
         self.clear_graph_btn = QPushButton("清空图谱")
         self.clear_graph_btn.setProperty("variant", "danger")
+        self.undo_btn = QPushButton('撤销')
+        self.redo_btn = QPushButton('重做')
+        self.undo_btn.setProperty('variant', 'ghost')
+        self.redo_btn.setProperty('variant', 'ghost')
+        self.undo_btn.setEnabled(False)
+        self.redo_btn.setEnabled(False)
+        self.skipped_edits_label = QLabel('')
+        self.skipped_edits_label.setProperty('role', 'status')
 
         header.addWidget(title)
         header.addStretch()
@@ -1790,9 +1945,12 @@ class GraphPage(QWidget):
         header.addWidget(self.export_btn)
         header.addWidget(self.init_graph_btn)
         header.addWidget(self.clear_graph_btn)
+        header.addWidget(self.undo_btn)
+        header.addWidget(self.redo_btn)
         header.addWidget(self.reset_view_btn)
 
         layout.addLayout(header)
+        layout.addWidget(self.skipped_edits_label)
 
         # 图谱显示区域
         self.graph_view = QWebEngineView()
@@ -1964,6 +2122,13 @@ class GraphPage(QWidget):
         self.export_btn.clicked.connect(self.export_graph)
         self.init_graph_btn.clicked.connect(self.initialize_graph)
         self.clear_graph_btn.clicked.connect(self.clear_graph)
+        self.undo_btn.clicked.connect(self.undo_manual)
+        self.redo_btn.clicked.connect(self.redo_manual)
+        for sequence, callback in (('Ctrl+Z', self.undo_manual), ('Ctrl+Y', self.redo_manual),
+                                   ('Ctrl+Shift+Z', self.redo_manual)):
+            shortcut = QShortcut(QKeySequence(sequence), self)
+            shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(callback)
         self.reset_view_btn.clicked.connect(self.reset_view)
 
         # 搜索功能
@@ -1998,7 +2163,7 @@ class GraphPage(QWidget):
 
             logger.debug("[Graph] 本地模式刷新知识关系图谱...")
             # 重新加载实体和关系到知识图谱（确保同步，现在包含关系）
-            self.memory.reload_entities_from_json()
+            # The local graph is the effective timeline state already in memory.
 
             # 一次性获取所有实体数据，避免重复调用
             entities = self.get_all_entities()
@@ -2120,6 +2285,7 @@ class GraphPage(QWidget):
             for source, target, attrs in graph.edges(data=True):
                 relationship_type = attrs.get('relationship', 'related_to')
                 links.append({
+                    'id': attrs.get('edge_id', f'{source}:{target}'),
                     'source': source,
                     'target': target,
                     'relation': relationship_type
@@ -2211,7 +2377,7 @@ class GraphPage(QWidget):
             raise RuntimeError("节点已保存，但无法从酒馆会话刷新图谱。")
         return response.json()
 
-    def mutate_relationship(self, action, source, target, relation=None):
+    def mutate_relationship(self, action, source, target, relation=None, edge_id=None):
         try:
             if self.tavern_mode:
                 method = {"create": "POST", "update": "PUT", "delete": "DELETE"}[action]
@@ -2221,9 +2387,23 @@ class GraphPage(QWidget):
                 self._tavern_mutation(method, "relationships", None if action == "delete" else body,
                                       body if action == "delete" else None)
             else:
-                from src.graph.graph_operations import save_local_relationship
-                save_local_relationship(self.memory, action, source, target, relation)
-                self.refresh_graph()
+                layer, head = self._manual_context()
+                if action == 'create':
+                    layer.apply('add_edge', {'id': str(uuid.uuid4()),
+                                             'source': source, 'target': target,
+                                             'relation': relation}, head)
+                else:
+                    state, _ = effective_state(head, layer.data)
+                    if not edge_id:
+                        edge_id = next((eid for eid, edge in state.edges.items()
+                                        if edge['source'] == source and edge['target'] == target), None)
+                    if not edge_id:
+                        raise ValueError('关系不存在')
+                    payload = {'id': edge_id}
+                    if action == 'update':
+                        payload['relation'] = relation
+                    layer.apply(action + '_edge', payload, head)
+                self.reload_manual_graph()
         except Exception as exc:
             QMessageBox.warning(self, "关系操作失败", str(exc))
             return False
@@ -2239,8 +2419,70 @@ class GraphPage(QWidget):
             else:
                 self._tavern_mutation("POST", "nodes", entities[-1])
             return
-        from src.graph.graph_operations import save_local_entities
-        save_local_entities(self.memory, entities, old_name, new_name)
+        layer, head = self._manual_context()
+        state, _ = effective_state(head, layer.data)
+        if old_name:
+            entity = next(entity for entity in entities if entity['name'] == new_name)
+            if old_name != new_name:
+                # Preserve all incident relations when a node ID is renamed.
+                ops = [{'op': 'add_node', **self._entity_payload(entity)}]
+                for edge in list(state.edges.values()):
+                    if edge['source'] == old_name or edge['target'] == old_name:
+                        ops.append({'op': 'add_edge', 'id': str(uuid.uuid4()),
+                                    'source': new_name if edge['source'] == old_name else edge['source'],
+                                    'target': new_name if edge['target'] == old_name else edge['target'],
+                                    'relation': edge['relation'],
+                                    'description': edge.get('description', ''),
+                                    'attributes': edge.get('attributes', {})})
+                ops.append({'op': 'delete_node', 'id': old_name})
+                layer.apply('edit_set', {'ops': ops}, head)
+            else:
+                layer.apply('update_node', self._entity_payload(entity), head)
+        else:
+            target_ids = {entity['name'] for entity in entities}
+            for ident in list(state.nodes):
+                if ident not in target_ids:
+                    layer.apply('delete_node', {'id': ident}, head)
+            for entity in entities:
+                if entity['name'] not in state.nodes:
+                    layer.apply('add_node', self._entity_payload(entity), head)
+        self.reload_manual_graph()
+
+    @staticmethod
+    def _entity_payload(entity):
+        attrs = {k: v for k, v in entity.get('attributes', {}).items()
+                 if k not in ('name', 'type', 'subtype', 'description')}
+        return {'id': entity['name'], 'name': entity.get('display_name') or entity['name'],
+                'type': normalize_type(entity.get('type', 'other'))[0],
+                'subtype': entity.get('subtype', ''),
+                'description': entity.get('description', ''), 'attributes': attrs}
+
+    def _manual_context(self):
+        if not hasattr(self, 'local_layer') or not hasattr(self, 'local_head_state'):
+            raise RuntimeError('当前对话的图谱尚未加载')
+        return self.local_layer, self.local_head_state
+
+    def reload_manual_graph(self):
+        layer, head = self._manual_context()
+        state, skipped = effective_state(head, layer.data)
+        state_to_memory(state, self.memory)
+        self.refresh_graph()
+        self.update_manual_controls(len(skipped))
+
+    def update_manual_controls(self, skipped=0):
+        layer = getattr(self, 'local_layer', None)
+        enabled = not self.tavern_mode and layer is not None
+        self.undo_btn.setEnabled(enabled and layer.can_undo)
+        self.redo_btn.setEnabled(enabled and layer.can_redo)
+        self.skipped_edits_label.setText(f'有 {skipped} 条手动编辑因目标不存在被跳过' if skipped else '')
+
+    def undo_manual(self):
+        if not self.tavern_mode and hasattr(self, 'local_layer') and self.local_layer.undo():
+            self.reload_manual_graph()
+
+    def redo_manual(self):
+        if not self.tavern_mode and hasattr(self, 'local_layer') and self.local_layer.redo():
+            self.reload_manual_graph()
 
     def _add_sample_entities(self):
         """添加示例实体（备用方案）"""
@@ -3034,11 +3276,13 @@ class GraphPage(QWidget):
                     else:
                         raise Exception(f"API清空失败: {response.status_code}")
                 else:
-                    # 本地模式下：清空内存中的知识图谱
-                    from src.graph.graph_operations import clear_knowledge_graph
-                    clear_knowledge_graph(self.memory)
-                    # 刷新显示（已包含统计信息更新）
-                    self.refresh_graph()
+                    layer, head = self._manual_context()
+                    state, _ = effective_state(head, layer.data)
+                    ops = ([{'op': 'delete_edge', 'id': edge_id} for edge_id in state.edges]
+                           + [{'op': 'delete_node', 'id': node_id} for node_id in state.nodes])
+                    if ops:
+                        layer.apply('edit_set', {'ops': ops}, head)
+                    self.reload_manual_graph()
 
                 self.clear_graph_layout()
                 QMessageBox.information(self, "清空完成", "知识图谱已成功清空。")
@@ -3098,17 +3342,7 @@ class GraphPage(QWidget):
                 QMessageBox.warning(self, "网络问题", f"无法连接到服务器，请检查EchoGraph服务是否运行")
 
         else:
-            # --- 本地模式下的初始化 ---
-            reply = QMessageBox.question(
-                self,
-                "初始化知识图谱",
-                "是否要创建默认的游戏开局？\n\n这将清空现有图谱并创建新的世界设定。",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.Yes
-            )
-
-            if reply == QMessageBox.Yes:
-                self.create_default_scenario_for_graph()
+            return
 
     def reinitialize_tavern_character_graph(self):
         """重新初始化酒馆角色的知识图谱"""
@@ -3171,37 +3405,6 @@ class GraphPage(QWidget):
             logger.error(f"💥 酒馆角色图谱重新初始化异常: {e}")
             logger.error(f"详细错误: {traceback.format_exc()}")
             QMessageBox.critical(self, "初始化异常", f"重新初始化时发生异常：\n{str(e)}")
-
-    def create_default_scenario_for_graph(self):
-        """为知识图谱创建默认场景（不依赖对话ID）"""
-        try:
-            # 使用主窗口的方法创建默认开局
-            main_window = None
-            widget = self.parent()
-            while widget is not None:
-                if isinstance(widget, EchoGraphMainWindow):
-                    main_window = widget
-                    break
-                widget = widget.parent()
-
-            if main_window:
-                # 先清空现有图谱
-                from src.graph.graph_operations import clear_knowledge_graph
-                clear_knowledge_graph(self.memory)
-
-                # 创建默认开局
-                if not main_window.create_default_game_scenario("manual_init"):
-                    return
-
-                # 只需要刷新图谱显示，refresh_graph内部会更新实体列表和统计信息
-                self.refresh_graph()
-                logger.info("✅ 知识图谱初始化完成，页面已刷新")
-            else:
-                QMessageBox.warning(self, "初始化失败", "无法找到主窗口实例。")
-
-        except Exception as e:
-            logger.error(f"初始化知识图谱失败: {e}")
-            QMessageBox.warning(self, "初始化失败", f"初始化知识图谱时出现错误：\n{str(e)}")
 
     def open_dev_tools(self):
         """打开开发者工具"""
@@ -3269,11 +3472,13 @@ class GraphPage(QWidget):
         unavailable = self.tavern_mode and self.showing_tavern_placeholder
         self.refresh_btn.setEnabled(not pending)
         self.refresh_btn.setToolTip("等待酒馆会话连接" if pending else "")
-        for button in (self.export_btn, self.init_graph_btn, self.clear_graph_btn,
+        for button in (self.export_btn, self.clear_graph_btn,
                        self.reset_view_btn, self.search_btn, self.clear_search_btn,
                        self.filter_all_btn, *self.filter_type_buttons.values()):
             button.setEnabled(not unavailable)
             button.setToolTip("酒馆图谱暂不可用，请刷新重试" if unavailable else "")
+        self.init_graph_btn.setEnabled(self.tavern_mode and not unavailable)
+        self.update_manual_controls()
         for button in (self.add_node_btn, self.edit_node_btn, self.delete_node_btn):
             button.setEnabled(not pending)
             button.setToolTip("等待酒馆会话连接" if pending else "")
@@ -3311,7 +3516,7 @@ class GraphPage(QWidget):
         else:
             # 独立使用 GraphPage 时保留原有的本地数据源回退行为。
             try:
-                local_mode_path = Path(__file__).parent / "data" / "local_mode"
+                local_mode_path = local_data_root() / "local_mode"
                 local_mode_path.mkdir(exist_ok=True)
                 self.memory = GRAGMemory(
                     hot_memory_size=10,
@@ -4211,7 +4416,7 @@ class EchoGraphMainWindow(QMainWindow):
 
         try:
             # 初始化核心系统 - 本地模式使用独立目录
-            base_path = Path(__file__).parent / "data"
+            base_path = local_data_root()
             local_mode_path = base_path / "local_mode"  # 本地模式专用目录
             local_mode_path.mkdir(exist_ok=True)
 
@@ -4343,8 +4548,6 @@ class EchoGraphMainWindow(QMainWindow):
 
     def setup_cross_page_connections(self):
         """设置页面间的联动连接"""
-        self._conversation_graph_root = Path(__file__).parent / "data" / "local_conversations" / "graphs"
-        self._conversation_graph_root.mkdir(exist_ok=True, parents=True)
         self._active_local_graph_conversation_id: Optional[str] = None
 
         # 当对话切换时，刷新知识图谱
@@ -4352,39 +4555,13 @@ class EchoGraphMainWindow(QMainWindow):
             self.on_conversation_changed
         )
 
-        # 启动时对当前会话执行一次图谱附着，避免默认共享同一图谱上下文
+        # Attach the selected local timeline to retrieval and display.
         current_conv_id = self.play_page.conversation_manager.current_conversation_id
         if current_conv_id and getattr(self.play_page, 'is_test_mode', True):
             if self.load_conversation_knowledge_graph(current_conv_id):
                 self._active_local_graph_conversation_id = current_conv_id
                 self.graph_page.refresh_graph()
-
-    @staticmethod
-    def _sanitize_conversation_id(conv_id: str) -> str:
-        safe_id = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in str(conv_id))
-        return safe_id.strip("_") or "default"
-
-    def _get_conversation_graph_paths(self, conv_id: str) -> tuple[Path, Path]:
-        safe_conv_id = self._sanitize_conversation_id(conv_id)
-        conv_graph_dir = self._conversation_graph_root / safe_conv_id
-        conv_graph_dir.mkdir(exist_ok=True, parents=True)
-        return conv_graph_dir / "knowledge_graph.graphml", conv_graph_dir / "entities.json"
-
-    def _save_conversation_knowledge_graph(self, conv_id: str) -> bool:
-        """保存指定对话当前图谱快照"""
-        if not conv_id:
-            return False
-        try:
-            graph_path, entities_path = self._get_conversation_graph_paths(conv_id)
-            self.memory.graph_save_path = str(graph_path)
-            self.memory.set_entities_json_path(str(entities_path))
-            self.memory.knowledge_graph.save_graph(str(graph_path))
-            self.memory.sync_entities_to_json()
-            logger.info(f"💾 已保存对话图谱快照: conv={conv_id} path={graph_path}")
-            return True
-        except Exception as e:
-            logger.error(f"❌ 保存对话图谱快照失败 (conv={conv_id}): {e}")
-            return False
+            self.play_page.queue_timeline()
 
     def on_conversation_changed(self, conv_id: str):
         """处理对话切换事件"""
@@ -4405,33 +4582,13 @@ class EchoGraphMainWindow(QMainWindow):
             logger.info("当前为酒馆模式，跳过本地图谱隔离切换")
             return
 
-        # 先保存离开前对话的图谱快照，再加载目标对话图谱
-        previous_conv_id = getattr(self, '_active_local_graph_conversation_id', None)
-        if previous_conv_id and previous_conv_id != conv_id:
-            self._save_conversation_knowledge_graph(previous_conv_id)
-
         if not self.load_conversation_knowledge_graph(conv_id):
             logger.warning(f"对话 {conv_id} 的知识图谱加载失败，保持当前图谱")
             return
         self._active_local_graph_conversation_id = conv_id
         self.graph_page.refresh_graph()
 
-        # 获取对话信息
-        conv = self.play_page.conversation_manager.conversations.get(conv_id)
-        if not conv:
-            logger.warning(f"对话 {conv_id} 不存在")
-            return
-
-        # 检查对话是否有消息内容
-        messages = conv.get('messages', [])
-
-        if not messages:
-            # 新对话或空对话 - 询问是否创建默认开局
-            logger.info("这是一个空对话，询问是否创建默认开局")
-            self.prompt_initialize_knowledge_graph(conv_id)
-        else:
-            # 有内容的对话 - 不做任何操作，保持当前知识图谱
-            logger.info("切换到有内容的对话，保持当前知识图谱状态")
+        self.play_page.queue_timeline()
 
     def load_conversation_knowledge_graph(self, conv_id: str) -> bool:
         """加载对话相关的知识图谱（本地模式下按对话隔离）"""
@@ -4439,115 +4596,22 @@ class EchoGraphMainWindow(QMainWindow):
             return False
 
         try:
-            graph_path, entities_path = self._get_conversation_graph_paths(conv_id)
-            self.memory.graph_save_path = str(graph_path)
-            self.memory.set_entities_json_path(str(entities_path))
-
-            # 首次升级到“按对话隔离”时，保留历史的本地共享图谱到当前对话
-            if (
-                not graph_path.exists()
-                and not entities_path.exists()
-                and getattr(self, "_active_local_graph_conversation_id", None) is None
-                and self.memory.knowledge_graph.graph.number_of_nodes() > 0
-            ):
-                self.memory.knowledge_graph.save_graph(str(graph_path))
-                self.memory.sync_entities_to_json()
-                logger.info(f"🧭 已将历史共享图谱迁移到当前对话快照: conv={conv_id}")
-                return True
-
-            # 切换对话时先清空内存图谱，避免跨对话污染
-            self.memory.knowledge_graph.clear()
-
-            if graph_path.exists():
-                self.memory.knowledge_graph.load_graph(str(graph_path))
-                self.memory.sync_entities_to_json()
-                logger.info(f"📥 已加载对话图谱: conv={conv_id} graph={graph_path}")
-                return True
-
-            if entities_path.exists():
-                self.memory.reload_entities_from_json()
-                if self.memory.graph_save_path:
-                    self.memory.knowledge_graph.save_graph(self.memory.graph_save_path)
-                logger.info(f"📥 从entities快照恢复对话图谱: conv={conv_id} entities={entities_path}")
-                return True
-
-            # 没有任何历史快照，创建空隔离图谱
-            self.memory.sync_entities_to_json()
-            logger.info(f"🆕 对话无图谱快照，已创建空图谱上下文: conv={conv_id}")
+            store = self.play_page.conversation_manager.timeline_store
+            chat = store.get_chat(conv_id)
+            head = store.state_at(chat['head_key'], chat['base_hash'])
+            layer = ManualLayer(store, conv_id)
+            state, skipped = effective_state(head, layer.data)
+            state_to_memory(state, self.memory)
+            self.graph_page.local_head_state = head
+            self.graph_page.local_layer = layer
+            self.graph_page.update_manual_controls(len(skipped))
             return True
         except Exception as e:
             logger.error(f"❌ 加载对话图谱失败 (conv={conv_id}): {e}")
             return False
 
-    def prompt_initialize_knowledge_graph(self, conv_id: str):
-        """提示用户初始化知识图谱"""
-        # 防止重复调用的标志
-        if hasattr(self, '_initializing_knowledge_graph') and self._initializing_knowledge_graph:
-            logger.info("知识图谱正在初始化中，跳过重复调用")
-            return
-
-        try:
-            self._initializing_knowledge_graph = True
-
-            # 获取对话名称以便更好地提示用户
-            conv = self.play_page.conversation_manager.conversations.get(conv_id)
-            conv_name = conv.get('name', '当前对话') if conv else '当前对话'
-
-            reply = QMessageBox.question(
-                self,
-                "知识图谱初始化",
-                f"对话 \"{conv_name}\"还没有开始。\n\n是否要创建默认的奇幻游戏开局来开始你的冒险？\n\n点击\"否\"将保持当前知识图谱状态。",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.Yes
-            )
-
-            if reply == QMessageBox.Yes:
-                self.create_default_game_scenario(conv_id)
-        finally:
-            self._initializing_knowledge_graph = False
-
-    def create_default_game_scenario(self, conv_id: str):
-        """为对话创建默认游戏开局"""
-        try:
-            logger.info(f"为对话 {conv_id} 创建默认游戏开局")
-
-            # 使用场景管理器创建超时空之轮场景
-            opening_story, entity_count, relationship_count = self.scenario_manager.create_chrono_trigger_scenario()
-            self.memory.knowledge_graph.save_graph(self.memory.graph_save_path)
-
-            # 刷新图谱显示（已包含更新实体列表和统计）
-            self.graph_page.refresh_graph()
-            logger.info("✅ 知识图谱页面已刷新")
-
-            # 在聊天界面显示开场故事
-            self.play_page.chat_display.add_message(opening_story, False)  # False表示不是用户消息
-
-            # 将开场故事保存到对话历史中
-            self.play_page.conversation_manager.add_message({
-                'role': 'assistant',
-                'content': opening_story
-            })
-
-            # 显示成功消息
-            self.scenario_manager.show_scenario_success_message(self, entity_count, relationship_count)
-            return True
-
-        except Exception as e:
-            logger.error(f"创建默认游戏开局失败: {e}")
-            self.scenario_manager.show_scenario_error_message(self, e)
-            return False
-
-
     def closeEvent(self, event):
         """关闭事件处理"""
-        try:
-            if getattr(self.play_page, 'is_test_mode', True):
-                active_conv_id = getattr(self, '_active_local_graph_conversation_id', None)
-                if active_conv_id:
-                    self._save_conversation_knowledge_graph(active_conv_id)
-        except Exception as e:
-            logger.warning(f"关闭时保存当前对话图谱失败: {e}")
-
         # 关闭API日志文件
         if hasattr(self, 'api_log_file') and self.api_log_file:
             try:

@@ -33,7 +33,7 @@ class TimelineStore:
         self.root = Path(root)
         self.snapshot_every = snapshot_every
         self._write_lock = RLock()
-        for name in ("bases", "deltas", "snapshots", "chats"):
+        for name in ("bases", "deltas", "snapshots", "chats", "manual"):
             (self.root / name).mkdir(parents=True, exist_ok=True)
 
     def _path(self, folder, key):
@@ -81,7 +81,7 @@ class TimelineStore:
         chat["updated_at"] = _now()
         self._write("chats", chat["chat_uuid"], chat)
 
-    def register_chat(self, chat_uuid, integrity, owner, file_name, previous_file_exists=False, *, base_hash=None):
+    def register_chat(self, chat_uuid, integrity, owner, file_name, previous_file_exists=False, *, base_hash=None, derived_chat_uuid=None):
         """Register a file identity; a copied identity becomes a new chat."""
         path = self._path("chats", chat_uuid)
         if not path.exists():
@@ -92,6 +92,7 @@ class TimelineStore:
                            "file_name": file_name, "base_hash": base_hash,
                            "parent_chat_uuid": None, "head_key": None,
                            "status": "consistent", "last_error": None})
+            self._write("manual", chat_uuid, {"edits": [], "cursor": 0})
             return Registration("new", chat_uuid)
         parent = self.get_chat(chat_uuid)
         if integrity == parent["integrity"] and file_name == parent["file_name"]:
@@ -100,11 +101,16 @@ class TimelineStore:
             parent["file_name"] = file_name
             self.put_chat(parent)
             return Registration("renamed", chat_uuid)
-        child_uuid = str(uuid4())
+        child_uuid = derived_chat_uuid or str(uuid4())
         self.put_chat({"chat_uuid": child_uuid, "integrity": integrity, "owner": owner,
                        "file_name": file_name, "base_hash": parent["base_hash"],
                        "parent_chat_uuid": chat_uuid, "head_key": parent["head_key"],
                        "status": parent["status"], "last_error": parent["last_error"]})
+        source_layer = self._path("manual", chat_uuid)
+        if source_layer.exists():
+            self._write("manual", child_uuid, self._read("manual", chat_uuid))
+        else:
+            self._write("manual", child_uuid, {"edits": [], "cursor": 0})
         return Registration("derived", child_uuid)
 
     def has_delta(self, key):
