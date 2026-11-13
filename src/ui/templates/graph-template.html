@@ -15,6 +15,8 @@
     </div>
     
     <div class="controls" id="controls">
+        <div class="layout-control"><button id="arrangeBtn" onclick="arrangeGraph('auto')">一键整理</button><button id="layoutMenuBtn" aria-label="选择布局" aria-expanded="false" onclick="toggleLayoutMenu(event)">▾</button><div id="layoutMenu" class="layout-menu" hidden><button onclick="arrangeGraph('auto')">自动整理</button><button onclick="arrangeGraph('radial')">以主角为中心</button><button onclick="arrangeGraph('type')">按类型分组</button></div></div>
+        <button onclick="fitGraphToView()">适应窗口</button>
         <button onclick="togglePhysics()">关闭物理效果</button>
         <button onclick="toggleEditMode()" id="editModeBtn" title="编辑关系模式：单击两个节点创建关系，双击节点编辑节点">编辑关系</button>
         <button onclick="toggleForcePanel()" id="forcePanelBtn">调节力度</button>
@@ -75,6 +77,7 @@
         // 注意：不要重新声明，因为变量已在graph-core.js中声明
         window.graphNodes = {{NODES_DATA}};
         window.graphLinks = {{LINKS_DATA}};
+        window.graphLayout = {{LAYOUT_DATA}};
         
         console.log('页面加载开始');
         console.log('节点数据:', window.graphNodes);
@@ -82,6 +85,7 @@
     </script>
     
     <!-- 核心JavaScript -->
+    <script src="assets/js/graph/graph-layout.js"></script>
     <script src="assets/js/graph/graph-core.js"></script>
 </body>
 </html>

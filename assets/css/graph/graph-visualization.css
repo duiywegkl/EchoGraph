@@ -31,6 +31,11 @@ button:hover { color:var(--text-primary); background:var(--bg-raised); }
 button:focus { outline:1px solid var(--accent); }
 .controls button.active { background:var(--accent-subtle); color:var(--accent-text); }
 .controls button:disabled { opacity:.5; cursor:not-allowed; }
+.layout-control { position:relative; display:inline-flex; align-items:center; }
+.layout-control #layoutMenuBtn { min-width:22px; padding:4px 3px; }
+.layout-menu { position:absolute; top:36px; left:0; min-width:136px; padding:4px; background:var(--bg-raised); border:1px solid var(--border-strong); border-radius:8px; box-shadow:0 8px 24px var(--shadow); }
+.layout-menu[hidden] { display:none; }
+.layout-menu button { display:block; width:100%; text-align:left; white-space:nowrap; }
 .force-panel { top:58px; left:12px; width:270px; max-width:calc(100vw - 24px); box-sizing:border-box; }
 .force-panel h4 { margin:0 0 12px; color:var(--text-secondary); font-size:12px; letter-spacing:.5px; }
 .force-control { display:flex; align-items:center; gap:8px; margin:10px 0; color:var(--text-secondary); font-size:12px; }

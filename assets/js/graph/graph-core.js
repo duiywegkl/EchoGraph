@@ -1,8 +1,17 @@
 const graphStyle = getComputedStyle(document.documentElement);
 const graphColor = name => graphStyle.getPropertyValue('--' + name).trim();
 const GRAPH_TYPE_COLORS = Object.fromEntries(['character','location','item','event','concept','other'].map(t => [t, graphColor(t)]));
+let nodeDegrees = new Map();
+function updateNodeDegrees() {
+    nodeDegrees = new Map(nodes.map(d => [d.id, 0]));
+    links.forEach(l => {
+        const a = l.source.id || l.source, b = l.target.id || l.target;
+        nodeDegrees.set(a, (nodeDegrees.get(a) || 0) + 1);
+        nodeDegrees.set(b, (nodeDegrees.get(b) || 0) + 1);
+    });
+}
 function nodeRadius(d) {
-    const degree = links.filter(l => (l.source.id || l.source) === d.id || (l.target.id || l.target) === d.id).length;
+    const degree = nodeDegrees.get(d.id) || 0;
     return Math.min(22, 14 + Math.sqrt(degree) * 2);
 }
 function edgeEndpoints(d) {
@@ -39,6 +48,7 @@ function highlightNeighbours(focus) {
         .attr('marker-end', d => incident(d) ? 'url(#graphArrowActive)' : 'url(#graphArrow)');
     linkLabel.classed('active', incident)
         .style('opacity', d => !focus || incident(d) ? 1 : .3);
+    updateEdgeLabelVisibility(svg ? d3.zoomTransform(svg.node()).k : 1);
 }
 /**
  * EchoGraph 知识图谱可视化核心 JavaScript
@@ -54,6 +64,9 @@ let editMode = false;
 let selectedNode = null;
 let tempLine = null;
 let physicsEnabled = true;
+let layoutSaveTimer = null;
+let pendingLayoutSave = false;
+let labelSizes = new Map();
 let currentCdnIndex = 0;
 let loadStartTime = Date.now();
 
@@ -158,6 +171,7 @@ function initWebChannel() {
     if (typeof QWebChannel !== 'undefined') {
         new QWebChannel(qt.webChannelTransport, function (channel) {
             bridge = channel.objects.bridge;
+            if (pendingLayoutSave) saveLayoutSoon();
             console.log('✅ WebChannel初始化成功');
             console.log('Bridge对象:', bridge);
 
@@ -322,6 +336,7 @@ function initializeGraph() {
 
     // 首先初始化数据
     initializeGraphData();
+    updateNodeDegrees();
 
     try {
         svg = d3.select("#graph");
@@ -347,9 +362,10 @@ function initializeGraph() {
 
         // 缩放行为
         zoom = d3.zoom()
-            .scaleExtent([0.1, 4])
+            .scaleExtent([0.005, 4])
             .on("zoom", (event) => {
                 g.attr("transform", event.transform);
+                updateEdgeLabelVisibility(event.transform.k);
             });
 
         svg.call(zoom);
@@ -416,6 +432,11 @@ function initializeGraph() {
             .attr("dy", d => nodeRadius(d) + 12)
             .style("pointer-events", "none")
             .text(d => d.name);
+        label.each(function(d) {
+            const box = this.getBBox();
+            labelSizes.set(d.id, {width: box.width, height: box.height,
+                top: box.y, bottom: box.y + box.height});
+        });
         console.log(`创建了 ${nodes.length} 个节点`);
 
         // 工具提示
@@ -424,6 +445,28 @@ function initializeGraph() {
         setupEventHandlers(nodeGroup);
         setupSimulation();
         setupSliderListeners();
+        const stored = window.graphLayout || {};
+        const restored = new Set();
+        nodes.forEach(d => {
+            const point = stored[d.id];
+            if (point && Number.isFinite(point.x) && Number.isFinite(point.y)) {
+                d.x = d.fx = point.x;
+                d.y = d.fy = point.y;
+                restored.add(d.id);
+            }
+        });
+        if (restored.size) {
+            if (restored.size < nodes.length) placeNewNodes(restored);
+            simulation.stop();
+            physicsEnabled = false;
+            const btn = document.querySelector('button[onclick="togglePhysics()"]');
+            if (btn) { btn.textContent = '启动物理效果'; btn.classList.add('active'); }
+            renderGraph();
+            fitGraphToView();
+            if (restored.size < nodes.length) saveLayoutSoon();
+        } else if (nodes.length) {
+            arrangeGraph('auto');
+        }
 
         console.log('✅ 图谱初始化完成！');
 
@@ -514,7 +557,8 @@ function setupEventHandlers(nodeGroup) {
         simulation.force("center", d3.forceCenter(newWidth / 2, newHeight / 2));
         simulation.force("x", d3.forceX(newWidth / 2).strength(0.05));
         simulation.force("y", d3.forceY(newHeight / 2).strength(0.05));
-        simulation.alpha(0.3).restart();
+        if (physicsEnabled) simulation.alpha(0.3).restart();
+        else fitGraphToView();
     });
 }
 
@@ -577,15 +621,10 @@ function dragged(event, d) {
 }
 
 function dragended(event, d) {
-    if (physicsEnabled) {
-        if (!event.active) simulation.alphaTarget(0);
-        d.fx = null;
-        d.fy = null;
-    } else {
-        d.fx = event.x;
-        d.fy = event.y;
-        console.log(`节点 ${d.name} 固定在位置: (${event.x}, ${event.y})`);
-    }
+    if (physicsEnabled && !event.active) simulation.alphaTarget(0);
+    d.fx = d.x;
+    d.fy = d.y;
+    saveLayoutSoon();
 }
 
 /**
@@ -638,7 +677,9 @@ window.togglePhysics = function() {
         physicsEnabled = true;
         btn.textContent = '关闭物理效果';
         btn.classList.toggle('active');
-        simulation.alpha(0.3).restart();
+        nodes.forEach(d => { d.fx = d.fy = null; });
+        simulation.force("center", d3.forceCenter(window.innerWidth / 2, window.innerHeight / 2));
+        updateForceParameters();
     }
 }
 
@@ -889,6 +930,7 @@ function updateVisualization() {
         .text(d => d.relation || "关联");
     highlightNeighbours(selectedNode ? selectedNode.datum() : null);
 
+    updateNodeDegrees();
     simulation.nodes(nodes);
     simulation.force("link").links(links);
     simulation.alpha(0.3).restart();

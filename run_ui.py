@@ -970,6 +970,10 @@ class GraphBridge(QObject):
     def refreshGraph(self):
         self.graph_page.refresh_graph()
 
+    @Slot(str)
+    def saveLayout(self, positions_json):
+        self.graph_page.save_graph_layout(json.loads(positions_json))
+
     @Slot(str, str, str)
     def createRelation(self, source_name, target_name, relation_type):
         self.graph_page.mutate_relationship("create", source_name, target_name, relation_type)
@@ -2731,6 +2735,8 @@ class GraphPage(QWidget):
         self.showing_tavern_placeholder = False
         self._tavern_graph_data = None
         self._tavern_entities = []
+        self.layout_storage_root = Path.cwd() / "data"
+        self._layout_node_ids = set()
 
         # 创建HTML生成器
         self.html_generator = GraphHTMLGenerator()
@@ -3098,6 +3104,34 @@ class GraphPage(QWidget):
         except Exception as e:
             logger.error(f"更新统计信息失败: {e}")
 
+    def _graph_layout_path(self):
+        from src.ui.graph_layout_store import layout_path
+        if self.tavern_mode:
+            return layout_path(session_id=self.tavern_session_id, storage_root=self.layout_storage_root)
+        return layout_path(entities_path=self.memory.entities_json_path)
+
+    def load_graph_layout(self):
+        from src.ui.graph_layout_store import load_layout
+        try:
+            return load_layout(self._graph_layout_path(), self._layout_node_ids)
+        except (KeyError, ValueError, OSError) as exc:
+            logger.warning(f"Graph layout unavailable: {exc}")
+            return {}
+
+    def save_graph_layout(self, positions):
+        from src.ui.graph_layout_store import save_layout
+        try:
+            save_layout(self._graph_layout_path(), positions, self._layout_node_ids)
+        except (KeyError, ValueError, OSError) as exc:
+            logger.warning(f"Graph layout save failed: {exc}")
+
+    def clear_graph_layout(self):
+        from src.ui.graph_layout_store import clear_layout
+        try:
+            clear_layout(self._graph_layout_path())
+        except (KeyError, ValueError, OSError) as exc:
+            logger.warning(f"Graph layout clear failed: {exc}")
+
     def generate_graph_html_with_data(self, entities):
         """使用提供的实体数据生成图谱HTML文件（避免重复获取）"""
         try:
@@ -3111,7 +3145,8 @@ class GraphPage(QWidget):
                     'name': entity['name'],
                     'type': entity['type'],
                     'description': entity.get('description', ''),
-                    'group': self._get_type_group(entity['type'])
+                    'group': self._get_type_group(entity['type']),
+                    'is_main_character': bool(entity.get('attributes', {}).get('is_main_character'))
                 })
 
             # 获取知识图谱中的真实关系
@@ -3129,9 +3164,11 @@ class GraphPage(QWidget):
             # 将数据转换为JSON字符串
             nodes_json = json.dumps(nodes, ensure_ascii=False)
             links_json = json.dumps(links, ensure_ascii=False)
+            self._layout_node_ids = {node["id"] for node in nodes}
+            layout_json = json.dumps(self.load_graph_layout(), ensure_ascii=False)
 
             # 使用HTML生成器生成文件
-            self.html_generator.generate_graph_html(nodes_json, links_json, self.graph_file_path)
+            self.html_generator.generate_graph_html(nodes_json, links_json, self.graph_file_path, layout_json)
 
         except Exception as e:
             logger.error(f"生成图谱HTML失败: {e}")
@@ -4038,6 +4075,7 @@ class GraphPage(QWidget):
                     # 刷新显示（已包含统计信息更新）
                     self.refresh_graph()
 
+                self.clear_graph_layout()
                 QMessageBox.information(self, "清空完成", "知识图谱已成功清空。")
                 logger.info("知识图谱已清空")
 
@@ -4365,6 +4403,8 @@ class GraphPage(QWidget):
                 stats = response.json()
                 logger.info(f"成功获取会话统计: 节点={stats.get('graph_nodes', 0)}, 边={stats.get('graph_edges', 0)}")
                 if stats.get("graph_nodes", 0) == 0:
+                    if hasattr(self, "clear_graph_layout"):
+                        self.clear_graph_layout()
                     state = {}
                     try:
                         current = requests.get(f"{api_base_url}/tavern/current_session", timeout=health_check_timeout)
@@ -4446,7 +4486,8 @@ class GraphPage(QWidget):
                     'name': node_data.get('id', ''),
                     'type': node_data.get('type', 'concept'),
                     'description': node_data.get('description', ''),
-                    'group': self._get_type_group(node_data.get('type', 'concept'))
+                    'group': self._get_type_group(node_data.get('type', 'concept')),
+                    'is_main_character': bool(node_data.get('is_main_character'))
                 }
                 nodes.append(node)
 
@@ -4467,7 +4508,9 @@ class GraphPage(QWidget):
             links_json = json.dumps(links, ensure_ascii=False)
 
             # 使用HTML生成器生成文件
-            self.html_generator.generate_graph_html(nodes_json, links_json, self.graph_file_path)
+            self._layout_node_ids = {node["id"] for node in nodes}
+            layout_json = json.dumps(self.load_graph_layout(), ensure_ascii=False)
+            self.html_generator.generate_graph_html(nodes_json, links_json, self.graph_file_path, layout_json)
 
         except Exception as e:
             logger.error(f"从API数据生成图谱HTML失败: {e}")
@@ -5230,7 +5273,8 @@ class EchoGraphMainWindow(QMainWindow):
             )
         elif self.graph_page.html_generator.last_graph_data:
             nodes_json, links_json = self.graph_page.html_generator.last_graph_data
-            self.graph_page.html_generator.generate_graph_html(nodes_json, links_json, self.graph_page.graph_file_path)
+            layout_json = json.dumps(self.graph_page.load_graph_layout(), ensure_ascii=False)
+            self.graph_page.html_generator.generate_graph_html(nodes_json, links_json, self.graph_page.graph_file_path, layout_json)
             self.graph_page.graph_view.load(QUrl.fromLocalFile(str(self.graph_page.graph_file_path)))
         else:
             self.graph_page.refresh_graph()
