@@ -20,7 +20,7 @@ def validate_kg(value):
     if main is not None:
         raw_main = main.get('type', 'character')
         if not isinstance(raw_main, str) or raw_main.strip() not in TYPE_IDS and raw_main.strip().casefold() not in SYNONYMS:
-            raise ValueError('main_character.type ??')
+            raise ValueError(f'main_character.type 无效: {raw_main!r}，必须是 {", ".join(TYPE_IDS)} 中的一种')
         main['type'], detail = normalize_type(raw_main, main.get('subtype'))
         if detail:
             main['subtype'] = detail
@@ -28,7 +28,7 @@ def validate_kg(value):
         if not isinstance(item, dict) or any(not isinstance(item.get(k), str) or not item[k].strip() for k in ('name', 'type')):
             raise ValueError(f'entities[{index}] 缺少 name/type')
         if 'subtype' in item and not isinstance(item['subtype'], str):
-            raise ValueError(f'entities[{index}].subtype ??')
+            raise ValueError(f'entities[{index}].subtype 必须是字符串')
         raw = item['type'].strip()
         if raw not in TYPE_IDS and raw.casefold() not in SYNONYMS:
             raise ValueError(f'entities[{index}].type 无效: {raw}')
@@ -49,7 +49,7 @@ def validate_operations(value):
     for index, op in enumerate(value['operations']):
         if op.get('type') == 'add_node':
             if 'subtype' in op and not isinstance(op['subtype'], str):
-                raise ValueError(f'operations[{index}].subtype ??')
+                raise ValueError(f'operations[{index}].subtype 必须是字符串')
             raw = op.get('node_type')
             if not isinstance(raw, str) or not raw.strip():
                 raise ValueError(f'operations[{index}].node_type 无效')
@@ -62,7 +62,7 @@ def validate_operations(value):
         if isinstance(attrs, dict) and 'type' in attrs:
             raw = attrs['type']
             if not isinstance(raw, str) or (raw.strip() not in TYPE_IDS and raw.strip().casefold() not in SYNONYMS):
-                raise ValueError(f'operations[{index}].attributes.type ??')
+                raise ValueError(f'operations[{index}].attributes.type 无效: {raw!r}，必须是 {", ".join(TYPE_IDS)} 中的一种')
             attrs['type'], detail = normalize_type(raw, attrs.get('subtype'))
             if detail:
                 attrs['subtype'] = detail

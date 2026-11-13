@@ -39,9 +39,23 @@ def _flag(value):
     return UNKNOWN if value is None else ("支持" if value else "不支持")
 
 
+def context_size(model):
+    """Return (tokens, source); max_input_tokens is only a labelled fallback."""
+    raw = _first(model, "context_length", "context_window", "max_context_length",
+                 "max_model_len", "top_provider.context_length")
+    source = '上下文长度'
+    if raw is None:
+        raw = _first(model, 'max_input_tokens')
+        source = '仅最大输入 tokens'
+    try:
+        tokens = int(raw)
+    except (TypeError, ValueError):
+        return 0, source
+    return (tokens if tokens > 0 else 0), source
+
+
 def model_details(model):
-    context = _first(model, "context_length", "context_window", "max_context_length",
-                     "max_model_len", "top_provider.context_length", "max_input_tokens")
+    context, context_source = context_size(model)
     output = _first(model, "max_output_tokens", "max_completion_tokens",
                     "top_provider.max_completion_tokens", "output_token_limit")
     modalities = _first(model, "architecture.input_modalities", "architecture.modality",
@@ -76,7 +90,8 @@ def model_details(model):
         except (OverflowError, OSError, ValueError):
             created = str(created)
     return {
-        "上下文长度": str(context) if context is not None else UNKNOWN,
+        "上下文长度": (f'{context}（{context_source}）' if context and context_source != '上下文长度'
+                   else str(context) if context else UNKNOWN),
         "最大输出": str(output) if output is not None else UNKNOWN,
         "图片输入": _flag(vision),
         "工具调用": _flag(tools),

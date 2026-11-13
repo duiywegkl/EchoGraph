@@ -2225,7 +2225,7 @@ class GraphPage(QWidget):
                 save_local_relationship(self.memory, action, source, target, relation)
                 self.refresh_graph()
         except Exception as exc:
-            QMessageBox.warning(self, "??????", str(exc))
+            QMessageBox.warning(self, "关系操作失败", str(exc))
             return False
         return True
 
@@ -2887,7 +2887,7 @@ class GraphPage(QWidget):
                     self.current_selected_node = None
                     self.detail_text.clear()
                 except Exception as exc:
-                    QMessageBox.warning(self, "????", str(exc))
+                    QMessageBox.warning(self, "删除失败", str(exc))
                 return
             # 从实际存储中删除节点
             if '] ' in node_text:
@@ -3782,6 +3782,12 @@ class ConfigPage(QWidget):
         # LLM参数配置
         self.max_tokens_input = ValueUnitInput([UnitSpec('tokens', 1), UnitSpec('K tokens', 1000)], 100, 32000, decimals=0)
         self.max_tokens_input.setValue(4000)
+        self.context_size_input = ValueUnitInput([UnitSpec('tokens', 1), UnitSpec('K tokens', 1000)], 0, 2000000, decimals=0)
+        self.context_size_input.setValue(0)
+        self.context_size_hint = QLabel('0 表示未知')
+        self.context_size_hint.setProperty('role', 'status')
+        self.timeline_per_turn_checkbox = QCheckBox('编辑后逐轮重新生成')
+        self.timeline_include_books_checkbox = QCheckBox('收录全局和 Persona 世界书')
 
         self.temperature_input = ValueUnitInput([], 0.0, 2.0, decimals=1)
         self.temperature_input.setValue(0.8)
@@ -3800,10 +3806,14 @@ class ConfigPage(QWidget):
         llm_layout.addRow("", self.model_status_label)
         llm_layout.addRow("模型详情:", details)
         llm_layout.addRow("最大输出量:", self.max_tokens_input)
+        llm_layout.addRow("上下文长度:", self.context_size_input)
+        llm_layout.addRow("", self.context_size_hint)
         llm_layout.addRow("温度参数:", self.temperature_input)
         llm_layout.addRow("请求超时:", self.request_timeout_input)
         llm_layout.addRow("", self.stream_checkbox)
         llm_layout.addRow("", self.embedding_review_checkbox)
+        llm_layout.addRow("", self.timeline_per_turn_checkbox)
+        llm_layout.addRow("", self.timeline_include_books_checkbox)
 
         # 滑动窗口配置组
         window_group = QGroupBox("滑动窗口配置")
@@ -3950,6 +3960,9 @@ class ConfigPage(QWidget):
 
         # LLM参数配置
         self.max_tokens_input.setValue(int(config.get("MAX_TOKENS", "4000")))
+        self.context_size_input.setValue(int(config.get("LLM_CONTEXT_SIZE") or "0"))
+        self.timeline_per_turn_checkbox.setChecked(config.get("TIMELINE_PER_TURN_REGEN", "false").lower() in ('true', '1', 't'))
+        self.timeline_include_books_checkbox.setChecked(config.get("TIMELINE_INCLUDE_GLOBAL_PERSONA_BOOKS", "false").lower() in ('true', '1', 't'))
         self.temperature_input.setValue(float(config.get("TEMPERATURE", "0.8")))
         self.request_timeout_input.setValue(int(config.get("REQUEST_TIMEOUT", "180")))
 
@@ -3982,11 +3995,20 @@ class ConfigPage(QWidget):
         self.theme_combo.setCurrentIndex(self.theme_combo.findData(active_theme))
 
     def update_model_details(self, model_id):
-        from src.utils.model_catalog import model_details
+        from src.utils.model_catalog import model_details, context_size
         data = self.model_metadata.get(model_id)
         details = model_details(data) if data is not None else {}
         for name, label in self.model_detail_labels.items():
             label.setText(details.get(name, "未提供（使用服务商默认）"))
+        size, source = context_size(data or {})
+        if size:
+            if self.context_size_input.value() == 0:
+                self.context_size_input.setValue(size)
+                self.context_size_hint.setText(f'已从模型列表填写：{size} tokens（{source}）')
+            else:
+                self.context_size_hint.setText(f'模型列表提供：{size} tokens（{source}）')
+        else:
+            self.context_size_hint.setText('模型列表未提供上下文长度；0 表示未知')
         if data is None:
             self.model_status_label.setText("当前模型无元数据")
 
@@ -4048,6 +4070,7 @@ class ConfigPage(QWidget):
         """保存配置；先验证全部数值，避免部分写入 .env。"""
         fields = (
             ("最大输出量", self.max_tokens_input),
+            ("上下文长度", self.context_size_input),
             ("温度参数", self.temperature_input),
             ("请求超时", self.request_timeout_input),
             ("滑动窗口", self.window_size_input),
@@ -4074,6 +4097,9 @@ class ConfigPage(QWidget):
 
             # LLM参数配置
             set_key(self.env_path, "MAX_TOKENS", str(self.max_tokens_input.value()))
+            set_key(self.env_path, "LLM_CONTEXT_SIZE", str(self.context_size_input.value()))
+            set_key(self.env_path, "TIMELINE_PER_TURN_REGEN", str(self.timeline_per_turn_checkbox.isChecked()).lower())
+            set_key(self.env_path, "TIMELINE_INCLUDE_GLOBAL_PERSONA_BOOKS", str(self.timeline_include_books_checkbox.isChecked()).lower())
             set_key(self.env_path, "TEMPERATURE", str(self.temperature_input.value()))
             set_key(self.env_path, "REQUEST_TIMEOUT", str(self.request_timeout_input.value()))
 

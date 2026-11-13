@@ -5,7 +5,18 @@ import pytest
 from fastapi.testclient import TestClient
 
 from src.utils import config as config_module
-from src.utils.model_catalog import fetch_models, model_details, parse_models, validate_endpoint
+from src.utils.model_catalog import context_size, fetch_models, model_details, parse_models, validate_endpoint
+
+
+def test_timeline_config_reload(temporary_config):
+    temporary_config.write_text('LLM_CONTEXT_SIZE=64000\nTIMELINE_PER_TURN_REGEN=true\n'
+                                'TIMELINE_INCLUDE_GLOBAL_PERSONA_BOOKS=true\n', encoding='utf-8')
+    config_module.reload_config()
+    assert config_module.config.llm.context_size == 64000
+    assert config_module.config.timeline.per_turn_regen
+    assert config_module.config.timeline.include_global_persona_books
+    assert context_size({'context_length': 128000, 'max_input_tokens': 64000}) == (128000, '上下文长度')
+    assert context_size({'max_input_tokens': 64000}) == (64000, '仅最大输入 tokens')
 
 
 @pytest.fixture

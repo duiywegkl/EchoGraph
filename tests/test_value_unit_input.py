@@ -79,13 +79,13 @@ def test_unitless_mode(app):
 
 
 CONFIG_VALUES = {
-    "MAX_TOKENS": "32000", "TEMPERATURE": "0.8", "REQUEST_TIMEOUT": "181",
+    "MAX_TOKENS": "32000", "LLM_CONTEXT_SIZE": "128000", "TEMPERATURE": "0.8", "REQUEST_TIMEOUT": "181",
     "SLIDING_WINDOW_SIZE": "20", "PROCESSING_DELAY": "0", "API_TIMEOUT": "59",
     "HEALTH_CHECK_TIMEOUT": "29",
     "MAX_MESSAGES": "5000", "ANIMATION_INTERVAL": "1251", "POLL_INTERVAL": "7",
 }
 FIELD_NAMES = {
-    "MAX_TOKENS": "max_tokens_input", "TEMPERATURE": "temperature_input",
+    "MAX_TOKENS": "max_tokens_input", "LLM_CONTEXT_SIZE": "context_size_input", "TEMPERATURE": "temperature_input",
     "REQUEST_TIMEOUT": "request_timeout_input", "SLIDING_WINDOW_SIZE": "window_size_input",
     "PROCESSING_DELAY": "processing_delay_input", "API_TIMEOUT": "api_timeout_input",
     "HEALTH_CHECK_TIMEOUT": "health_check_timeout_input",
@@ -222,3 +222,32 @@ def test_load_save_round_trip_for_every_numeric_field(config_page):
     assert not messages
     after = dotenv_values(path)
     assert {key: after[key] for key in CONFIG_VALUES} == CONFIG_VALUES
+
+
+def test_timeline_switches_and_model_context_hint(config_page):
+    page, path, _ = config_page
+    page.timeline_per_turn_checkbox.setChecked(True)
+    page.timeline_include_books_checkbox.setChecked(True)
+    page.model_metadata = {'selected': {'context_length': 64000, 'max_input_tokens': 32000}}
+    page.update_model_details('selected')
+    assert page.context_size_input.value() == 128000
+    assert '64000' in page.context_size_hint.text()
+    page.context_size_input.setValue(0)
+    page.update_model_details('selected')
+    assert page.context_size_input.value() == 64000
+    page.save_config()
+    page.load_config()
+    assert page.timeline_per_turn_checkbox.isChecked()
+    assert page.timeline_include_books_checkbox.isChecked()
+    assert dotenv_values(path)['TIMELINE_INCLUDE_GLOBAL_PERSONA_BOOKS'] == 'true'
+
+
+def test_context_length_k_tokens_stores_base_tokens(config_page):
+    page, path, _ = config_page
+    field = page.context_size_input
+    assert [unit.label for unit in field.units] == ['tokens', 'K tokens']
+    field.unit_combo.setCurrentIndex(1)
+    field.number_edit.setText('128')
+    assert field.value() == 128000
+    page.save_config()
+    assert dotenv_values(path)['LLM_CONTEXT_SIZE'] == '128000'

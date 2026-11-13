@@ -1,9 +1,8 @@
-import json
-import re
 from typing import Dict, Any, List, TYPE_CHECKING
 from loguru import logger
 
 from src.graph.node_types import prompt_types
+from src.timeline.initialization import extraction_prompt, world_batches
 from src.utils.config import config
 from src.core.rpg_text_processor import RPGTextProcessor
 from src.core.perception import PerceptionModule
@@ -70,34 +69,12 @@ class GameEngine:
     
     def _world_batches(self, world_info: str, budget: int = 6000) -> List[str]:
         """Keep world-book entries intact. Blank lines delimit plain-text entries."""
-        if not world_info or world_info == 'No world information available.':
-            return []
-        try:
-            decoded = json.loads(world_info)
-            if isinstance(decoded, list):
-                entries = [json.dumps(entry, ensure_ascii=False) for entry in decoded]
-            else:
-                entries = [world_info]
-        except (ValueError, TypeError):
-            entries = [entry for entry in re.split(r'\n\s*\n', world_info) if entry.strip()]
-        batches, current = [], ''
-        for entry in entries:
-            if current and len(current) + len(entry) + 2 > budget:
-                batches.append(current)
-                current = ''
-            if len(entry) > budget:
-                logger.warning(f'⚠️ 单条世界书条目超过 {budget} 字符，保持条目完整: {len(entry)} 字符')
-            current = current + ('\n\n' if current else '') + entry
-        if current:
-            batches.append(current)
-        return batches
+        return world_batches(world_info, budget)
 
     def _perform_llm_analysis(self, name: str, description: str, personality: str,
                              scenario: str, first_mes: str, example: str, world_info: str) -> Dict[str, Any]:
         from src.utils.llm_json import request_json, validate_kg
         batches = [''] + self._world_batches(world_info)
-        card = (f'主角色：{name}\n描述：{description}\n性格：{personality}\n'
-                f'场景：{scenario}\n首条消息：{first_mes}\n示例：{example}')
         entities, relationships = {}, {}
         canonical = {name.strip().casefold(): name}
         main = {'name': name, 'type': 'character', 'attributes': {'is_main_character': True}}
@@ -105,12 +82,8 @@ class GameEngine:
         rounds_used = 0
         for index, world_batch in enumerate(batches):
             known = ', '.join(list(canonical.values())[:80])
-            prompt = (f'从以下材料提取知识图谱。主角色始终为 {name}。已知实体：{known}。'
-                      '只返回 JSON 对象，包含 main_character、entities、relationships。'
-                      '实体需 name/type，可选简短 description/attributes；关系需 source/target/relationship。'
-                      '每个描述不超过 60 字；不要重复或编造实体；关系端点使用实体名称。\n'
-                      f'角色卡：\n{card}\n世界书条目：\n{world_batch}')
-            prompt += "\n" + prompt_types()
+            prompt = extraction_prompt(name, description, personality, scenario,
+                                       first_mes, example, world_batch, known)
             logger.info(f'📚 KG 批次 {index + 1}/{len(batches)} | 输入长度={len(prompt)}')
             try:
                 parsed, used = request_json(

@@ -33,13 +33,16 @@ def segment_messages(messages, base_hash):
             raise ValueError("message must have a boolean included field")
         if not message["included"]:
             continue
-        if message.get("role") not in ("user", "assistant", "narrator"):
+        if message.get("role") not in ("user", "assistant", "narrator", "lorebook"):
             raise ValueError("invalid visible message role")
         if not isinstance(message.get("msg_id"), str) or not isinstance(message.get("version_id"), str):
             raise ValueError("visible message ids must be strings")
         _content(message.get("content"))
         visible.append(dict(message))
 
+    # Lore changes are part of the opening anchor even if the caller appends them.
+    visible = [m for m in visible if m['role'] == 'lorebook'] + [
+        m for m in visible if m['role'] != 'lorebook']
     groups = [[]]
     has_reply = False
     for message in visible:

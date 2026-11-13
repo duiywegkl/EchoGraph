@@ -6,6 +6,8 @@ from threading import Lock, RLock
 from .graph import Delta, diff
 from .segments import Segment, segment_messages
 from .store import StoreError
+from .budget import plan_groups
+from .extractor import ExtractionRequestError
 
 
 @dataclass
@@ -101,11 +103,11 @@ class TimelineEngine:
             grouped[op["turn"]].append({k: v for k, v in op.items() if k != "turn"})
         return grouped
 
-    def _store_segment(self, segment, base_hash, state, ops):
+    def _store_segment(self, segment, base_hash, state, ops, info=None):
         before = state.copy()
         state.apply(ops)
         self.store.put_delta(segment, base_hash, diff(before, state),
-                             {"extractor": type(self.extractor).__name__})
+                             {"extractor": type(self.extractor).__name__, **(info or {})})
         if (segment.turn + 1) % self.store.snapshot_every == 0:
             self.store.put_snapshot(segment.key, state)
 
@@ -124,19 +126,51 @@ class TimelineEngine:
             pending_turns = {segment.turn for segment in result.pending}
             first_missing = min(pending_turns)
             state = self.store.state_at(segments[first_missing].parent_key, base_hash)
+            def run_group(group, depth=0):
+                try:
+                    raw = self.extractor.extract(state.copy(), group)
+                    grouped = self._validated_ops(raw, {item.turn for item in group})
+                except ExtractionRequestError:
+                    if len(group) == 1 or depth == 3:
+                        raise
+                    middle = len(group) // 2
+                    run_group(group[:middle], depth + 1)
+                    run_group(group[middle:], depth + 1)
+                    return
+                info = {"mode": mode, "group_size": len(group), "split_depth": depth,
+                        "model": getattr(self.extractor, 'model', '')}
+                for item in group:
+                    self._store_segment(item, base_hash, state, grouped[item.turn], info)
+
             try:
-                if mode == "batch":
-                    raw = self.extractor.extract(state.copy(), result.pending)
-                    grouped = self._validated_ops(raw, pending_turns)
-                for segment in segments[first_missing:]:
-                    if segment.turn not in pending_turns:
-                        record = self.store.get_delta(segment.key)
+                cursor = first_missing
+                while cursor < len(segments):
+                    if segments[cursor].turn not in pending_turns:
+                        record = self.store.get_delta(segments[cursor].key)
                         Delta.from_dict(record["delta"]).apply_forward(state)
+                        cursor += 1
                         continue
-                    if mode == "per_turn":
-                        raw = self.extractor.extract(state.copy(), [segment])
-                        grouped = self._validated_ops(raw, {segment.turn})
-                    self._store_segment(segment, base_hash, state, grouped[segment.turn])
+                    end = cursor
+                    while end < len(segments) and segments[end].turn in pending_turns:
+                        end += 1
+                    run = segments[cursor:end]
+                    if mode == 'per_turn':
+                        groups = [[item] for item in run]
+                    elif getattr(self.extractor, 'context_size', 0) and hasattr(self.extractor, 'request_text'):
+                        groups = None
+                    else:
+                        groups = [run]
+                    if groups is None:
+                        remaining = run
+                        while remaining:
+                            group = plan_groups(remaining, self.extractor.context_size,
+                                                lambda items: self.extractor.request_text(state, items))[0]
+                            run_group(group)
+                            remaining = remaining[len(group):]
+                    else:
+                        for group in groups:
+                            run_group(group)
+                    cursor = end
             except Exception as exc:
                 with lock:
                     if self._generation[chat_uuid] == generation:

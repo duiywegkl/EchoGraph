@@ -36,6 +36,12 @@ class LLMConfig(BaseModel):
     api_key: Optional[str] = None
     base_url: Optional[str] = None
     request_timeout: int = 180  # 默认超时时间为180秒
+    context_size: int = 0
+
+
+class TimelineConfig(BaseModel):
+    per_turn_regen: bool = False
+    include_global_persona_books: bool = False
 
 class MemoryConfig(BaseModel):
     max_hot_memory: int = 5
@@ -80,6 +86,7 @@ class Config:
             llm_config['model'] = os.getenv('DEFAULT_MODEL')
         if os.getenv('MAX_TOKENS'):
             llm_config['max_tokens'] = int(os.environ['MAX_TOKENS'])
+        llm_config['context_size'] = int(os.getenv('LLM_CONTEXT_SIZE') or 0)
         # 从环境变量读取流式输出配置
         stream_env = os.getenv('LLM_STREAM_OUTPUT', 'false').lower()
         if stream_env in ('true', '1', 't'):
@@ -88,6 +95,9 @@ class Config:
         self.system = SystemConfig(**config_data.get('system', {}))
         self.logging = LoggingConfig(**config_data.get('logging', {}))
         self.llm = LLMConfig(**llm_config)
+        self.timeline = TimelineConfig(
+            per_turn_regen=os.getenv('TIMELINE_PER_TURN_REGEN', 'false').lower() in ('true', '1', 't'),
+            include_global_persona_books=os.getenv('TIMELINE_INCLUDE_GLOBAL_PERSONA_BOOKS', 'false').lower() in ('true', '1', 't'))
         self.memory = MemoryConfig(**config_data.get('memory', {}))
         self.game = GameConfig(**config_data.get('game', {}))
 
@@ -105,7 +115,7 @@ def reload_config(path=None):
     with _reload_lock:
         _load_file_environment(path)
         fresh = Config(config.config_path)
-        for name in ("system", "logging", "llm", "memory", "game"):
+        for name in ("system", "logging", "llm", "memory", "game", "timeline"):
             getattr(config, name).__dict__.update(getattr(fresh, name).__dict__)
         return config
 
