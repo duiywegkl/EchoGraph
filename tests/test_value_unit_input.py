@@ -6,6 +6,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from dotenv import dotenv_values
+from PySide6.QtCore import QObject, Signal
+from PySide6.QtNetwork import QNetworkReply, QNetworkRequest
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from src.ui.value_unit_input import UnitSpec, ValueUnitInput
@@ -79,14 +81,14 @@ def test_unitless_mode(app):
 CONFIG_VALUES = {
     "MAX_TOKENS": "32000", "TEMPERATURE": "0.8", "REQUEST_TIMEOUT": "181",
     "SLIDING_WINDOW_SIZE": "20", "PROCESSING_DELAY": "0", "API_TIMEOUT": "59",
-    "HEALTH_CHECK_TIMEOUT": "29", "SILLYTAVERN_TIMEOUT": "7",
+    "HEALTH_CHECK_TIMEOUT": "29",
     "MAX_MESSAGES": "5000", "ANIMATION_INTERVAL": "1251", "POLL_INTERVAL": "7",
 }
 FIELD_NAMES = {
     "MAX_TOKENS": "max_tokens_input", "TEMPERATURE": "temperature_input",
     "REQUEST_TIMEOUT": "request_timeout_input", "SLIDING_WINDOW_SIZE": "window_size_input",
     "PROCESSING_DELAY": "processing_delay_input", "API_TIMEOUT": "api_timeout_input",
-    "HEALTH_CHECK_TIMEOUT": "health_check_timeout_input", "SILLYTAVERN_TIMEOUT": "tavern_timeout_input",
+    "HEALTH_CHECK_TIMEOUT": "health_check_timeout_input",
     "MAX_MESSAGES": "max_messages_input", "ANIMATION_INTERVAL": "animation_interval_input",
     "POLL_INTERVAL": "poll_interval_input",
 }
@@ -107,6 +109,96 @@ def config_page(app, tmp_path, monkeypatch):
     monkeypatch.setattr(QMessageBox, "critical", lambda *_args: pytest.fail(str(_args[-1])))
     page = run_ui.ConfigPage(env_path=path)
     return page, path, messages
+
+
+def test_old_sillytavern_keys_are_ignored(config_page):
+    page, path, _ = config_page
+    with path.open('a', encoding='utf-8') as env:
+        env.write('SILLYTAVERN_HOST=old.example\nSILLYTAVERN_PORT=8123\nSILLYTAVERN_TIMEOUT=17\n')
+    page.load_config()
+    assert not hasattr(page, 'tavern_host_input')
+    assert not hasattr(page, 'tavern_port_input')
+    assert not hasattr(page, 'tavern_timeout_input')
+
+
+class StubReply(QObject):
+    finished = Signal()
+
+    def __init__(self, status_code, data):
+        super().__init__()
+        self.status_code = status_code
+        self.data = data
+
+    def error(self):
+        return QNetworkReply.NoError
+
+    def attribute(self, attribute):
+        assert attribute == QNetworkRequest.HttpStatusCodeAttribute
+        return self.status_code
+
+    def readAll(self):
+        return self.data
+
+
+class StubNetworkManager:
+    def __init__(self, status_code=200, data=b'{"connected": true}'):
+        self.status_code = status_code
+        self.data = data
+        self.urls = []
+        self.replies = []
+
+    def get(self, request):
+        self.urls.append(request.url().toString())
+        reply = StubReply(self.status_code, self.data)
+        self.replies.append(reply)
+        return reply
+
+
+@pytest.mark.parametrize('status_code,data,expected', [
+    (200, b'{"connected": true}', ("已连接", "运行中")),
+    (200, b'{"connected": false}', ("未连接", "运行中")),
+    (503, b'', ("未连接", "未运行")),
+])
+def test_status_display_from_stubbed_http(config_page, monkeypatch, status_code, data, expected):
+    import run_ui
+    page, _, _ = config_page
+    manager = StubNetworkManager(status_code, data)
+    page.connection_status_manager = manager
+    monkeypatch.setattr(run_ui.requests, 'get', lambda *_args, **_kwargs: pytest.fail('blocking requests.get'))
+    page.show()
+    assert len(manager.replies) == 1
+    manager.replies[0].finished.emit()
+    assert (page.plugin_status_label.text(), page.backend_status_label.text()) == expected
+
+
+def test_connection_status_polls_only_when_visible_and_uses_started_port(config_page, monkeypatch):
+    import run_ui
+    page, _, _ = config_page
+    page.api_server_port = 9876
+    page.api_server_port_input.setText('12345')
+    manager = StubNetworkManager()
+    page.connection_status_manager = manager
+    monkeypatch.setattr(run_ui.requests, 'get', lambda *_args, **_kwargs: pytest.fail('blocking requests.get'))
+    page.refresh_connection_status()
+    page.connection_status_timer.timeout.emit()
+    assert manager.urls == []
+    assert not page.connection_status_timer.isActive()
+
+    page.show()
+    assert manager.urls == ['http://127.0.0.1:9876/system/plugin_status']
+    assert page.connection_status_timer.isActive()
+    page.refresh_connection_status()
+    manager.replies[1].finished.emit()
+    assert page.plugin_status_label.text() == '已连接'
+    manager.replies[0].status_code = 503
+    manager.replies[0].finished.emit()
+    assert page.plugin_status_label.text() == '已连接'
+
+    page.hide()
+    page.refresh_connection_status()
+    page.connection_status_timer.timeout.emit()
+    assert len(manager.urls) == 2
+    assert not page.connection_status_timer.isActive()
 
 
 def test_save_refuses_invalid_without_writing(config_page):

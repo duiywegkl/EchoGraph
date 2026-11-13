@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QRadioButton, QButtonGroup, QScrollArea, QFrame, QStyledItemDelegate
 )
 from PySide6.QtCore import Qt, QObject, Signal as pyqtSignal, QUrl, Slot, QTimer, QPropertyAnimation, QRect, QThread, QEvent
+from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtGui import QIcon, QFont, QColor, QIntValidator, QTextCursor, QPainter, QPen, QBrush
@@ -41,650 +42,6 @@ ATTENTION_CONFIG = {
     'max_context_entities': 15,
 }
 
-# 添加酒馆初始化工作线程类
-class TavernInitWorker(QThread):
-    """酒馆模式初始化工作线程"""
-
-    # 定义信号
-    progress_updated = pyqtSignal(str, str)  # (status_message, step_info)
-    initialization_completed = pyqtSignal(dict)  # (result_data)
-    error_occurred = pyqtSignal(str)  # (error_message)
-    world_info_confirmation_required = pyqtSignal(dict)  # (character_data)
-
-    def __init__(self, tavern_manager, tavern_config):
-        super().__init__()
-        self.tavern_manager = tavern_manager
-        self.tavern_config = tavern_config
-        self._world_info_decision_event = threading.Event()
-        self._continue_without_world_info = False
-
-    def run(self):
-        """在后台线程中执行酒馆初始化"""
-        try:
-            logger.info("🧵 开始后台酒馆初始化线程...")
-
-            # 步骤1: 连接测试
-            self.progress_updated.emit("测试SillyTavern连接...", "检查连接可用性")
-
-            # 测试连接
-            connector = SillyTavernConnector(self.tavern_config)
-            connection_result = connector.test_connection()
-
-            if connection_result["status"] != "connected":
-                self.error_occurred.emit(f"无法连接SillyTavern: {connection_result.get('error', '连接失败')}")
-                return
-
-            # 步骤2: 不再依赖后台API获取角色，而是等待插件提供角色信息
-            self.progress_updated.emit("等待插件提供角色信息...", "插件会自动检测当前选中的角色")
-
-            # 检查插件是否已经提供角色信息
-            character_data = self._wait_for_character_from_plugin()
-            if not character_data:
-                self.error_occurred.emit("插件未能获取到角色信息，请确保：\n1. 已在SillyTavern中选择了角色\n2. EchoGraph插件正常运行\n3. 刷新页面后重试\n\n 如果持续无法获取角色信息，将自动切换回本地测试模式")
-                return
-
-            if not self._has_world_info_content(character_data.get("world_info")):
-                self.progress_updated.emit("未获取到世界书文本", "等待用户确认是否继续")
-                self._continue_without_world_info = False
-                self._world_info_decision_event.clear()
-                self.world_info_confirmation_required.emit(character_data)
-                if not self._world_info_decision_event.wait(timeout=300):
-                    self.error_occurred.emit("未收到用户确认，已取消酒馆初始化。")
-                    return
-                if not self._continue_without_world_info:
-                    self.error_occurred.emit("未获取到世界书文本，用户已取消初始化。")
-                    return
-                self.progress_updated.emit("已确认继续", "将以空世界书文本继续初始化")
-
-            # 步骤3: 检查现有会话
-            self.progress_updated.emit("检查现有会话...", f"查找角色 {character_data['name']} 的现有会话")
-
-            existing_session = self._check_existing_session(character_data.get('name'))
-            if existing_session:
-                # 使用现有会话（与当前角色匹配）
-                session_id = existing_session["session_id"]
-                nodes_count = existing_session.get("graph_nodes", 0)
-
-                self.progress_updated.emit("发现现有会话", f"会话ID: {session_id[:8]}... 节点数: {nodes_count}")
-
-                # 通知插件连接状态
-                connector.notify_plugin_connection(session_id)
-
-                result = {
-                    "character": character_data['name'],
-                    "session_id": session_id,
-                    "nodes_created": nodes_count,
-                    "connection": connection_result,
-                    "reused_existing": True
-                }
-
-                self.initialization_completed.emit(result)
-                return
-
-            # 步骤4: 启动异步初始化
-            self.progress_updated.emit("启动异步初始化...", "准备创建新的知识图谱会话")
-
-            task_id = self._start_async_initialization_with_character_data(character_data)
-            if not task_id:
-                return  # 错误已在方法中处理
-
-            # 步骤5: 实时轮询任务进度
-            self._poll_initialization_progress(task_id, character_data, connector, connection_result)
-
-        except Exception as e:
-            logger.error(f"❌ 酒馆初始化线程异常: {e}")
-            logger.error(f"详细错误: {traceback.format_exc()}")
-            self.error_occurred.emit(f"初始化过程发生异常: {str(e)}")
-
-    def _wait_for_character_from_plugin(self, timeout=10):
-        """等待插件提供角色信息"""
-
-        logger.info("⏳ 等待插件提供角色信息...")
-        start_time = time.time()
-
-        while time.time() - start_time < timeout:
-            try:
-                # 检查后台是否已收到插件提交的角色数据
-                api_base_url = "http://127.0.0.1:9543"
-                available_chars_url = f"{api_base_url}/tavern/available_characters"
-
-                api_timeout = int(os.getenv("API_TIMEOUT", "15"))
-                response = requests.get(available_chars_url, timeout=api_timeout)
-
-                if response.status_code == 200:
-                    characters_data = response.json()
-                    characters = characters_data.get('characters', [])
-
-                    logger.info(f"🔍 检查插件提交的角色数据: 找到 {len(characters)} 个角色")
-
-                    if characters:
-                        # 选择最新提交的角色（按时间排序，第一个是最新的）
-                        latest_character = characters[0]
-                        character_id = latest_character['character_id']
-                        character_name = latest_character['character_name']
-
-                        logger.info(f"✅ 找到最新角色: {character_name} (ID: {character_id})")
-
-                        # 获取完整的角色数据
-                        char_data_url = f"{api_base_url}/tavern/get_character/{character_id}"
-                        char_response = requests.get(char_data_url, timeout=api_timeout)
-
-                        if char_response.status_code == 200:
-                            character_info = char_response.json()
-                            character_data = character_info.get('character_data', {})
-
-                            logger.info(f"✅ 成功获取角色完整数据: {character_name}")
-                            logger.info(f"  - 描述长度: {len(character_data.get('description', ''))}")
-                            logger.info(f"  - 个性长度: {len(character_data.get('personality', ''))}")
-                            logger.info(f"  - 场景长度: {len(character_data.get('scenario', ''))}")
-
-                            # 返回格式化的角色数据
-                            return {
-                                'name': character_data.get('name', character_name),
-                                'description': character_data.get('description', ''),
-                                'personality': character_data.get('personality', ''),
-                                'scenario': character_data.get('scenario', ''),
-                                'first_mes': character_data.get('first_mes', ''),
-                                'example_dialogue': character_data.get('mes_example', ''),
-                                'world_info': [],  # 世界书信息暂时为空，后续可扩展
-                                'character_id': character_id,
-                                'source': 'plugin_submission'
-                            }
-                        else:
-                            logger.warning(f"⚠️ 无法获取角色详细数据: HTTP {char_response.status_code}")
-                    else:
-                        logger.debug("🔄 插件尚未提交角色数据，继续等待...")
-                else:
-                    logger.debug(f"🔄 检查角色数据失败: HTTP {response.status_code}，继续等待...")
-
-            except Exception as e:
-                logger.debug(f"检查插件角色信息时异常: {e}")
-
-            time.sleep(1)
-
-        logger.warning("⏰ 等待插件角色信息超时")
-        return None
-
-    def _check_existing_session(self, character_name: str = None):
-        """检查是否有现有的酒馆会话
-        优先按角色名推导的会话ID精确查询，避免误用上一次的会话。
-        """
-        try:
-            import hashlib
-            api_base_url = "http://127.0.0.1:9543"
-
-            # 如果提供了角色名，则根据一致规则生成会话ID并精确查询
-            if character_name and character_name.strip():
-                character_hash = hashlib.md5(character_name.encode('utf-8')).hexdigest()[:8]
-                session_id = f"tavern_{character_name}_{character_hash}"
-                try:
-                    health_timeout = int(os.getenv("HEALTH_CHECK_TIMEOUT", "10"))
-                    stats_resp = requests.get(f"{api_base_url}/sessions/{session_id}/stats", timeout=health_timeout)
-                    if stats_resp.status_code == 200:
-                        stats = stats_resp.json() if hasattr(stats_resp, 'json') else {}
-                        return {
-                            "has_session": True,
-                            "session_id": session_id,
-                            "graph_nodes": stats.get("graph_nodes", 0),
-                            "graph_edges": stats.get("graph_edges", 0)
-                        }
-                except Exception:
-                    pass  # 精确查询失败则回退到全局最新会话
-
-            # 回退：查询最新的酒馆会话（可能与当前角色不一致，谨慎使用）
-            response = requests.get(f"{api_base_url}/tavern/current_session", timeout=health_timeout)
-            if response.status_code == 200:
-                session_data = response.json()
-                if session_data.get("has_session"):
-                    return session_data
-
-            return None
-        except Exception as e:
-            logger.warning(f"检查现有会话失败: {e}")
-            return None
-
-    def _start_async_initialization_with_character_data(self, character_data) -> str:
-        """基于插件提交的角色数据启动异步初始化任务，返回task_id"""
-        logger.info("🚀 ========== 基于插件角色数据启动异步初始化任务 ==========")
-        try:
-            import hashlib
-
-            api_base_url = "http://127.0.0.1:9543"
-
-            # 从插件角色数据生成一致的会话ID
-            character_name = character_data['name']
-            character_hash = hashlib.md5(character_name.encode('utf-8')).hexdigest()[:8]
-            session_id = f"tavern_{character_name}_{character_hash}"
-
-            logger.info(f"📝 会话信息:")
-            logger.info(f"  - 角色名称: {character_name}")
-            logger.info(f"  - 角色哈希: {character_hash}")
-            logger.info(f"  - 会话ID: {session_id}")
-            logger.info(f"  - 数据来源: {character_data.get('source', 'unknown')}")
-
-            # 构建角色卡数据
-            character_card = {
-                "name": character_data['name'],
-                "description": character_data.get('description', ''),
-                "personality": character_data.get('personality', ''),
-                "scenario": character_data.get('scenario', ''),
-                "first_mes": character_data.get('first_mes', ''),
-                "mes_example": character_data.get('example_dialogue', ''),
-                "tags": ["tavern_mode", "plugin_submitted"]
-            }
-
-            # 构建世界信息：无世界书时保持空字符串，不传递默认文本
-            world_info_text = ""
-            world_info_entries = character_data.get('world_info', [])
-
-            if world_info_entries:
-                for entry in world_info_entries:
-                    if isinstance(entry, dict):
-                        keys = entry.get('keys', [])
-                        content = entry.get('content', '')
-                        if keys and content:
-                            world_info_text += f"[{', '.join(keys)}]: {content}\n\n"
-
-            logger.info(f"📦 插件角色数据统计:")
-            logger.info(f"  - 角色卡字段数: {len(character_card)}")
-            logger.info(f"  - 角色描述长度: {len(character_card['description'])} 字符")
-            logger.info(f"  - 角色个性长度: {len(character_card['personality'])} 字符")
-            logger.info(f"  - 角色场景长度: {len(character_card['scenario'])} 字符")
-            logger.info(f"  - 世界书长度: {len(world_info_text)} 字符")
-            logger.info(f"  - 世界书条目数: {len(world_info_entries)}")
-
-            payload = {
-                "session_id": session_id,
-                "character_card": character_card,
-                "world_info": world_info_text,
-                "is_test": False,
-                "enable_agent": True,  # 图谱维护仅允许LLM Agent
-                "session_config": {
-                    "sliding_window": {
-                        "window_size": int(os.getenv("SLIDING_WINDOW_SIZE", "4")),
-                        "processing_delay": int(os.getenv("PROCESSING_DELAY", "1")),
-                        "enable_enhanced_agent": os.getenv("ENABLE_ENHANCED_AGENT", "true").lower() in ('true', '1', 't'),
-                        "enable_conflict_resolution": os.getenv("ENABLE_CONFLICT_RESOLUTION", "true").lower() in ('true', '1', 't')
-                    }
-                }
-            }
-
-            # 先测试API服务器健康状态
-            logger.info("🔍 测试API服务器健康状态...")
-            try:
-                health_url = f"{api_base_url}/health"
-                logger.info(f"📡 健康检查URL: {health_url}")
-
-                health_check_timeout = int(os.getenv("HEALTH_CHECK_TIMEOUT", "10"))
-                health_response = requests.get(health_url, timeout=health_check_timeout)
-                logger.info(f"📨 健康检查响应:")
-                logger.info(f"  - HTTP状态: {health_response.status_code}")
-                logger.info(f"  - 响应时间: {health_response.elapsed.total_seconds():.2f}秒")
-
-                if health_response.status_code == 200:
-                    health_data = health_response.json()
-                    logger.info(f"✅ API服务器健康:")
-                    logger.info(f"  - 版本: {health_data.get('version', 'Unknown')}")
-                    logger.info(f"  - 活跃会话: {health_data.get('active_sessions', 0)}")
-                    logger.info(f"  - 已注册角色: {health_data.get('total_characters', 0)}")
-                else:
-                    logger.warning(f"⚠️ API服务器健康检查异常: {health_response.status_code}")
-
-            except Exception as health_error:
-                logger.error(f"❌ API服务器健康检查失败: {health_error}")
-                self.error_occurred.emit(f"API服务器不可用: {health_error}")
-                return None
-
-            # 发送异步初始化请求
-            async_url = f"{api_base_url}/initialize_async"
-            logger.info(f"🚀 发送异步初始化请求:")
-            logger.info(f"  - URL: {async_url}")
-            logger.info(f"  - 超时设置: 15秒")
-            logger.info(f"  - 请求大小: {len(str(payload))} 字符")
-
-            start_time = time.time()
-            response = requests.post(
-                async_url,
-                json=payload,
-                timeout=int(os.getenv("API_TIMEOUT", "15")),
-                headers={'Content-Type': 'application/json'}
-            )
-            request_time = time.time() - start_time
-
-            logger.info(f"📨 异步初始化响应:")
-            logger.info(f"  - HTTP状态: {response.status_code}")
-            logger.info(f"  - 请求耗时: {request_time:.2f}秒")
-            logger.info(f"  - 响应大小: {len(response.content)} 字节")
-            logger.info(f"  - 响应头: {dict(response.headers)}")
-
-            if response.status_code == 200:
-                async_result = response.json()
-                task_id = async_result.get("task_id")
-                estimated_time = async_result.get("estimated_time", "30-60秒")
-
-                logger.info(f"✅ 异步任务启动成功:")
-                logger.info(f"  - 任务ID: {task_id}")
-                logger.info(f"  - 预计耗时: {estimated_time}")
-                logger.info(f"  - 完整响应: {async_result}")
-
-                self.progress_updated.emit(
-                    f"初始化任务已启动",
-                    f"任务ID: {task_id[:8]}... 预计耗时: {estimated_time}"
-                )
-
-                return task_id
-            else:
-                error_text = response.text
-                logger.error(f"❌ 异步初始化请求失败:")
-                logger.error(f"  - HTTP状态: {response.status_code}")
-                logger.error(f"  - 错误内容: {error_text}")
-                logger.error(f"  - 响应头: {dict(response.headers)}")
-
-                self.error_occurred.emit(f"启动异步初始化失败: HTTP {response.status_code} - {error_text}")
-                return None
-
-        except requests.exceptions.Timeout as e:
-            logger.error("❌ ========== 异步初始化请求超时 ==========")
-            logger.error(f"❌ 超时详情: {e}")
-            logger.error("❌ 可能原因:")
-            logger.error("   1. API服务器响应慢")
-            logger.error("   2. LLM配置问题（检查.env文件）")
-            logger.error("   3. 网络连接问题")
-            logger.error("   4. 服务器资源不足")
-            self.error_occurred.emit(f"启动异步初始化超时: 请求超过15秒，请检查API服务器状态")
-            return None
-
-        except requests.exceptions.ConnectionError as e:
-            logger.error("❌ ========== API连接失败 ==========")
-            logger.error(f"❌ 连接错误: {e}")
-            logger.error("❌ 请检查:")
-            logger.error("   1. EchoGraph API服务器是否在运行")
-            logger.error("   2. 端口9543是否被占用")
-            logger.error("   3. 防火墙设置")
-            self.error_occurred.emit(f"API连接失败: {e}")
-            return None
-
-        except Exception as e:
-            logger.error("❌ ========== 启动异步初始化异常 ==========")
-            logger.error(f"❌ 异常详情: {e}")
-            logger.error(f"❌ 完整堆栈: {traceback.format_exc()}")
-            self.error_occurred.emit(f"启动异步初始化异常: {str(e)}")
-            return None
-
-    def set_world_info_decision(self, continue_without_world_info: bool):
-        """由UI线程设置“无世界书文本”时的用户决策。"""
-        self._continue_without_world_info = continue_without_world_info
-        self._world_info_decision_event.set()
-
-    @staticmethod
-    def _has_world_info_content(world_info_entries) -> bool:
-        for entry in world_info_entries or []:
-            if isinstance(entry, dict) and str(entry.get("content", "")).strip():
-                return True
-        return False
-
-    def _start_async_initialization(self, character) -> str:
-        """启动异步初始化任务，返回task_id"""
-        logger.info("🚀 ========== 启动异步初始化任务 ==========")
-        try:
-            import hashlib
-
-            api_base_url = "http://127.0.0.1:9543"
-
-            # 生成一致的会话ID
-            character_hash = hashlib.md5(character.name.encode('utf-8')).hexdigest()[:8]
-            session_id = f"tavern_{character.name}_{character_hash}"
-
-            logger.info(f"📝 会话信息:")
-            logger.info(f"  - 角色名称: {character.name}")
-            logger.info(f"  - 角色哈希: {character_hash}")
-            logger.info(f"  - 会话ID: {session_id}")
-
-            # 构建请求数据
-            character_card = {
-                "name": character.name,
-                "description": character.description,
-                "personality": character.personality,
-                "scenario": character.scenario,
-                "first_mes": character.first_mes,
-                "mes_example": character.example_dialogue,
-                "tags": ["tavern_mode"]
-            }
-
-            # 构建世界信息
-            world_info_text = ""
-            for entry in character.world_info:
-                if isinstance(entry, dict):
-                    keys = entry.get('keys', [])
-                    content = entry.get('content', '')
-                    if keys and content:
-                        world_info_text += f"[{', '.join(keys)}]: {content}\n\n"
-
-            if not world_info_text:
-                logger.info("ℹ️ 未获取到世界书文本，按空文本发送。")
-
-            logger.info(f"📦 请求数据统计:")
-            logger.info(f"  - 角色卡字段数: {len(character_card)}")
-            logger.info(f"  - 世界书长度: {len(world_info_text)} 字符")
-            logger.info(f"  - 世界书条目数: {len(character.world_info)}")
-
-            payload = {
-                "session_id": session_id,
-                "character_card": character_card,
-                "world_info": world_info_text,
-                "is_test": False,
-                "enable_agent": True,  # 图谱维护仅允许LLM Agent
-                "session_config": {
-                    "sliding_window": {
-                        "window_size": int(os.getenv("SLIDING_WINDOW_SIZE", "4")),
-                        "processing_delay": int(os.getenv("PROCESSING_DELAY", "1")),
-                        "enable_enhanced_agent": os.getenv("ENABLE_ENHANCED_AGENT", "true").lower() in ('true', '1', 't'),
-                        "enable_conflict_resolution": os.getenv("ENABLE_CONFLICT_RESOLUTION", "true").lower() in ('true', '1', 't')
-                    }
-                }
-            }
-
-            # 先测试API服务器健康状态
-            logger.info("🔍 测试API服务器健康状态...")
-            try:
-                health_url = f"{api_base_url}/health"
-                logger.info(f"📡 健康检查URL: {health_url}")
-
-                health_check_timeout = int(os.getenv("HEALTH_CHECK_TIMEOUT", "10"))
-                health_response = requests.get(health_url, timeout=health_check_timeout)
-                logger.info(f"📨 健康检查响应:")
-                logger.info(f"  - HTTP状态: {health_response.status_code}")
-                logger.info(f"  - 响应时间: {health_response.elapsed.total_seconds():.2f}秒")
-
-                if health_response.status_code == 200:
-                    health_data = health_response.json()
-                    logger.info(f"✅ API服务器健康:")
-                    logger.info(f"  - 版本: {health_data.get('version', 'Unknown')}")
-                    logger.info(f"  - 活跃会话: {health_data.get('active_sessions', 0)}")
-                    logger.info(f"  - 已注册角色: {health_data.get('total_characters', 0)}")
-                else:
-                    logger.warning(f"⚠️ API服务器健康检查异常: {health_response.status_code}")
-
-            except Exception as health_error:
-                logger.error(f"❌ API服务器健康检查失败: {health_error}")
-                self.error_occurred.emit(f"API服务器不可用: {health_error}")
-                return None
-
-            # 发送异步初始化请求
-            async_url = f"{api_base_url}/initialize_async"
-            logger.info(f"🚀 发送异步初始化请求:")
-            logger.info(f"  - URL: {async_url}")
-            logger.info(f"  - 超时设置: 15秒")
-            logger.info(f"  - 请求大小: {len(str(payload))} 字符")
-
-            start_time = time.time()
-            api_timeout = int(os.getenv("API_TIMEOUT", "15"))
-            response = requests.post(
-                async_url,
-                json=payload,
-                timeout=api_timeout,
-                headers={'Content-Type': 'application/json'}
-            )
-            request_time = time.time() - start_time
-
-            logger.info(f"📨 异步初始化响应:")
-            logger.info(f"  - HTTP状态: {response.status_code}")
-            logger.info(f"  - 请求耗时: {request_time:.2f}秒")
-            logger.info(f"  - 响应大小: {len(response.content)} 字节")
-            logger.info(f"  - 响应头: {dict(response.headers)}")
-
-            if response.status_code == 200:
-                async_result = response.json()
-                task_id = async_result.get("task_id")
-                estimated_time = async_result.get("estimated_time", "30-60秒")
-
-                logger.info(f"✅ 异步任务启动成功:")
-                logger.info(f"  - 任务ID: {task_id}")
-                logger.info(f"  - 预计耗时: {estimated_time}")
-                logger.info(f"  - 完整响应: {async_result}")
-
-                self.progress_updated.emit(
-                    f"初始化任务已启动",
-                    f"任务ID: {task_id[:8]}... 预计耗时: {estimated_time}"
-                )
-
-                return task_id
-            else:
-                error_text = response.text
-                logger.error(f"❌ 异步初始化请求失败:")
-                logger.error(f"  - HTTP状态: {response.status_code}")
-                logger.error(f"  - 错误内容: {error_text}")
-                logger.error(f"  - 响应头: {dict(response.headers)}")
-
-                self.error_occurred.emit(f"启动异步初始化失败: HTTP {response.status_code} - {error_text}")
-                return None
-
-        except requests.exceptions.Timeout as e:
-            logger.error("❌ ========== 异步初始化请求超时 ==========")
-            logger.error(f"❌ 超时详情: {e}")
-            logger.error("❌ 可能原因:")
-            logger.error("   1. API服务器响应慢")
-            logger.error("   2. LLM配置问题（检查.env文件）")
-            logger.error("   3. 网络连接问题")
-            logger.error("   4. 服务器资源不足")
-            self.error_occurred.emit(f"启动异步初始化超时: 请求超过15秒，请检查API服务器状态")
-            return None
-
-        except requests.exceptions.ConnectionError as e:
-            logger.error("❌ ========== API连接失败 ==========")
-            logger.error(f"❌ 连接错误: {e}")
-            logger.error("❌ 请检查:")
-            logger.error("   1. EchoGraph API服务器是否在运行")
-            logger.error("   2. 端口9543是否被占用")
-            logger.error("   3. 防火墙设置")
-            self.error_occurred.emit(f"API连接失败: {e}")
-            return None
-
-        except Exception as e:
-            logger.error("❌ ========== 启动异步初始化异常 ==========")
-            logger.error(f"❌ 异常详情: {e}")
-            logger.error(f"❌ 完整堆栈: {traceback.format_exc()}")
-            self.error_occurred.emit(f"启动异步初始化异常: {str(e)}")
-            return None
-
-    def _poll_initialization_progress(self, task_id: str, character, connector, connection_result):
-        """轮询初始化进度直到完成"""
-        try:
-
-            api_base_url = "http://127.0.0.1:9543"
-            status_url = f"{api_base_url}/initialize_status/{task_id}"
-
-            max_wait_time = 120  # 最大等待2分钟
-            poll_interval = 3   # 每3秒轮询一次
-            start_time = time.time()
-
-            self.progress_updated.emit("开始监控初始化进度...", "每3秒检查一次任务状态")
-
-            while time.time() - start_time < max_wait_time:
-                try:
-                    # 检查是否需要停止（QThread的标准做法）
-                    if self.isInterruptionRequested():
-                        self.error_occurred.emit("用户取消了初始化任务")
-                        return
-
-                    health_check_timeout = int(os.getenv("HEALTH_CHECK_TIMEOUT", "10"))
-                    status_response = requests.get(status_url, timeout=health_check_timeout)
-
-                    if status_response.status_code == 200:
-                        status_data = status_response.json()
-                        task_status = status_data.get("status")
-                        progress = status_data.get("progress", 0.0)
-                        message = status_data.get("message", "")
-
-                        # 实时更新进度到UI
-                        progress_percent = int(progress * 100)
-                        self.progress_updated.emit(
-                            f"初始化进度: {progress_percent}%",
-                            f"当前步骤: {message}"
-                        )
-
-                        if task_status == "completed":
-                            # 任务完成
-                            result = status_data.get("result", {})
-                            nodes_created = result.get("graph_stats", {}).get("nodes_updated", 0)
-                            session_id = result.get("session_id")
-
-                            self.progress_updated.emit("初始化成功！", f"已创建 {nodes_created} 个节点")
-
-                            # 通知插件连接状态
-                            connector.notify_plugin_connection(session_id)
-
-                            # 标记酒馆模式为激活状态
-                            self.tavern_manager.is_tavern_mode = True
-                            self.tavern_manager.connector = connector
-
-                            # 发送完成信号
-                            completed_result = {
-                                "success": True,
-                                "character": character['name'],
-                                "session_id": session_id,
-                                "nodes_created": nodes_created,
-                                "total_time": f"{time.time() - start_time:.1f}秒",
-                                "async_task_id": task_id,
-                                "connection": connection_result
-                            }
-
-                            self.initialization_completed.emit(completed_result)
-                            return
-
-                        elif task_status == "failed":
-                            # 任务失败
-                            error_message = status_data.get("error", "未知错误")
-                            self.progress_updated.emit("初始化失败", error_message)
-                            self.error_occurred.emit(f"异步初始化失败: {error_message}")
-                            return
-
-                        # 任务还在运行中，继续等待
-                        time.sleep(poll_interval)
-
-                    else:
-                        self.progress_updated.emit(
-                            "状态查询异常",
-                            f"HTTP {status_response.status_code}，将继续重试..."
-                        )
-                        time.sleep(poll_interval)
-
-                except requests.exceptions.RequestException as e:
-                    self.progress_updated.emit(
-                        "网络异常",
-                        f"连接API失败: {str(e)[:50]}...，将继续重试"
-                    )
-                    time.sleep(poll_interval)
-
-            # 超时处理
-            elapsed_time = int(time.time() - start_time)
-            self.progress_updated.emit("初始化超时", f"已等待 {elapsed_time} 秒，任务可能仍在后台运行")
-            self.error_occurred.emit(f"初始化超时（超过{max_wait_time}秒），请检查API服务器状态")
-
-        except Exception as e:
-            self.error_occurred.emit(f"轮询进度异常: {str(e)}")
-            logger.error(f"轮询进度异常: {traceback.format_exc()}")
-
 sys.path.append(str(Path(__file__).parent))
 from src.memory import GRAGMemory
 
@@ -696,7 +53,6 @@ from src.ui import theme
 from src.ui.value_unit_input import UnitSpec, ValueUnitInput
 from src.ui.managers.resource_cleanup_manager import ResourceCleanupManager
 # 导入酒馆连接器
-from src.tavern.tavern_connector import TavernModeManager, TavernConfig, SillyTavernConnector
 from src.ui.generators.graph_html_generator import GraphHTMLGenerator
 
 class ChatBubble(QFrame):
@@ -1178,7 +534,6 @@ class IntegratedPlayPage(QWidget):
         self.switching_modes = False  # 添加模式切换标志
 
         # 初始化酒馆管理器
-        self.tavern_manager = TavernModeManager(self.engine)
 
         # 对话管理器
         self.conversation_manager = ConversationManager(Path(__file__).parent / "data" / "local_conversations")
@@ -1186,8 +541,8 @@ class IntegratedPlayPage(QWidget):
         self.init_ui()
         self.connect_signals()
 
-        # 设置初始状态 - 本地测试模式默认激活
-        self.update_status_display("本地测试模式已选择")
+        # 设置初始状态 - 本地模式默认激活
+        self.update_status_display("本地模式已选择")
         self.is_connected_to_api = True
         # 设置初始按钮状态
         self.local_mode_radio.setEnabled(False)  # 当前选中的模式变灰
@@ -1267,7 +622,7 @@ class IntegratedPlayPage(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
 
         # 模式选择组
-        mode_group = QGroupBox("测试模式")
+        mode_group = QGroupBox("模式")
         mode_group.setProperty("variant", "flat")
         mode_group.setTitle("")
 
@@ -1277,10 +632,10 @@ class IntegratedPlayPage(QWidget):
         # 单选按钮组
         self.mode_button_group = QButtonGroup()
 
-        self.local_mode_radio = QRadioButton("本地测试模式")
+        self.local_mode_radio = QRadioButton("本地模式")
         self.tavern_mode_radio = QRadioButton("酒馆模式")
 
-        # 默认选择本地测试模式
+        # 默认选择本地模式
         self.local_mode_radio.setChecked(True)
         self.is_test_mode = True
 
@@ -1292,7 +647,7 @@ class IntegratedPlayPage(QWidget):
         mode_layout.addWidget(self.tavern_mode_radio)
 
         # 连接状态指示器
-        self.status_label = QLabel("本地测试模式已选择")
+        self.status_label = QLabel("本地模式已选择")
         self.status_label.setProperty("role", "status")
         self.status_dot = QLabel("●")
         self.status_dot.setProperty("role", "statusDot")
@@ -1450,19 +805,10 @@ class IntegratedPlayPage(QWidget):
             logger.info("🔄 设置模式切换标志，暂停对话自动初始化")
 
         try:
-            if mode_id == 0:  # 本地测试模式
+            if mode_id == 0:  # 本地模式
                 self.is_test_mode = True
                 self.tavern_mode_radio.setEnabled(True)
                 self.local_mode_radio.setEnabled(False)
-
-                # 退出酒馆模式（如果在酒馆模式中）
-                if self.tavern_manager.is_tavern_mode:
-                    logger.info("🏠 正在退出酒馆模式...")
-                    result = self.tavern_manager.exit_tavern_mode()
-                    if result["success"]:
-                        logger.info("✅ 已退出酒馆模式")
-                    else:
-                        logger.error(f"退出酒馆模式失败: {result.get('error')}")
 
                 self._restore_local_graph(main_window)
 
@@ -1495,7 +841,7 @@ class IntegratedPlayPage(QWidget):
                     from PySide6.QtWidgets import QMessageBox
                     QMessageBox.warning(self, "Backend reset failed", warning)
                 else:
-                    self.update_status_display("本地测试模式已选择")
+                    self.update_status_display("本地模式已选择")
                 self.is_connected_to_api = True
 
             elif mode_id == 1:  # 酒馆模式
@@ -1608,152 +954,6 @@ class IntegratedPlayPage(QWidget):
             logger.error(f"切换对话界面状态失败: {e}")
             logger.error(f"详细错误: {traceback.format_exc()}")
 
-    def enter_tavern_mode(self):
-        """进入酒馆模式的完整流程 - 使用多线程避免UI卡顿"""
-        logger.info("🍺 ========== 开始进入酒馆模式流程（多线程模式）==========")
-
-        try:
-            # 立即更新UI状态，告知用户开始初始化
-            self.update_status_display("正在初始化酒馆模式...")
-            QApplication.processEvents()
-
-            # 禁用相关UI控件，防止重复操作
-            if hasattr(self, 'switch_to_tavern_btn'):
-                self.switch_to_tavern_btn.setEnabled(False)
-                self.switch_to_tavern_btn.setText("正在初始化...")
-
-            logger.info("📋 步骤1: 准备多线程初始化...")
-
-            # 获取主窗口和相关组件
-            # 获取主窗口实例
-            main_window = None
-            for widget in QApplication.topLevelWidgets():
-                if isinstance(widget, EchoGraphMainWindow):
-                    main_window = widget
-                    break
-            if not main_window:
-                logger.error("❌ 无法获取主窗口实例")
-                self.update_status_display("初始化失败：无法获取主窗口")
-                return
-
-            logger.info("📋 步骤2: 获取酒馆连接配置...")
-            env_path = Path(__file__).parent / '.env'
-            config_data = dotenv_values(env_path) if env_path.exists() else {}
-            host = config_data.get("SILLYTAVERN_HOST", "localhost")
-            port = int(config_data.get("SILLYTAVERN_PORT", "8000"))
-
-            logger.info(f"🔧 酒馆连接配置:")
-            logger.info(f"  - 主机: {host}")
-            logger.info(f"  - 端口: {port}")
-
-            tavern_timeout = int(os.getenv("SILLYTAVERN_TIMEOUT", "10"))
-            tavern_config = TavernConfig(
-                host=host,
-                port=port,
-                timeout=tavern_timeout
-            )
-
-            logger.info("📋 步骤3: 启动后台初始化线程...")
-
-            # 创建工作线程
-            self.tavern_init_worker = TavernInitWorker(self.tavern_manager, tavern_config)
-
-            # 连接信号槽
-            self.tavern_init_worker.progress_updated.connect(self.on_tavern_init_progress)
-            self.tavern_init_worker.initialization_completed.connect(self.on_tavern_init_completed)
-            self.tavern_init_worker.error_occurred.connect(self.on_tavern_init_error)
-            self.tavern_init_worker.world_info_confirmation_required.connect(
-                self.on_world_info_confirmation_required
-            )
-            self.tavern_init_worker.finished.connect(self.on_tavern_init_finished)
-
-
-            # 启动线程
-            self.tavern_init_worker.start()
-            logger.info("✅ 后台初始化线程已启动，UI保持响应")
-
-        except Exception as e:
-            logger.error(f"❌ 酒馆模式初始化准备失败: {e}")
-            logger.error(f"详细错误: {traceback.format_exc()}")
-            self.update_status_display(f"初始化失败: {e}")
-            self.reset_tavern_ui_state()
-
-    @Slot(str, str)
-    def on_tavern_init_progress(self, status_message: str, step_info: str):
-        """处理酒馆初始化进度更新"""
-        logger.info(f"🔄 酒馆初始化进度: {status_message} - {step_info}")
-        self.update_status_display(f"{status_message}")
-        QApplication.processEvents()  # 确保UI立即更新
-
-    @Slot(dict)
-    def on_world_info_confirmation_required(self, character_data: dict):
-        """世界书缺失时，弹窗询问是否继续。"""
-        character_name = character_data.get("name", "当前角色")
-        reply = QMessageBox.question(
-            self,
-            "未获取到世界书",
-            f"未获取到 {character_name} 的世界书文本。\n\n是否继续初始化？\n"
-            f"继续将以空世界书文本发送，不传递任何默认内容。",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-        continue_without_world = reply == QMessageBox.Yes
-        worker = getattr(self, "tavern_init_worker", None)
-        if worker:
-            worker.set_world_info_decision(continue_without_world)
-
-    @Slot(dict)
-    def on_tavern_init_completed(self, result: dict):
-        """处理酒馆初始化成功完成"""
-        if self.is_test_mode:
-            return
-        try:
-            logger.info("🎉 酒馆模式初始化成功完成！")
-
-            character_name = result.get("character", "Unknown")
-            nodes_created = result.get("nodes_created", 0)
-            session_id = result.get("session_id", "unknown")
-
-            logger.info(f"✅ 切换成功:")
-            logger.info(f"  - 角色名称: {character_name}")
-            logger.info(f"  - 创建节点: {nodes_created}")
-            logger.info(f"  - 会话ID: {session_id}")
-
-            # 更新UI状态
-            self.update_status_display(f"酒馆模式已启用 - 角色: {character_name}")
-            self.is_connected_to_api = True
-
-            # 更新图谱页面
-            # 获取主窗口实例
-            main_window = None
-            for widget in QApplication.topLevelWidgets():
-                if isinstance(widget, EchoGraphMainWindow):
-                    main_window = widget
-                    break
-            if hasattr(main_window, 'graph_page'):
-                try:
-                    logger.info("🔄 更新图谱页面显示...")
-                    main_window.graph_page.enter_tavern_mode(session_id)
-                    main_window.graph_page.refresh_from_api_server(session_id)
-                    logger.info("✅ 图谱页面更新完成")
-                except Exception as e:
-                    logger.warning(f"⚠️ 图谱页面更新失败: {e}")
-
-            # 禁用对话界面
-            self.enable_chat_interface(False)
-
-        except Exception as e:
-            logger.error(f"❌ 处理酒馆初始化完成时发生错误: {e}")
-            logger.error(f"详细错误: {traceback.format_exc()}")
-
-    @Slot(str)
-    def on_tavern_init_error(self, error_message: str):
-        """处理酒馆初始化错误"""
-        logger.error(f"❌ 酒馆初始化失败: {error_message}")
-        self.update_status_display(f"酒馆模式切换失败")
-        QMessageBox.critical(self, "酒馆模式初始化失败", error_message)
-        self.auto_switch_to_local_mode(f"酒馆初始化失败: {error_message}")
-
     def _start_tavern_session_polling(self):
         """
         在酒馆模式下持续轮询后端会话状态，并在会话变更时刷新图谱。
@@ -1840,9 +1040,9 @@ class IntegratedPlayPage(QWidget):
         self._last_polled_tavern_session_id = None
 
     def auto_switch_to_local_mode(self, reason: str):
-        """自动切换到本地测试模式"""
+        """自动切换到本地模式"""
         try:
-            logger.info(f"🔄 自动切换到本地测试模式，原因: {reason}")
+            logger.info(f"🔄 自动切换到本地模式，原因: {reason}")
 
             # 切换单选按钮状态
             if hasattr(self, 'local_mode_radio') and hasattr(self, 'tavern_mode_radio'):
@@ -1865,12 +1065,6 @@ class IntegratedPlayPage(QWidget):
                 logger.warning(f"⚠️ 自动回退时关闭 tavern_mode/quick_reset 失败: {gate_err}")
 
 
-            # 若当前处于酒馆模式，则执行退出；否则跳过
-            if hasattr(self, 'tavern_manager') and self.tavern_manager.is_tavern_mode:
-                result = self.tavern_manager.exit_tavern_mode()
-                if result.get("success"):
-                    logger.info("✅ 已退出酒馆模式")
-
             # 无论是否真正进入过酒馆模式，都强制恢复本地数据展示
             main_window = None
             widget = self.parent()
@@ -1890,240 +1084,21 @@ class IntegratedPlayPage(QWidget):
             self.enable_chat_interface(True)
 
             # 更新状态显示
-            self.update_status_display("本地测试模式已选择（自动切换）")
+            self.update_status_display("本地模式已选择（自动切换）")
             self.is_connected_to_api = True
 
-            logger.info(f"✅ 已自动切换到本地测试模式，原因: {reason}")
+            logger.info(f"✅ 已自动切换到本地模式，原因: {reason}")
 
         except Exception as e:
             logger.error(f"❌ 自动切换到本地模式失败: {e}")
             logger.error(f"详细错误: {traceback.format_exc()}")
 
-    @Slot()
-    def on_tavern_init_finished(self):
-        """处理线程完成（无论成功或失败）"""
-        logger.info("🧵 酒馆初始化线程已结束")
-
-        # 清理线程
-        if hasattr(self, 'tavern_init_worker'):
-            self.tavern_init_worker.deleteLater()
-            self.tavern_init_worker = None
-
-        # 重置UI状态
-        if hasattr(self, 'switch_to_tavern_btn'):
-            self.switch_to_tavern_btn.setEnabled(True)
-            self.switch_to_tavern_btn.setText("切换到酒馆模式")
-
-        # 重置模式切换标志
-        # 获取主窗口实例
-        main_window = None
-        for widget in QApplication.topLevelWidgets():
-            if isinstance(widget, EchoGraphMainWindow):
-                main_window = widget
-                break
-        if main_window:
-            QTimer.singleShot(1000, lambda: setattr(main_window, 'switching_modes', False))
-            logger.info("✅ 重置模式切换标志，恢复正常操作")
-
-    def reset_tavern_ui_state(self):
-        """重置酒馆相关的UI状态"""
-        try:
-            if hasattr(self, 'switch_to_tavern_btn'):
-                self.switch_to_tavern_btn.setEnabled(True)
-                self.switch_to_tavern_btn.setText("切换到酒馆模式")
-
-            self.enable_chat_interface(True)
-
-        except Exception as e:
-            logger.error(f"重置UI状态失败: {e}")
-            logger.info("📋 步骤2: 获取主窗口实例...")
-            main_window = None
-            widget = self.parent()
-            while widget is not None:
-                if isinstance(widget, EchoGraphMainWindow):
-                    main_window = widget
-                    logger.info("✅ 成功获取主窗口实例")
-                    break
-                widget = widget.parent()
-
-            if not main_window:
-                logger.error("❌ 无法找到主窗口实例")
-                raise Exception("无法找到主窗口实例")
-
-            # *** 关键修复：保存当前会话并清空知识图谱 ***
-            logger.info("📋 步骤3: 保存当前会话并清空知识图谱...")
-            self.update_status_display("保存当前会话并清空知识图谱...")
-            QApplication.processEvents()
-
-            # 保存当前对话到历史
-            current_conv = self.conversation_manager.get_current_conversation()
-            if current_conv:
-                logger.info(f"💾 保存本地对话: {current_conv['name']}")
-            else:
-                logger.info("ℹ️ 当前没有活跃的本地对话")
-
-            # 清空知识图谱
-            logger.info("🧹 开始清空本地知识图谱...")
-            if hasattr(main_window, 'memory'):
-                try:
-                    old_nodes = len(main_window.memory.knowledge_graph.graph.nodes())
-                    old_edges = len(main_window.memory.knowledge_graph.graph.edges())
-                    logger.info(f"📊 清空前状态: {old_nodes} 节点, {old_edges} 边")
-
-                    main_window.memory.clear_all()
-                    logger.info("✅ 本地知识图谱已清空")
-
-                    # 刷新图谱页面显示空状态
-                    if hasattr(main_window, 'graph_page'):
-                        logger.info("🔄 刷新图谱页面显示...")
-                        main_window.graph_page.refresh_graph()  # 已包含更新实体列表和统计
-                        logger.info("✅ 图谱页面已刷新")
-                except Exception as clear_error:
-                    logger.error(f"❌ 清空知识图谱失败: {clear_error}")
-                    raise clear_error
-            else:
-                logger.warning("⚠️ 主窗口没有memory属性")
-
-            logger.info("📋 步骤4: 获取酒馆连接配置...")
-            env_path = Path(__file__).parent / '.env'
-            config_data = dotenv_values(env_path) if env_path.exists() else {}
-            host = config_data.get("SILLYTAVERN_HOST", "localhost")
-            port = int(config_data.get("SILLYTAVERN_PORT", "8000"))
-
-            logger.info(f"🔧 酒馆连接配置:")
-            logger.info(f"  - 主机: {host}")
-            logger.info(f"  - 端口: {port}")
-            logger.info(f"  - 配置文件: {env_path}")
-            logger.info(f"  - 配置存在: {env_path.exists()}")
-
-            tavern_timeout = int(os.getenv("SILLYTAVERN_TIMEOUT", "10"))
-            tavern_config = TavernConfig(
-                host=host,
-                port=port,
-                timeout=tavern_timeout
-            )
-
-            # 使用酒馆管理器进入酒馆模式
-            logger.info("📋 步骤5: 调用酒馆管理器...")
-            logger.info("🚀 调用 tavern_manager.enter_tavern_mode()")
-            def _confirm_continue_without_world_info() -> bool:
-                reply = QMessageBox.question(
-                    self,
-                    "未获取到世界书",
-                    "未获取到世界书文本，是否继续？\n继续将按空文本初始化，不传递任何默认内容。",
-                    QMessageBox.Yes | QMessageBox.No,
-                    QMessageBox.No,
-                )
-                return reply == QMessageBox.Yes
-
-            result = self.tavern_manager.enter_tavern_mode(
-                tavern_config,
-                on_world_info_missing=_confirm_continue_without_world_info,
-            )
-
-            logger.info("📨 酒馆管理器返回结果:")
-            logger.info(f"  - 操作结果: {result}")
-            logger.info(f"  - 成功状态: {result.get('success', False)}")
-
-            if result["success"]:
-                # 切换成功
-                character_name = result["character"]
-                nodes_created = result["nodes_created"]
-                session_id = result.get("session_id", "unknown")
-
-                logger.info("🎉 酒馆模式切换成功!")
-                logger.info(f"  - 角色名称: {character_name}")
-                logger.info(f"  - 创建节点: {nodes_created}")
-                logger.info(f"  - 会话ID: {session_id}")
-
-                self.update_status_display(f"酒馆模式已启用 - 角色: {character_name}")
-                self.is_connected_to_api = True
-
-                # 从API服务器获取酒馆会话的知识图谱并更新UI显示
-                logger.info("📋 步骤6: 更新UI显示...")
-                if hasattr(main_window, 'graph_page'):
-                    try:
-                        logger.info("🔄 通知图谱页面进入酒馆模式...")
-                        # 通知图谱页面进入酒馆模式，使用API服务器的数据
-                        main_window.graph_page.enter_tavern_mode(session_id)
-
-                        logger.info("🔃 从API服务器刷新图谱...")
-                        main_window.graph_page.refresh_from_api_server(session_id)
-
-                        logger.info("📊 更新实体列表和统计...")
-                        main_window.graph_page.update_entity_list()
-                        main_window.graph_page.update_stats()
-
-                        logger.info(f"✅ UI图谱页面已切换到酒馆会话: {session_id}")
-                    except Exception as e:
-                        logger.error(f"❌ 更新UI图谱显示失败: {e}")
-                        logger.error(f"📋 UI更新异常详情: {traceback.format_exc()}")
-                        # 即使UI更新失败，酒馆模式也算成功
-                else:
-                    logger.warning("⚠️ 主窗口没有graph_page属性")
-
-                # 显示成功消息
-                logger.info("📋 步骤7: 显示成功消息...")
-                QMessageBox.information(
-                    self,
-                    "酒馆模式已启用",
-                    f"成功连接到SillyTavern！\n\n"
-                    f"当前角色: {character_name}\n"
-                    f"已初始化 {nodes_created} 个知识图谱节点\n\n"
-                    f"现在可以在SillyTavern中进行对话，EchoGraph将提供智能增强。"
-                )
-
-                logger.info(f"🎉 酒馆模式启用成功 - 角色: {character_name}, 节点: {nodes_created}")
-
-            else:
-                # 切换失败，恢复到本地模式
-                error_msg = result.get("error", "未知错误")
-                self.update_status_display(f"酒馆模式切换失败")
-
-                # 重新启用对话界面
-                self.enable_chat_interface(True)
-
-                # 切换回本地模式
-                self.local_mode_radio.setChecked(True)
-                self.tavern_mode_radio.setEnabled(True)
-                self.local_mode_radio.setEnabled(False)
-                self.is_test_mode = True
-                self._restore_local_graph(main_window)
-
-                # 显示错误消息
-                QMessageBox.warning(
-                    self,
-                    "酒馆模式切换失败",
-                    f"无法切换到酒馆模式：\n\n{error_msg}\n\n"
-                    f"请确保：\n"
-                    f"1. SillyTavern正在运行 (http://localhost:8000)\n"
-                    f"2. 已选择一个角色\n"
-                    f"3. EchoGraph插件已安装并启用"
-                )
-
-                logger.error(f"❌ 酒馆模式切换失败: {error_msg}")
-
-        except Exception as e:
-            logger.error(f"进入酒馆模式异常: {e}")
-
-            # 恢复到本地模式
-            self.enable_chat_interface(True)
-            self.local_mode_radio.setChecked(True)
-            self._restore_local_graph(self.window())
-            self.update_status_display("酒馆模式切换异常，已恢复本地模式")
-
-            QMessageBox.critical(
-                self,
-                "酒馆模式异常",
-                f"酒馆模式切换时发生异常：\n{e}"
-            )
-
     def check_api_connection(self):
         """检查API连接状态"""
         if self.is_test_mode:
-            # 本地测试模式不需要检查API
+            # 本地模式不需要检查API
             self.is_connected_to_api = True
-            self.update_status_display("本地测试模式已选择")
+            self.update_status_display("本地模式已选择")
             return
 
         # 只有酒馆模式才检查API连接
@@ -4662,10 +3637,6 @@ class GraphPage(QWidget):
                             <div class="stat-number">{stats.get('graph_edges', 0)}</div>
                             <div>关系边</div>
                         </div>
-                        <div class="stat">
-                            <div class="stat-number">{stats.get('hot_memory_size', 0)}</div>
-                            <div>记忆轮次</div>
-                        </div>
                     </div>
 
                     <div class="info">
@@ -4745,12 +3716,28 @@ class BackendReloadWorker(QThread):
 class ConfigPage(QWidget):
     """系统配置页面"""
 
-    def __init__(self, parent=None, env_path=None):
+    def __init__(self, parent=None, env_path=None, api_server_port=None):
         super().__init__(parent)
         self.setObjectName("configPage")
         self.env_path = Path(env_path) if env_path is not None else Path(__file__).resolve().parent / '.env'
+        self.api_server_port = int(api_server_port if api_server_port is not None else
+                                   (dotenv_values(self.env_path).get("API_SERVER_PORT") or 9543))
         self.init_ui()
         self.load_config()
+        self.connection_status_manager = QNetworkAccessManager(self)
+        self._connection_status_request_id = 0
+        self.connection_status_timer = QTimer(self)
+        self.connection_status_timer.timeout.connect(self.refresh_connection_status)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.connection_status_timer.start(5000)
+        self.refresh_connection_status()
+
+    def hideEvent(self, event):
+        self.connection_status_timer.stop()
+        self._connection_status_request_id += 1
+        super().hideEvent(event)
 
     def init_ui(self):
         # 创建滚动区域
@@ -4828,15 +3815,11 @@ class ConfigPage(QWidget):
         self.processing_delay_input = ValueUnitInput([UnitSpec('轮', 1)], 0, 10, decimals=0)
         self.processing_delay_input.setValue(1)
 
-        self.enable_enhanced_agent_checkbox = QCheckBox("启用增强Agent")
-        self.enable_enhanced_agent_checkbox.setChecked(True)
-
         self.enable_conflict_resolution_checkbox = QCheckBox("启用冲突解决")
         self.enable_conflict_resolution_checkbox.setChecked(True)
 
         window_layout.addRow("窗口大小:", self.window_size_input)
         window_layout.addRow("处理延迟:", self.processing_delay_input)
-        window_layout.addRow("", self.enable_enhanced_agent_checkbox)
         window_layout.addRow("", self.enable_conflict_resolution_checkbox)
 
         # 服务器配置组
@@ -4856,31 +3839,14 @@ class ConfigPage(QWidget):
         server_layout.addRow("API请求超时:", self.api_timeout_input)
         server_layout.addRow("健康检查超时:", self.health_check_timeout_input)
 
-        # 酒馆连接配置组
-        tavern_group = QGroupBox("SillyTavern连接配置")
-        tavern_layout = QFormLayout(tavern_group)
-
-        self.tavern_host_input = QLineEdit()
-        self.tavern_port_input = QLineEdit()
-        self.tavern_port_input.setValidator(QIntValidator(1024, 65535, self))
-
-        self.tavern_timeout_input = ValueUnitInput([UnitSpec('秒', 1), UnitSpec('分钟', 60)], 3, 30, decimals=0)
-        self.tavern_timeout_input.setValue(10)
-
-        # 测试连接按钮
-        self.test_tavern_btn = QPushButton("测试酒馆连接")
-        self.test_tavern_btn.clicked.connect(self.test_tavern_connection)
-
-        # 连接状态标签
-        self.tavern_status_label = QLabel("未测试")
-        self.tavern_status_label.setProperty("role", "status")
-
-
-        tavern_layout.addRow("酒馆地址:", self.tavern_host_input)
-        tavern_layout.addRow("酒馆端口:", self.tavern_port_input)
-        tavern_layout.addRow("连接超时:", self.tavern_timeout_input)
-        tavern_layout.addRow("连接状态:", self.tavern_status_label)
-        tavern_layout.addRow("", self.test_tavern_btn)
+        status_group = QGroupBox("连接状态")
+        status_layout = QFormLayout(status_group)
+        self.plugin_status_label = QLabel("未连接")
+        self.backend_status_label = QLabel("未运行")
+        for label in (self.plugin_status_label, self.backend_status_label):
+            label.setProperty("role", "status")
+        status_layout.addRow("插件连接:", self.plugin_status_label)
+        status_layout.addRow("后台服务:", self.backend_status_label)
 
         # UI配置组
         ui_group = QGroupBox("界面配置")
@@ -4923,7 +3889,7 @@ class ConfigPage(QWidget):
         layout.addWidget(llm_group)
         layout.addWidget(window_group)
         layout.addWidget(server_group)
-        layout.addWidget(tavern_group)
+        layout.addWidget(status_group)
         layout.addWidget(ui_group)
         layout.addWidget(system_group)
         save_row = QHBoxLayout()
@@ -4938,6 +3904,37 @@ class ConfigPage(QWidget):
         # 设置主布局
         main_layout = QVBoxLayout(self)
         main_layout.addWidget(scroll_area)
+
+    @staticmethod
+    def connection_status_from_response(status_code, data):
+        if status_code != 200:
+            return "未连接", "未运行"
+        return ("已连接" if data.get("connected") else "未连接", "运行中")
+
+    def refresh_connection_status(self):
+        if not self.isVisible():
+            return
+        self._connection_status_request_id += 1
+        request_id = self._connection_status_request_id
+        request = QNetworkRequest(QUrl(f"http://127.0.0.1:{self.api_server_port}/system/plugin_status"))
+        request.setTransferTimeout(1000)
+        reply = self.connection_status_manager.get(request)
+        reply.finished.connect(lambda: self._finish_connection_status(reply, request_id))
+
+    def _finish_connection_status(self, reply, request_id):
+        try:
+            if request_id != self._connection_status_request_id or not self.isVisible():
+                return
+            status = reply.attribute(QNetworkRequest.HttpStatusCodeAttribute) if reply.error() == QNetworkReply.NoError else None
+            data = json.loads(bytes(reply.readAll())) if status == 200 else {}
+            plugin, backend = self.connection_status_from_response(status, data)
+            self.plugin_status_label.setText(plugin)
+            self.backend_status_label.setText(backend)
+        except (ValueError, TypeError):
+            self.plugin_status_label.setText("未连接")
+            self.backend_status_label.setText("未运行")
+        finally:
+            reply.deleteLater()
 
     def load_config(self):
         """加载配置"""
@@ -4965,9 +3962,6 @@ class ConfigPage(QWidget):
         self.window_size_input.setValue(int(config.get("SLIDING_WINDOW_SIZE", "4")))
         self.processing_delay_input.setValue(int(config.get("PROCESSING_DELAY", "1")))
 
-        enhanced_agent_val = config.get("ENABLE_ENHANCED_AGENT", "true").lower()
-        self.enable_enhanced_agent_checkbox.setChecked(enhanced_agent_val in ('true', '1', 't'))
-
         conflict_resolution_val = config.get("ENABLE_CONFLICT_RESOLUTION", "true").lower()
         self.enable_conflict_resolution_checkbox.setChecked(conflict_resolution_val in ('true', '1', 't'))
 
@@ -4975,11 +3969,6 @@ class ConfigPage(QWidget):
         self.api_server_port_input.setText(config.get("API_SERVER_PORT", "9543"))
         self.api_timeout_input.setValue(int(config.get("API_TIMEOUT", "15")))
         self.health_check_timeout_input.setValue(int(config.get("HEALTH_CHECK_TIMEOUT", "10")))
-
-        # 酒馆配置
-        self.tavern_host_input.setText(config.get("SILLYTAVERN_HOST", "localhost"))
-        self.tavern_port_input.setText(config.get("SILLYTAVERN_PORT", "8000"))
-        self.tavern_timeout_input.setValue(int(config.get("SILLYTAVERN_TIMEOUT", "10")))
 
         # UI配置
         self.max_messages_input.setValue(int(config.get("MAX_MESSAGES", "1000")))
@@ -5065,7 +4054,6 @@ class ConfigPage(QWidget):
             ("处理延迟", self.processing_delay_input),
             ("API请求超时", self.api_timeout_input),
             ("健康检查超时", self.health_check_timeout_input),
-            ("连接超时", self.tavern_timeout_input),
             ("最大消息数", self.max_messages_input),
             ("动画间隔", self.animation_interval_input),
             ("轮询间隔", self.poll_interval_input),
@@ -5092,18 +4080,12 @@ class ConfigPage(QWidget):
             # 滑动窗口配置
             set_key(self.env_path, "SLIDING_WINDOW_SIZE", str(self.window_size_input.value()))
             set_key(self.env_path, "PROCESSING_DELAY", str(self.processing_delay_input.value()))
-            set_key(self.env_path, "ENABLE_ENHANCED_AGENT", str(self.enable_enhanced_agent_checkbox.isChecked()).lower())
             set_key(self.env_path, "ENABLE_CONFLICT_RESOLUTION", str(self.enable_conflict_resolution_checkbox.isChecked()).lower())
 
             # 服务器配置
             set_key(self.env_path, "API_SERVER_PORT", self.api_server_port_input.text())
             set_key(self.env_path, "API_TIMEOUT", str(self.api_timeout_input.value()))
             set_key(self.env_path, "HEALTH_CHECK_TIMEOUT", str(self.health_check_timeout_input.value()))
-
-            # 酒馆配置
-            set_key(self.env_path, "SILLYTAVERN_HOST", self.tavern_host_input.text())
-            set_key(self.env_path, "SILLYTAVERN_PORT", self.tavern_port_input.text())
-            set_key(self.env_path, "SILLYTAVERN_TIMEOUT", str(self.tavern_timeout_input.value()))
 
             # UI配置
             set_key(self.env_path, "MAX_MESSAGES", str(self.max_messages_input.value()))
@@ -5145,80 +4127,6 @@ class ConfigPage(QWidget):
 
         except Exception as e:
             QMessageBox.critical(self, "错误", f"配置保存失败：{str(e)}")
-
-    def test_tavern_connection(self):
-        """测试酒馆连接"""
-        try:
-            host = self.tavern_host_input.text().strip() or "localhost"
-            port = self.tavern_port_input.text().strip() or "8000"
-
-            self.tavern_status_label.setText("测试中...")
-            self.tavern_status_label.setProperty("status", "info")
-            self.tavern_status_label.style().unpolish(self.tavern_status_label)
-            self.tavern_status_label.style().polish(self.tavern_status_label)
-
-            self.test_tavern_btn.setEnabled(False)
-            QApplication.processEvents()
-
-            # 创建临时连接器进行测试
-            from src.tavern.tavern_connector import SillyTavernConnector, TavernConfig
-
-            timeout = self.tavern_timeout_input.value()
-            config = TavernConfig(host=host, port=int(port), timeout=timeout)
-            connector = SillyTavernConnector(config)
-
-            result = connector.test_connection()
-
-            if result["status"] == "connected":
-                self.tavern_status_label.setText("连接成功")
-                self.tavern_status_label.setProperty("status", "success")
-                self.tavern_status_label.style().unpolish(self.tavern_status_label)
-                self.tavern_status_label.style().polish(self.tavern_status_label)
-
-
-                version = result.get("version", {})
-                QMessageBox.information(
-                    self,
-                    "连接成功",
-                    f"成功连接到SillyTavern！\n\n"
-                    f"地址: {result['url']}\n"
-                    f"版本: {version.get('version', '未知')}"
-                )
-            else:
-                self.tavern_status_label.setText("连接失败")
-                self.tavern_status_label.setProperty("status", "danger")
-                self.tavern_status_label.style().unpolish(self.tavern_status_label)
-                self.tavern_status_label.style().polish(self.tavern_status_label)
-
-
-                QMessageBox.warning(
-                    self,
-                    "连接失败",
-                    f"无法连接到SillyTavern:\n\n{result['error']}\n\n"
-                    f"请确保SillyTavern正在运行并检查地址和端口是否正确。"
-                )
-
-            connector.disconnect()
-
-        except ValueError as e:
-            self.tavern_status_label.setText("配置错误")
-            self.tavern_status_label.setProperty("status", "danger")
-            self.tavern_status_label.style().unpolish(self.tavern_status_label)
-            self.tavern_status_label.style().polish(self.tavern_status_label)
-
-            QMessageBox.warning(self, "配置错误", f"端口必须是数字：{e}")
-
-        except Exception as e:
-            self.tavern_status_label.setText("测试异常")
-            self.tavern_status_label.setProperty("status", "danger")
-            self.tavern_status_label.style().unpolish(self.tavern_status_label)
-            self.tavern_status_label.style().polish(self.tavern_status_label)
-
-            QMessageBox.critical(self, "测试异常", f"测试连接时发生异常：{e}")
-
-        finally:
-            self.test_tavern_btn.setEnabled(True)
-
 
 class EchoGraphMainWindow(QMainWindow):
     """EchoGraph主窗口"""
@@ -5313,9 +4221,6 @@ class EchoGraphMainWindow(QMainWindow):
                 grag_agent
             )
 
-            # 初始化酒馆模式管理器
-            self.tavern_manager = TavernModeManager(self.game_engine)
-
             logger.info("核心组件初始化完成")
 
         except Exception as e:
@@ -5404,7 +4309,7 @@ class EchoGraphMainWindow(QMainWindow):
         self.tabs.addTab(self.graph_page, "知识图谱")
 
         # 系统配置页面
-        self.config_page = ConfigPage(env_path=self.env_path)
+        self.config_page = ConfigPage(env_path=self.env_path, api_server_port=self.api_server_port)
         self.tabs.addTab(self.config_page, "系统配置")
 
         # 设置对话和知识图谱的联动

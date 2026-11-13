@@ -246,7 +246,6 @@ def get_or_create_sliding_window_manager(session_id: str, session_config: Dict[s
         sliding_config = (session_config or {}).get('sliding_window', {})
         window_size = sliding_config.get('window_size', int(os.getenv('SLIDING_WINDOW_SIZE', '4')))
         processing_delay = sliding_config.get('processing_delay', int(os.getenv('PROCESSING_DELAY', '1')))
-        enable_enhanced_agent = sliding_config.get('enable_enhanced_agent', os.getenv('ENABLE_ENHANCED_AGENT', 'true').lower() in ('true', '1', 't'))
 
         # 获取对应的游戏引擎
         engine = sessions.get(session_id)
@@ -264,7 +263,7 @@ def get_or_create_sliding_window_manager(session_id: str, session_config: Dict[s
         sliding_window_manager = DelayedUpdateManager(
             sliding_window=sliding_window,
             memory=engine.memory,
-            grag_agent=engine.grag_agent if enable_enhanced_agent else None
+            grag_agent=engine.grag_agent
         )
 
         sliding_window_managers[session_id] = sliding_window_manager
@@ -2020,7 +2019,7 @@ async def get_available_characters():
 async def health_check():
     """健康检查端点"""
     if not TAVERN_MODE_ACTIVE:
-        # 在本地测试模式下，完全隔离：直接拒绝健康检查
+        # 在本地模式下，完全隔离：直接拒绝健康检查
         raise HTTPException(status_code=403, detail="Tavern mode disabled")
     logger.info("🏥 [Health Check] Received request. Processing...")
 
@@ -2391,25 +2390,6 @@ async def export_session_graph(session_id: str):
         logger.error(f"Error exporting session graph: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to export graph: {e}")
 
-@app.post("/ui_test/clear_data")
-async def clear_test_data():
-    """清空UI测试数据"""
-    try:
-        storage_manager.clear_test_data()
-
-        # 同时清理测试会话
-        test_sessions_to_remove = [
-            sid for sid, engine in sessions.items()
-            if sid.startswith("test_") or "test" in sid.lower()
-        ]
-        for test_sid in test_sessions_to_remove:
-            del sessions[test_sid]
-
-        return {"message": "Test data cleared successfully"}
-    except Exception as e:
-        logger.error(f"Error clearing test data: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to clear test data: {e}")
-
 @app.delete("/tavern/character/{character_name}")
 async def delete_character(character_name: str):
     """删除指定角色的所有数据"""
@@ -2439,6 +2419,15 @@ async def delete_character(character_name: str):
     except Exception as e:
         logger.error(f"Error deleting character: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to delete character: {e}")
+
+@app.get("/system/plugin_status")
+async def get_plugin_status():
+    """Read-only status based on active plugin WebSocket connections."""
+    connected = any(
+        sid.startswith("tavern_") and bool(sockets)
+        for sid, sockets in manager.active_connections.items()
+    )
+    return {"connected": connected}
 
 @app.get("/tavern/current_session")
 async def get_current_tavern_session():

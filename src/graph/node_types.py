@@ -15,7 +15,7 @@ NODE_TYPES = (
     NodeType("location", "地点", "地点、建筑或区域"),
     NodeType("item", "物品", "物资、装备、武器或载具等可使用的实物"),
     NodeType("event", "事件", "发生的事件、任务或行动"),
-    NodeType("concept", "概念", "组织、势力或抽象概念"),
+    NodeType("concept", "概念", "组织、势力、阵营、世界观设定、设定、规则、体系或抽象概念"),
     NodeType("other", "其他", "异能、技能、能力及 skill、ability、power；具体词放 subtype，或其他实体"),
 )
 TYPE_IDS = tuple(item.id for item in NODE_TYPES)
@@ -30,7 +30,8 @@ SYNONYMS = {
     "consumable": "item", "resource": "item", "supplies": "item",
     "事件": "event", "任务": "event", "quest": "event",
     "异能": "other", "技能": "other", "能力": "other", "组织": "concept",
-    "势力": "concept", "概念": "concept", "skill": "other", "organization": "concept", "guild_organization": "concept",
+    "势力": "concept", "阵营": "concept", "世界观": "concept", "世界观设定": "concept",
+    "设定": "concept", "规则": "concept", "体系": "concept", "概念": "concept", "skill": "other", "organization": "concept", "guild_organization": "concept",
     "ability": "other", "power": "other", "faction": "concept", "world": "concept",
     "其他": "other", "unknown": "other",
 }

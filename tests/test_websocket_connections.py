@@ -1,6 +1,17 @@
 import asyncio
 
 
+def test_plugin_status_reflects_live_websockets(monkeypatch):
+    import api_server
+
+    monkeypatch.setattr(api_server.manager, 'active_connections', {})
+    assert asyncio.run(api_server.get_plugin_status()) == {'connected': False}
+    api_server.manager.active_connections['tavern_active'] = {object()}
+    assert asyncio.run(api_server.get_plugin_status()) == {'connected': True}
+    api_server.manager.active_connections['tavern_active'].clear()
+    assert asyncio.run(api_server.get_plugin_status()) == {'connected': False}
+
+
 def test_multiple_tabs_receive_session_broadcast(monkeypatch):
     import api_server
 

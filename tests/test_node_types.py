@@ -37,7 +37,7 @@ def test_prompt_contains_all_types(tmp_path):
     definitions = prompt_types()
     assert '怪物、精英怪物、生物及怪物群体' in definitions
     assert '属性面板' in definitions
-    assert '组织、势力或抽象概念' in definitions
+    assert '组织、势力、阵营、世界观设定、设定、规则、体系或抽象概念' in definitions
     assert '异能、技能、能力及 skill、ability、power' in definitions
     assert '具体词放 subtype' in definitions
 
@@ -89,6 +89,12 @@ def test_ability_synonyms_keep_subtype(word):
 @pytest.mark.parametrize('word', ['怪物', '精英怪物', '怪物群体'])
 def test_monsters_stay_characters(word):
     assert normalize_type(word) == ('character', word)
+
+
+@pytest.mark.parametrize('word', ['组织', '势力', '阵营', '世界观', '世界观设定',
+                                  '设定', '规则', '体系', 'faction', 'organization'])
+def test_concept_synonyms_keep_subtype(word):
+    assert normalize_type(word) == ('concept', word)
 
 
 def test_graph_temp_file_cleanup_matches_only_exited_pid(tmp_path, monkeypatch):
