@@ -148,7 +148,7 @@ report = memory.get_entity_importance_report("角色名称")
 
 ### ✅ 支持的模式
 - **本地测试模式**: 完全支持，数据存储在 `data/local_mode/entities.json`
-- **酒馆模式**: 完全支持，数据存储在 `data/tavern_characters/{角色名}/sessions/current/entities.json`
+- **酒馆模式**: 完全支持，数据存储在 `data/tavern_timeline/`
 
 ### 🔧 技术实现
 注意力机制在所有模式下都使用相同的配置参数：
@@ -162,7 +162,7 @@ attention_config = {
 ```
 
 ### 📂 数据路径管理
-- **本地模式**: MainWindow 初始化时配置
+- **本地模式**: run_ui.py 初始化时配置
 - **酒馆模式**: API服务器根据会话ID动态分配路径
 - **自动适配**: GRAGMemory 根据传入的 `entities_json_path` 自动适配不同模式
 

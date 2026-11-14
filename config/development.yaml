@@ -24,9 +24,6 @@ memory:
 game:
   world_name: "开发世界"
   character_name: "系统"
-  enable_sliding_window: true
-  sliding_window_size: 4
-  processing_delay: 1
 
 logging:
   level: "DEBUG"

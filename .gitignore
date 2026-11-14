@@ -153,3 +153,9 @@ dmypy.json
 # Legacy graph exports kept out of source control
 /temp_tavern_graph.html
 /graph.html
+
+# Root-level pytest scratch directories
+/.p4pytest*/
+/.pytest_tmp/
+/.pytest_timeline_run/
+/.pytest_*/

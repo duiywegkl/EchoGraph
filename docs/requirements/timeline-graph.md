@@ -29,7 +29,7 @@
 | R8a | 基础图是否需要重建，由角色卡和世界书内容的 hash 判断。hash 变了就重建基础图；已有的聊天保持不动，只有之后新开的聊天使用新的基础图。 |
 | R11 | **开局**就是聊天的第 0 条消息，按第 0 轮处理。一张卡的多个开局（`first_mes` 和 `alternate_greetings`）在酒馆里显示为第 0 条消息的不同 swipe，所以切换开局和切换 swipe 走同一套逻辑。“重来”就是新开一个聊天，旧聊天连同它的图谱一起保存。 |
 | R16 | 本地模式：一进来就有一个默认对话（0 号对话），已经放好了图谱和开局。之后“新建对话”得到的是完全空白的对话：没有开局，也没有图谱。 |
-| R17 | 现有的按角色共用的旧图（`data/tavern_characters/*/sessions/current`）直接丢弃，不做迁移。 |
+| R17 | 现有的按角色共用的旧图（`data/tavern_characters/*/sessions/current`）不做迁移；旧文件保留在磁盘上，运行时代码不再引用。 |
 | R5 | 导入或复制的聊天：如果能确认它来自哪个聊天，就继承那个聊天的图谱；确认不了，就根据聊天记录重新生成。 |
 
 ### 3.1 调查后补充的决定
@@ -115,15 +115,9 @@
   - 组织、势力、世界观设定算**概念**。
 - R9：只有正常回复受最大输出量限制，初始化和图谱维护不设上限。（已实现）
 
-## 8. 不再需要的机制
+## 8. P5 cleanup
 
-如果第 4 节能完整实现，下面这些机制都应该被替代：
-
-- 处理延迟
-- 滑动窗口里为了“等稳定”而存在的那部分逻辑
-- 冲突解决
-
-具体删哪些，等调查结束后再定。
+The legacy per-character session service, sliding-window queue, processing delay, and conflict resolver were removed. Local chat and Tavern both use `src/timeline/` for graph versions. The desktop reads the current Tavern chat and graph from `/timeline/current` and `/timeline/graph/{chat_uuid}`.
 
 ## 9. 调查
 
@@ -241,7 +235,13 @@
 
 这几项放到实现阶段再验证。
 
-## 10. 实施计划（草案）
+### 9.3 P5 disposition of the former risks
+
+- The field mismatch disappeared with the old conversation synchronization endpoint; the plugin and backend now share the timeline sync contract.
+- Timeline extraction stores its result before advancing the chat head. Failed work leaves the prior graph visible and exposes retry status.
+- The plugin no longer retries the former per-turn processing request after a short timeout. It sends the complete visible timeline and checks status.
+
+## 10. Implementation plan (P5 complete)
 
 每个阶段都单独交给 Codex 实现，我负责验收，验收通过后再进入下一阶段。
 
@@ -252,7 +252,7 @@
 | P2 提取与重新生成 | 基础图：按 R18 和 R19 收录内容，按 hash 判断是否重建。开局作为第 0 轮处理。逐轮提取统一成一条写入路径，只经过校验层（删除延迟更新那条路径）。编辑后重新生成：输出要带 `turn`，校验后最多重试 3 次；按 token 估算分段，出错后按 2、4、8 份拆分；先写到临时副本，可以从失败的分段接着做（5.4 节）。 | 用假 LLM 测试：分段、拆分、重试、失败后恢复。 |
 | P3 本地模式 | 消息存储改为新结构，旧数据要迁移；增加 swipe 切换、编辑、重新生成（保留旧版本）、从某条消息创建分支；实现 0 号对话（R22）；全部接入 P1 的核心逻辑。 | 在本地界面上手动走一遍第 4 节的所有事件，并截图核对。 |
 | P4 酒馆插件 | 写入聊天 UUID 和消息 UUID；每次收到事件都核对完整聊天，把规范化后的时间线发给后台；识别派生聊天；按来源分别读世界书（顺便修好读取的 bug）；处理开局；显示“图谱与聊天不一致”和“重试”。 | 在临时角色上把 9.2.1 节的操作逐项重做一遍。 |
-| P5 收尾 | 删除滑动窗口、处理延迟、冲突解决这几个机制；删除不再使用的旧目录：`src/ui/pages`、`src/ui/windows`、`src/ui/widgets`、`src/ui/components`、`src/api`；修复 9.3 节剩下的问题。 | 全量回归测试。 |
+| P5 cleanup | Removed obsolete session processing, old UI modules and configuration; unified desktop Tavern graph reads with `/timeline/*`; resolved the 9.3 issues. | Full regression, isolated TestClient flow, desktop offscreen checks, plugin checks. |
 
 ### 10.1 P1 设计要点
 
@@ -271,9 +271,3 @@
 - **图谱结构**：时间线引擎使用自己的图状态结构，支持多重边，每条边有稳定 ID（R23）。把现有的 `KnowledgeGraph` 和界面切换到这套结构上，放到 P2 和 P3 接线时再做。P1 不改动任何现有行为。
 
 本地模式（P3）排在插件（P4）前面，是因为本地模式不需要打开酒馆，可以先拿它把核心逻辑测透。
-
-### 9.3 现有代码中的高风险问题
-
-- `sync_conversation` 的字段名和插件发送的不一致。
-- 延迟更新的结果从来没有保存到磁盘。
-- `process_conversation` 超时 25 秒后，插件会重发请求。

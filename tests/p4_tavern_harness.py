@@ -34,11 +34,8 @@ def response(value):
 
 
 def main():
-    root = Path(tempfile.gettempdir()) / 'echograph-p4-shots'
+    root = Path(tempfile.gettempdir()) / 'echograph-p5-shots'
     root.mkdir(parents=True, exist_ok=True)
-    (root / 'global').mkdir(exist_ok=True)
-    (root / 'global' / 'active_sessions.json').write_text(
-        json.dumps({'chat-a': {'local_dir_name': 'chat-a'}}), encoding='utf-8')
     state = {'phase': 'processing', 'retry': False}
     graph = {'session_id': 'chat-a', 'chat_uuid': 'chat-a',
              'graph_data': {'nodes': [

@@ -7,9 +7,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
-from src.core.game_engine import GameEngine
 from src.core.llm_client import ChatResult, LLMClient
-from src.memory.grag_memory import GRAGMemory
 from src.utils.llm_json import _parse, request_json, validate_kg
 
 
@@ -67,46 +65,6 @@ def test_three_failed_rounds_and_api_exception():
         client.chat([{'role': 'user', 'content': 'x'}])
 
 
-def make_engine(tmp_path, responses):
-    memory = GRAGMemory(graph_save_path=str(tmp_path / 'graph.graphml'),
-                        entities_json_path=str(tmp_path / 'entities.json'), auto_load_entities=False)
-    engine = GameEngine(memory, None, None, None, SimpleNamespace(llm_client=StubLLM(responses)))
-    engine._is_llm_available = lambda: True
-    return engine
-
-
-def test_chunked_world_book_merges_and_bounds_prompts(tmp_path):
-    entries = [f'Entry {i}: ' + ('A' * 1050) for i in range(25)]
-    world = '\n\n'.join(entries)
-    assert len(world) > 25000
-    batches = GameEngine._world_batches(None, world)
-    responses = [ChatResult(json.dumps(kg(other='Shared')), 'stop') for _ in range(len(batches) + 1)]
-    engine = make_engine(tmp_path, responses)
-    result = engine.initialize_from_tavern_data({'name': 'Hero', 'description': 'Main'}, world)
-    assert result['method'] == 'llm_analysis'
-    assert len(engine.grag_agent.llm_client.calls) == len(batches) + 1 > 2
-    assert max(len(call[0][-1]['content']) for call in engine.grag_agent.llm_client.calls) < 8500
-    assert len(engine.memory.knowledge_graph.graph.nodes()) == 2
-    assert (tmp_path / 'graph.graphml').exists()
-
-
-def test_one_batch_failure_is_partial(tmp_path):
-    responses = [ChatResult(json.dumps(kg()), 'stop')] + [ChatResult('x', 'stop')] * 4
-    engine = make_engine(tmp_path, responses)
-    result = engine.initialize_from_tavern_data({'name': 'Hero'}, 'A world entry')
-    assert result['method'] == 'partial' and '批次 2/2' in result['reason']
-    assert len(engine.memory.knowledge_graph.graph.nodes()) == 2
-
-
-def test_all_batches_fail_without_persisting_fallback(tmp_path):
-    engine = make_engine(tmp_path, [ChatResult('x', 'stop')] * 4)
-    with pytest.raises(RuntimeError, match='3 轮修复'):
-        engine.initialize_from_tavern_data({'name': 'Hero'}, '')
-    assert len(engine.memory.knowledge_graph.graph.nodes()) == 0
-    assert not (tmp_path / 'graph.graphml').exists()
-    assert not (tmp_path / 'entities.json').exists()
-
-
 class RecordingOpenAI:
     def __init__(self, responses):
         self.responses = iter(responses)
@@ -129,42 +87,10 @@ def recording_client(responses):
     return client, provider
 
 
-def test_openai_initialization_all_batches_have_no_output_cap(tmp_path):
-    entries = [f'Entry {i}: ' + 'A' * 1050 for i in range(18)]
-    world = '\n\n'.join(entries)
-    batches = GameEngine._world_batches(None, world)
-    client, provider = recording_client(
-        [(json.dumps(kg(other='Shared')), 'stop')] * (len(batches) + 1))
-    memory = GRAGMemory(graph_save_path=str(tmp_path / 'graph.graphml'),
-                        entities_json_path=str(tmp_path / 'entities.json'),
-                        auto_load_entities=False)
-    engine = GameEngine(memory, None, None, None, SimpleNamespace(llm_client=client))
-    engine._is_llm_available = lambda: True
-    engine.initialize_from_tavern_data({'name': 'Hero'}, world)
-    assert len(provider.requests) == len(batches) + 1 > 2
-    assert all('max_tokens' not in request for request in provider.requests)
 
 
-def test_openai_continuation_repair_and_grag_update_have_no_output_cap():
-    raw = json.dumps(kg())
-    prefix = raw[:raw.index('City') + 2]
-    client, provider = recording_client([
-        (prefix, 'length'), (raw[len(prefix):], 'stop'),
-        ('{"entities": [}', 'stop'), (raw, 'stop'),
-        ('{"operations": []}', 'stop'),
-    ])
-    assert request_json(client, 'prompt', 'system', validate_kg)[0] == kg()
-    assert request_json(client, 'prompt', 'system', validate_kg)[0] == kg()
-    from src.core.grag_update_agent import GRAGUpdateAgent
-    from src.graph.knowledge_graph import KnowledgeGraph
-    result = GRAGUpdateAgent(client).analyze_conversation_for_updates(
-        'hello', 'reply', KnowledgeGraph())
-    assert result['operations'] == []
-    assert len(provider.requests) == 5
-    assert [request.get('response_format') for request in provider.requests] == [
-        {'type': 'json_object'}, None, {'type': 'json_object'},
-        {'type': 'json_object'}, {'type': 'json_object'}]
-    assert all('max_tokens' not in request for request in provider.requests)
+
+
 
 
 def test_reply_uses_reloaded_max_tokens(tmp_path, monkeypatch):
@@ -181,7 +107,7 @@ def test_reply_uses_reloaded_max_tokens(tmp_path, monkeypatch):
     engine = SimpleNamespace(
         perception=SimpleNamespace(analyze=lambda *_: {'entities': []}),
         memory=SimpleNamespace(
-            knowledge_graph=object(),
+            knowledge_graph=SimpleNamespace(graph=SimpleNamespace(nodes=[])),
             retrieve_context_for_prompt=lambda *_args, **_kwargs: 'context'))
     try:
         env_path.write_text('OPENAI_API_KEY=fake\nMAX_TOKENS=1234\n', encoding='utf-8')

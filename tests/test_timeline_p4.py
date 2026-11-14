@@ -100,6 +100,7 @@ def test_tavern_http_timeline(tmp_path):
     assert api.get('/timeline/identity/parent').json()['previous_file_name'] == 'renamed'
     graph = api.get(f'/timeline/graph/{child_uuid}').json()
     assert graph['graph_data']['nodes']
+    assert api.get(f'/timeline/prompt/{child_uuid}').status_code == 200
     payload = {'op': 'add_node', 'payload': {'id': 'manual', 'name': '手动', 'type': 'character'}}
     assert api.post(f'/timeline/manual/{child_uuid}', json=payload).status_code == 200
     assert '手动' in api.get(f'/timeline/prompt/{child_uuid}').json()['content']

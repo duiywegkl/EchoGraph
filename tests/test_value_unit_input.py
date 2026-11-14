@@ -80,14 +80,14 @@ def test_unitless_mode(app):
 
 CONFIG_VALUES = {
     "MAX_TOKENS": "32000", "LLM_CONTEXT_SIZE": "128000", "TEMPERATURE": "0.8", "REQUEST_TIMEOUT": "181",
-    "SLIDING_WINDOW_SIZE": "20", "PROCESSING_DELAY": "0", "API_TIMEOUT": "59",
+    "API_TIMEOUT": "59",
     "HEALTH_CHECK_TIMEOUT": "29",
     "MAX_MESSAGES": "5000", "ANIMATION_INTERVAL": "1251", "POLL_INTERVAL": "7",
 }
 FIELD_NAMES = {
     "MAX_TOKENS": "max_tokens_input", "LLM_CONTEXT_SIZE": "context_size_input", "TEMPERATURE": "temperature_input",
-    "REQUEST_TIMEOUT": "request_timeout_input", "SLIDING_WINDOW_SIZE": "window_size_input",
-    "PROCESSING_DELAY": "processing_delay_input", "API_TIMEOUT": "api_timeout_input",
+    "REQUEST_TIMEOUT": "request_timeout_input",
+    "API_TIMEOUT": "api_timeout_input",
     "HEALTH_CHECK_TIMEOUT": "health_check_timeout_input",
     "MAX_MESSAGES": "max_messages_input", "ANIMATION_INTERVAL": "animation_interval_input",
     "POLL_INTERVAL": "poll_interval_input",

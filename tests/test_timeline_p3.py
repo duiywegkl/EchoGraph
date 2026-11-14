@@ -196,12 +196,3 @@ def test_multiedge_memory_and_tavern_graphml(tmp_path):
     assert {d['edge_id'] for _, _, d in memory.knowledge_graph.graph.edges(data=True)} == {'e1', 'e2'}
     context = memory.knowledge_graph.to_text_representation()
     assert 'likes' in context and 'trusts' in context
-    source = (Path(__file__).resolve().parents[1]
-              / 'data/tavern_characters/elara/sessions/current/knowledge_graph.graphml')
-    path = tmp_path / 'tavern.graphml'
-    shutil.copy2(source, path)
-    graph = KnowledgeGraph()
-    graph.load_graph(str(path))
-    original = nx.read_graphml(path)
-    assert set(graph.graph.nodes) == set(original.nodes)
-    assert graph.graph.number_of_edges() == original.number_of_edges()

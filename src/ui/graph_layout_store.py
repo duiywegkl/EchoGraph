@@ -1,4 +1,4 @@
-"""Persistent coordinates for one local graph or Tavern character session."""
+"""Persistent coordinates for one local graph or Tavern chat."""
 
 import json
 import math
@@ -9,13 +9,9 @@ from pathlib import Path
 def layout_path(entities_path=None, session_id=None, storage_root=None):
     if session_id is None:
         return Path(entities_path).parent / "layout.json"
-    root = Path(storage_root)
-    sessions = json.loads((root / "global" / "active_sessions.json").read_text(encoding="utf-8"))
-    directory = sessions[session_id]["local_dir_name"]
-    # A directory name comes from the storage manager; keep it inside its root.
-    if Path(directory).name != directory or directory in ("", ".", ".."):
-        raise ValueError("Invalid Tavern character directory")
-    return root / "tavern_characters" / directory / "sessions" / "current" / "layout.json"
+    if not isinstance(session_id, str) or Path(session_id).name != session_id or session_id in ("", ".", ".."):
+        raise ValueError("Invalid chat ID")
+    return Path(storage_root) / "tavern_timeline" / "layouts" / f"{session_id}.json"
 
 
 def _valid_positions(value, node_ids):

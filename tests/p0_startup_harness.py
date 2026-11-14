@@ -14,6 +14,14 @@ from PySide6.QtWidgets import QApplication, QMessageBox, QScrollArea
 import requests
 import run_ui
 
+from PySide6.QtWebEngineCore import QWebEngineProfile, QWebEngineUrlRequestInterceptor
+
+class BlockWebNetwork(QWebEngineUrlRequestInterceptor):
+    def interceptRequest(self, info):
+        if info.requestUrl().scheme() in ('http', 'https', 'ws', 'wss'):
+            info.block(True)
+
+
 
 class StubNetworkReply(QObject):
     finished = Signal()
@@ -66,7 +74,12 @@ original_create = run_ui.create_app_and_window
 
 
 def create_and_capture(*args, **kwargs):
-    app, window = original_create(*args, **kwargs)
+    env_path = Path(tempfile.mkdtemp(prefix="echograph-p5-startup-")) / ".env"
+    env_path.write_text("UI_THEME=sand\nAPI_SERVER_PORT=9543\nOPENAI_API_KEY=\n", encoding="utf-8")
+    app, window = original_create(*args, env_path=env_path, **kwargs)
+    global _web_blocker
+    _web_blocker = BlockWebNetwork()
+    QWebEngineProfile.defaultProfile().setUrlRequestInterceptor(_web_blocker)
 
     def capture():
         try:
@@ -78,13 +91,25 @@ def create_and_capture(*args, **kwargs):
             assert window.isVisible()
             assert window.config_page.plugin_status_label.text() == '已连接'
             assert window.config_page.backend_status_label.text() == '运行中'
-            shot_dir = Path(tempfile.gettempdir()) / 'echograph-p0-shots'
+            shot_dir = Path(tempfile.gettempdir()) / 'echograph-p5-shots'
             shot_dir.mkdir(exist_ok=True)
             shot = shot_dir / 'config-page.png'
             assert window.grab().save(str(shot))
             print(f'OK cwd={Path.cwd()} screenshot={shot} size={window.width()}x{window.height()} '
                   f'plugin={window.config_page.plugin_status_label.text()} '
                   f'backend={window.config_page.backend_status_label.text()}', flush=True)
+            window.play_page.tavern_mode_radio.click()
+            app.processEvents()
+            assert window.graph_page.tavern_mode
+            window.tabs.setCurrentWidget(window.graph_page)
+            tavern_shot = shot_dir / 'tavern-mode.png'
+            assert window.grab().save(str(tavern_shot))
+            window.play_page.local_mode_radio.click()
+            app.processEvents()
+            assert not window.graph_page.tavern_mode
+            local_shot = shot_dir / 'local-graph.png'
+            assert window.grab().save(str(local_shot))
+            print(f'mode switch OK tavern={tavern_shot} local={local_shot}', flush=True)
             os._exit(0)
         except BaseException:
             traceback.print_exc()

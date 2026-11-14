@@ -1,7 +1,6 @@
 """Run real UI startup with temp data and fake extraction; never closes Qt normally."""
 
 import os
-import shutil
 import sys
 import tempfile
 import traceback
@@ -22,16 +21,21 @@ from PySide6.QtWidgets import QMessageBox
 import requests
 import run_ui
 
+from PySide6.QtWebEngineCore import QWebEngineProfile, QWebEngineUrlRequestInterceptor
+
+class BlockWebNetwork(QWebEngineUrlRequestInterceptor):
+    def interceptRequest(self, info):
+        if info.requestUrl().scheme() in ('http', 'https', 'ws', 'wss'):
+            info.block(True)
+
+
 
 ROOT = Path(run_ui.__file__).resolve().parent
 DATA = Path(tempfile.mkdtemp(prefix='echograph-p3-data-'))
 os.environ['ECHOGRAPH_DATA_ROOT'] = str(DATA)
-SOURCE = ROOT / 'data/local_conversations'
-shutil.copytree(SOURCE / 'conversations', DATA / 'local_conversations/conversations')
-shutil.copytree(SOURCE / 'graphs', DATA / 'local_conversations/graphs')
 TEMP_ENV = DATA / '.env'
-shutil.copy2(ROOT / '.env', TEMP_ENV)
-SHOTS = Path(tempfile.gettempdir()) / 'echograph-p3-shots'
+TEMP_ENV.write_text('UI_THEME=sand\nOPENAI_API_KEY=\n', encoding='utf-8')
+SHOTS = Path(tempfile.gettempdir()) / 'echograph-p5-shots'
 SHOTS.mkdir(exist_ok=True)
 
 
@@ -106,6 +110,9 @@ run_ui.IntegratedPlayPage.queue_timeline = lambda self: None
 def create_and_schedule(*args, **kwargs):
     print('creating window', flush=True)
     app, window = original_create(env_path=TEMP_ENV, *args, **kwargs)
+    global _web_blocker
+    _web_blocker = BlockWebNetwork()
+    QWebEngineProfile.defaultProfile().setUrlRequestInterceptor(_web_blocker)
     print('window created', flush=True)
     print('visible', window.isVisible(), flush=True)
     app.aboutToQuit.connect(lambda: print('about to quit', flush=True))
@@ -137,7 +144,7 @@ def create_and_schedule(*args, **kwargs):
         QTimer.singleShot(700, lambda: guarded(step_a_capture))
 
     def step_a_capture():
-        shot('a-migrated-zero')
+        shot('a-default-zero')
         conv_id = page.conversation_manager.create_conversation('三版本对话')
         page.conversation_manager.add_message({'role': 'user', 'content': '旅程开始'})
         page.conversation_manager.add_message({'role': 'assistant', 'content': '版本一'})

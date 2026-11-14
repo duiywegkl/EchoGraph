@@ -25,11 +25,9 @@ class LLMWorkerThread(QThread):
         try:
             from src.core.llm_client import LLMClient
             
-            # 1. 感知用户输入中的实体
-            logger.info(f"[SEARCH] [GRAG] 开始分析用户输入: {self.message}")
-            perceived = self.engine.perception.analyze(self.message, self.engine.memory.knowledge_graph)
-            perceived_entities = perceived.get("entities", [])
-            logger.info(f"[TARGET] [GRAG] 感知到 {len(perceived_entities)} 个相关实体: {perceived_entities}")
+            # Match names in the current timeline graph for reply retrieval.
+            graph = self.engine.memory.knowledge_graph.graph
+            perceived_entities = [name for name in graph.nodes if name in self.message]
             
             # 2. 构建知识图谱上下文
             logger.info(f"[LINK] [GRAG] 开始构建知识图谱上下文...")

@@ -99,54 +99,6 @@ class ResourceCleanupManager:
         except Exception as e:
             logger.warning(f"❌ 关闭API服务器时出错: {e}")
 
-    def _cleanup_port_if_needed(self):
-        """检查并清理端口占用"""
-        try:
-            import sys
-            port = getattr(self.main_window, 'api_server_port', 9543)
-
-            if sys.platform == "win32":
-                # Windows: 使用netstat查找占用端口的进程
-                result = subprocess.run(
-                    ["netstat", "-ano", "-p", "TCP"],
-                    capture_output=True, text=True, check=False
-                )
-
-                for line in result.stdout.split('\n'):
-                    if f":{port}" in line and "LISTENING" in line:
-                        parts = line.split()
-                        if len(parts) >= 5:
-                            pid = parts[-1]
-                            logger.warning(f"[SEARCH] 发现端口{port}仍被PID {pid}占用")
-
-                            # 尝试终止占用端口的进程
-                            try:
-                                subprocess.run(["taskkill", "/F", "/PID", pid],
-                                             check=False, capture_output=True)
-                                logger.info(f"🔨 已清理占用端口{port}的进程 PID {pid}")
-                            except Exception as e:
-                                logger.error(f"清理端口占用失败: {e}")
-                            break
-            else:
-                # Linux/Mac: 使用lsof查找占用端口的进程
-                result = subprocess.run(
-                    ["lsof", "-ti", f":{port}"],
-                    capture_output=True, text=True, check=False
-                )
-
-                if result.stdout.strip():
-                    pid = result.stdout.strip()
-                    logger.warning(f"[SEARCH] 发现端口{port}仍被PID {pid}占用")
-
-                    try:
-                        subprocess.run(["kill", "-9", pid], check=False)
-                        logger.info(f"🔨 已清理占用端口{port}的进程 PID {pid}")
-                    except Exception as e:
-                        logger.error(f"清理端口占用失败: {e}")
-
-        except Exception as e:
-            logger.debug(f"端口清理检查失败: {e}")  # 使用debug级别，因为这不是关键错误
-    
     def save_application_data(self):
         """保存应用程序数据"""
         try:

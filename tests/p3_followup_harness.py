@@ -18,7 +18,7 @@ DATA = Path(tempfile.mkdtemp(prefix='echograph-p3-v2-data-'))
 os.environ['ECHOGRAPH_DATA_ROOT'] = str(DATA)
 TEMP_ENV = DATA / '.env'
 TEMP_ENV.write_text('UI_THEME=sand\nOPENAI_API_KEY=\n', encoding='utf-8')
-SHOTS = Path(tempfile.gettempdir()) / 'echograph-p3-shots-v2'
+SHOTS = Path(tempfile.gettempdir()) / 'echograph-p5-shots'
 SHOTS.mkdir(exist_ok=True)
 
 # Install both stubs before constructing the app or making the first UI call.
@@ -37,6 +37,14 @@ from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtNetwork import QNetworkReply
 from PySide6.QtWidgets import QMessageBox
 import run_ui
+
+from PySide6.QtWebEngineCore import QWebEngineProfile, QWebEngineUrlRequestInterceptor
+
+class BlockWebNetwork(QWebEngineUrlRequestInterceptor):
+    def interceptRequest(self, info):
+        if info.requestUrl().scheme() in ('http', 'https', 'ws', 'wss'):
+            info.block(True)
+
 
 class StubNetworkReply(QObject):
     finished = Signal()
@@ -93,6 +101,8 @@ fake = FakeExtractor()
 original_queue = run_ui.IntegratedPlayPage.queue_timeline
 run_ui.IntegratedPlayPage.queue_timeline = lambda self: None
 app, window = run_ui.create_app_and_window(env_path=TEMP_ENV, process_theme='sand')
+_web_blocker = BlockWebNetwork()
+QWebEngineProfile.defaultProfile().setUrlRequestInterceptor(_web_blocker)
 window.resize(1500, 950)
 page = window.play_page
 graph = window.graph_page

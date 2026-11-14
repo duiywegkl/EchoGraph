@@ -45,57 +45,19 @@ def test_reload_file_wins_and_updates_singleton(temporary_config, monkeypatch):
     assert imported_config.llm.model == "file-model"
 
 
-def test_backend_reload_then_retry_initialize(temporary_config, monkeypatch):
-    import api_server
-
-    monkeypatch.setattr(api_server, "sessions", {})
-    monkeypatch.setattr(api_server, "sliding_window_managers", {})
-    monkeypatch.setattr(api_server, "LLMClient", lambda: object())
-    monkeypatch.setattr(api_server, "GRAGUpdateAgent", lambda client: object())
-
-    graph = SimpleNamespace(nodes=lambda: [], edges=lambda: [])
-    memory = SimpleNamespace(knowledge_graph=SimpleNamespace(graph=graph))
-
-    def fake_engine(session_id, *_args):
-        agent = api_server.build_grag_agent_or_raise()
-        return SimpleNamespace(memory=memory, grag_agent=agent,
-                               initialize_from_tavern_data=lambda *_: {"nodes_added": 0, "edges_added": 0})
-
-    monkeypatch.setattr(api_server, "get_or_create_session_engine", fake_engine)
-    temporary_config.write_text("OPENAI_API_KEY=\nOPENAI_API_BASE_URL=http://fake.example/v1\n", encoding="utf-8")
+def test_retired_environment_keys_are_ignored(temporary_config):
+    temporary_config.write_text(
+        "SLIDING_WINDOW_SIZE=invalid\nPROCESSING_DELAY=invalid\n"
+        "ENABLE_CONFLICT_RESOLUTION=true\nTIMELINE_PER_TURN_REGEN=true\n",
+        encoding="utf-8",
+    )
     config_module.reload_config()
-    cached = SimpleNamespace(grag_agent=object())
-    delayed = SimpleNamespace(grag_agent=object())
-    api_server.sessions["cached"] = cached
-    api_server.sliding_window_managers["cached"] = delayed
-    with TestClient(api_server.app, client=("127.0.0.1", 12345)) as client:
-        request = {"session_id": "retry-test", "is_test": True, "character_card": {}, "world_info": ""}
-        failed = client.post("/initialize", json=request)
-        assert failed.status_code == 500 and "Key" in failed.text
-        temporary_config.write_text("OPENAI_API_KEY=secret-test-key\nOPENAI_API_BASE_URL=http://fake.example/v1\n", encoding="utf-8")
-        reloaded = client.post("/system/reload_config")
-        assert reloaded.status_code == 200
-        assert reloaded.json() == {"ok": True, "llm_configured": True,
-                                   "base_url": "http://fake.example/v1", "model": config_module.config.llm.model}
-        assert "secret-test-key" not in reloaded.text
-        assert cached.grag_agent is None and delayed.grag_agent is None
-        assert client.post("/initialize", json=request).status_code == 200
+    assert config_module.config.timeline.per_turn_regen
+    assert not hasattr(config_module.config.game, "sliding_window_size")
 
 
-def test_agent_build_reloads_changed_env_without_notification(temporary_config, monkeypatch):
-    import api_server
 
-    monkeypatch.setattr(api_server, "LLMClient", lambda: object())
-    monkeypatch.setattr(api_server, "GRAGUpdateAgent", lambda client: object())
-    temporary_config.write_text("OPENAI_API_KEY=\nOPENAI_API_BASE_URL=http://fake.example/v1\n", encoding="utf-8")
-    config_module.reload_config()
-    with pytest.raises(RuntimeError, match="Key"):
-        api_server.build_grag_agent_or_raise()
-    previous = temporary_config.stat().st_mtime_ns
-    temporary_config.write_text("OPENAI_API_KEY=fallback-key\nOPENAI_API_BASE_URL=http://fake.example/v1\n", encoding="utf-8")
-    os.utime(temporary_config, ns=(previous + 2_000_000_000, previous + 2_000_000_000))
-    assert api_server.build_grag_agent_or_raise() is not None
-    assert config_module.config.llm.api_key == "fallback-key"
+
 
 
 def test_backend_reload_localhost_only(temporary_config):

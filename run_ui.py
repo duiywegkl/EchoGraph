@@ -48,7 +48,6 @@ from src.memory import GRAGMemory
 
 # 导入重构后的组件
 from src.ui.workers.llm_worker import LLMWorkerThread
-from src.ui.managers.scenario_manager import ScenarioManager
 from src.ui.managers.window_manager import WindowManager
 from src.ui import theme
 from src.ui.value_unit_input import UnitSpec, ValueUnitInput
@@ -311,12 +310,7 @@ class ChatDisplayWidget(QScrollArea):
             if self.message_widgets[i]['is_user']:
                 return self.message_widgets[i]['message']
         return None
-from src.core.perception import PerceptionModule
-from src.core.rpg_text_processor import RPGTextProcessor
-from src.core.game_engine import GameEngine
-from src.core.validation import ValidationLayer
 from src.core.llm_client import LLMClient
-from src.core.grag_update_agent import GRAGUpdateAgent
 
 from typing import Dict, List, Optional
 
@@ -640,7 +634,7 @@ class TimelineWorker(QThread):
 class IntegratedPlayPage(QWidget):
     """集成的智能对话页面"""
 
-    def __init__(self, engine: GameEngine, parent=None):
+    def __init__(self, engine, parent=None):
         super().__init__(parent)
         self.engine = engine
         self.api_base_url = "http://127.0.0.1:9543"
@@ -948,20 +942,6 @@ class IntegratedPlayPage(QWidget):
 
                 self._restore_local_graph(main_window)
 
-                # 无条件关闭后端酒馆模式并快速清理，确保彻底回到本地隔离
-                backend_errors = []
-                try:
-                    response = requests.post(f"{self.api_base_url}/system/tavern_mode", json={"active": False}, timeout=5)
-                    if not response.ok:
-                        raise RuntimeError(f"HTTP {response.status_code}")
-                except Exception as exc:
-                    backend_errors.append(f"mode gate: {exc}")
-                try:
-                    response = requests.get(f"{self.api_base_url}/system/quick_reset", timeout=5)
-                    if not response.ok:
-                        raise RuntimeError(f"HTTP {response.status_code}")
-                except Exception as exc:
-                    backend_errors.append(f"quick reset: {exc}")
                 try:
                     self._stop_tavern_session_polling()
                 except Exception:
@@ -971,13 +951,7 @@ class IntegratedPlayPage(QWidget):
                 # 启用对话界面
                 self.enable_chat_interface(True)
 
-                if backend_errors:
-                    warning = "; ".join(backend_errors)
-                    self.update_status_display(f"Local mode selected; backend reset failed: {warning}")
-                    from PySide6.QtWidgets import QMessageBox
-                    QMessageBox.warning(self, "Backend reset failed", warning)
-                else:
-                    self.update_status_display("本地模式已选择")
+                self.update_status_display("本地模式已选择")
                 self.is_connected_to_api = True
 
             elif mode_id == 1:  # 酒馆模式
@@ -995,15 +969,6 @@ class IntegratedPlayPage(QWidget):
                         from PySide6.QtWidgets import QMessageBox
                         QMessageBox.warning(self, "EchoGraph", "会话初始化失败: 后端无法访问，请先启动Python服务器。")
 
-                        # 确保后端处于本地隔离（关闭酒馆模式 + 快速清理）
-                        try:
-                            requests.post(f"{self.api_base_url}/system/tavern_mode", json={"active": False}, timeout=3)
-                            requests.get(f"{self.api_base_url}/system/quick_reset", timeout=3)
-                            logger.info("🛑 已在回退时关闭后端酒馆模式并请求 quick_reset")
-                        except Exception as gate_err:
-                            logger.warning(f"⚠️ 回退关闭 tavern_mode/quick_reset 失败: {gate_err}")
-
-                        # 回退到本地模式（UI 状态）
                         self.local_mode_radio.setChecked(True)
                         self.tavern_mode_radio.setChecked(False)
                         self.is_test_mode = True
@@ -1012,16 +977,11 @@ class IntegratedPlayPage(QWidget):
                         self._restore_local_graph(main_window)
                         return
 
-                    # 启用后端酒馆模式开关（允许插件/WS访问）
-                    gate_response = requests.post(f"{self.api_base_url}/system/tavern_mode", json={"active": True}, timeout=5)
-                    if not gate_response.ok:
-                        raise RuntimeError(f"Tavern mode gate returned HTTP {gate_response.status_code}")
-                    logger.info("✅ 已开启后端酒馆模式（允许插件访问）")
-                except Exception as gate_err:
-                    logger.error(f"Tavern mode gate failed: {gate_err}")
-                    self.auto_switch_to_local_mode(str(gate_err))
+                except Exception as backend_error:
+                    logger.error(f"Backend liveness check failed: {backend_error}")
+                    self.auto_switch_to_local_mode(str(backend_error))
                     from PySide6.QtWidgets import QMessageBox
-                    QMessageBox.warning(self, "Tavern mode", f"Cannot enable Tavern mode: {gate_err}")
+                    QMessageBox.warning(self, "Tavern mode", f"Backend unavailable: {backend_error}")
                     return
 
                 QApplication.processEvents()
@@ -1029,9 +989,9 @@ class IntegratedPlayPage(QWidget):
                 # 禁用对话界面（切换到酒馆模式后，对话由酒馆控制）
                 self.enable_chat_interface(False)
 
-                # 不再阻塞等待插件提交角色数据；直接进入“酒馆模式占位”界面，由插件与后端自行完成初始化
+                # Show a placeholder until the plugin reports its current timeline chat.
                 try:
-                    self.update_status_display("酒馆模式已启用（等待SillyTavern角色提交）")
+                    self.update_status_display("酒馆模式已启用（等待当前聊天）")
                     if main_window and hasattr(main_window, 'graph_page'):
                         # 显示占位信息；session_id 暂定为 pending，统计为空
                         placeholder_stats = {"graph_nodes": 0, "graph_edges": 0}
@@ -1189,16 +1149,6 @@ class IntegratedPlayPage(QWidget):
             # 设置测试模式标志
             self.is_test_mode = True
 
-            # 关闭后端酒馆模式总开关，确保隔离（并快速清理）
-            try:
-                requests.post(f"{self.api_base_url}/system/tavern_mode", json={"active": False}, timeout=3)
-                requests.get(f"{self.api_base_url}/system/quick_reset", timeout=3)
-                logger.info("🛑 已关闭后端酒馆模式并请求 quick_reset")
-            except Exception as gate_err:
-                logger.warning(f"⚠️ 自动回退时关闭 tavern_mode/quick_reset 失败: {gate_err}")
-
-
-            # 无论是否真正进入过酒馆模式，都强制恢复本地数据展示
             main_window = None
             widget = self.parent()
             while widget is not None:
@@ -1596,8 +1546,6 @@ class IntegratedPlayPage(QWidget):
         """处理消息（发送到API）"""
         if self.is_test_mode:
             self.process_test_message(message)
-        else:
-            self.process_tavern_message(message)
 
     def process_test_message(self, message: str):
         """处理测试模式消息 - 使用多线程避免UI阻塞"""
@@ -1664,98 +1612,6 @@ class IntegratedPlayPage(QWidget):
         if hasattr(self, 'llm_worker') and self.llm_worker is not None:
             self.llm_worker.deleteLater()
             self.llm_worker = None
-
-    def process_tavern_message(self, message: str):
-        """处理酒馆模式消息 - 通过HTTP API与酒馆插件交互"""
-        if not self.is_connected_to_api:
-            logger.warning("酒馆API未连接，无法处理消息")
-            return None
-
-        try:
-            logger.info(f"🍺 [酒馆模式] 处理消息: {message[:100]}...")
-
-            # 获取当前有效的酒馆会话ID
-            session_id = None
-            try:
-                main_window = None
-                widget = self.parent()
-                while widget is not None:
-                    if isinstance(widget, EchoGraphMainWindow):
-                        main_window = widget
-                        break
-                    widget = widget.parent()
-                if main_window and hasattr(main_window, 'graph_page') and getattr(main_window.graph_page, 'tavern_mode', False):
-                    session_id = getattr(main_window.graph_page, 'tavern_session_id', None)
-            except Exception as sid_err:
-                logger.warning(f"获取酒馆会话ID失败: {sid_err}")
-
-            if not session_id:
-                logger.warning("酒馆模式会话ID未知，无法处理消息")
-                return {'status': 'no_session'}
-
-            # 发送到EchoGraph API服务器进行处理
-            response = requests.post(
-                f"{self.api_base_url}/tavern/process_message",
-                json={
-                    'message': message,
-                    'session_id': session_id,  # 使用当前会话ID
-                    'mode': 'tavern_integration',
-                    'timestamp': time.time()
-                },
-                timeout=int(os.getenv("API_TIMEOUT", "15"))
-            )
-
-            if response.status_code == 200:
-                data = response.json()
-                enhanced_context = data.get('enhanced_context', '')
-                nodes_updated = data.get('nodes_updated', 0)
-                edges_added = data.get('edges_added', 0)
-
-                if enhanced_context:
-                    logger.info(f"✅ [酒馆模式] 消息处理成功 - 上下文长度: {len(enhanced_context)}, 节点更新: {nodes_updated}, 关系添加: {edges_added}")
-
-                    # 更新本地UI显示
-                    try:
-                        # 获取主窗口实例并刷新知识图谱页面
-                        main_window = None
-                        widget = self.parent()
-                        while widget is not None:
-                            if isinstance(widget, EchoGraphMainWindow):
-                                main_window = widget
-                                break
-                            widget = widget.parent()
-
-                        if main_window and hasattr(main_window, 'graph_page'):
-                            main_window.graph_page.refresh_graph()  # 已包含更新实体列表和统计
-                            logger.info("📊 [酒馆模式] 知识图谱页面已实时更新")
-                    except Exception as refresh_error:
-                        logger.warning(f"⚠️ [酒馆模式] 刷新知识图谱页面失败: {refresh_error}")
-
-                    return {
-                        'enhanced_context': enhanced_context,
-                        'stats': {
-                            'nodes_updated': nodes_updated,
-                            'edges_added': edges_added
-                        },
-                        'status': 'success'
-                    }
-                else:
-                    logger.info("📝 [酒馆模式] 消息处理完成，但未生成增强上下文")
-                    return {'status': 'no_enhancement'}
-            else:
-                error_text = response.text
-                logger.error(f"❌ [酒馆模式] API调用失败: {response.status_code} - {error_text}")
-                return {'status': 'api_error', 'error': f"HTTP {response.status_code}"}
-
-        except requests.exceptions.Timeout:
-            logger.error("⏱️ [酒馆模式] API调用超时")
-            return {'status': 'timeout', 'error': 'API request timeout'}
-        except Exception as e:
-            logger.error(f"💥 [酒馆模式] 消息处理异常: {e}")
-            logger.error(f"详细错误: {traceback.format_exc()}")
-            return {'status': 'error', 'error': str(e)}
-
-        return None
 
     def regenerate_last_response(self):
         """重新生成最后一轮AI回复"""
@@ -1921,9 +1777,6 @@ class GraphPage(QWidget):
         self.reset_view_btn = QPushButton("重置视图")
         self.reset_view_btn.setProperty("variant", "ghost")
 
-        self.init_graph_btn = QPushButton("初始化图谱")
-        self.init_graph_btn.setProperty("variant", "ghost")
-        self.init_graph_btn.setEnabled(False)
 
         self.clear_graph_btn = QPushButton("清空图谱")
         self.clear_graph_btn.setProperty("variant", "danger")
@@ -1948,7 +1801,6 @@ class GraphPage(QWidget):
         header.addStretch()
         header.addWidget(self.refresh_btn)
         header.addWidget(self.export_btn)
-        header.addWidget(self.init_graph_btn)
         header.addWidget(self.clear_graph_btn)
         header.addWidget(self.undo_btn)
         header.addWidget(self.redo_btn)
@@ -2124,7 +1976,6 @@ class GraphPage(QWidget):
         # 图谱操作
         self.refresh_btn.clicked.connect(self.refresh_graph)
         self.export_btn.clicked.connect(self.export_graph)
-        self.init_graph_btn.clicked.connect(self.initialize_graph)
         self.clear_graph_btn.clicked.connect(self.clear_graph)
         self.undo_btn.clicked.connect(self.undo_manual)
         self.redo_btn.clicked.connect(self.redo_manual)
@@ -2311,11 +2162,6 @@ class GraphPage(QWidget):
             logger.error(f"错误详情: {traceback.format_exc()}")
             # 如果失败，使用HTML生成器的备用方案
             self.html_generator._generate_fallback_html(self.graph_file_path)
-
-    def generate_graph_html(self):
-        """生成图谱HTML文件（向后兼容方法）"""
-        entities = self.get_all_entities()
-        self.generate_graph_html_with_data(entities)
 
     def _get_type_group(self, entity_type):
         """获取实体类型的分组ID"""
@@ -2520,22 +2366,6 @@ class GraphPage(QWidget):
             self.refresh_from_api_server(self.tavern_session_id, force=True)
         elif hasattr(self, 'local_layer') and self.local_layer.redo():
             self.reload_manual_graph()
-
-    def _add_sample_entities(self):
-        """添加示例实体（备用方案）"""
-        sample_entities = [
-            {"name": "克罗诺", "type": "character"},
-            {"name": "利恩王国", "type": "location"},
-            {"name": "传送装置", "type": "item"},
-            {"name": "千年祭", "type": "event"},
-            {"name": "玛尔", "type": "character"},
-            {"name": "时空之门", "type": "location"},
-        ]
-
-        for entity in sample_entities:
-            list_item = QListWidgetItem(entity.get('display_name') or display_name(entity['name'], entity.get('attributes', {}).get('name')))
-            list_item.setData(Qt.UserRole, entity)
-            self.entity_list.addItem(list_item)
 
     def update_stats(self):
         """更新图谱统计信息（向后兼容方法）"""
@@ -3335,176 +3165,6 @@ class GraphPage(QWidget):
                 logger.error(f"清空知识图谱失败: {e}")
                 QMessageBox.warning(self, "清空失败", f"清空知识图谱时出现错误：\n{str(e)}")
 
-    def initialize_graph(self):
-        """初始化知识图谱"""
-        if self.tavern_mode:
-            # --- 酒馆模式下的重新初始化 ---
-            if not self.tavern_session_id:
-                QMessageBox.warning(self, "操作失败", "无法重新初始化：未找到有效的酒馆会话ID。")
-                return
-
-            reply = QMessageBox.question(
-                self,
-                "确认操作",
-                "这将重新初始化知识图谱，确定要继续吗？",
-                QMessageBox.Yes | QMessageBox.No
-            )
-            if reply == QMessageBox.No:
-                return
-
-            try:
-                logger.debug(f"🚀 [UI] Starting tavern graph initialization for session: {self.tavern_session_id}")
-
-                # 直接调用重新初始化API
-                logger.debug(f"🔄 [UI] Calling coordinated re-initialization API for session: {self.tavern_session_id}")
-                api_url = f"{self._api_base_url()}/tavern/sessions/{self.tavern_session_id}/request_reinitialize"
-
-                api_timeout = int(os.getenv("API_TIMEOUT", "15"))
-                response = requests.post(api_url, timeout=api_timeout)
-
-                if response.status_code == 200:
-                    result = response.json()
-                    QMessageBox.information(
-                        self,
-                        "重新初始化已启动",
-                        f"知识图谱重新初始化已开始。\n\n{result.get('message', '请稍等片刻...')}"
-                    )
-                    # 刷新图谱
-                    session_id = self.tavern_session_id
-                    QTimer.singleShot(3000, lambda: self.refresh_graph()
-                                      if self.tavern_mode and self.tavern_session_id == session_id else None)
-                else:
-                    try:
-                        error_msg = response.json().get("detail", response.text)
-                    except:
-                        error_msg = response.text[:200]
-                    QMessageBox.warning(self, "初始化失败", f"重新初始化失败 (HTTP {response.status_code}):\n{error_msg}")
-
-            except Exception as api_error:
-                logger.error(f"❌ [UI] API call failed: {api_error}")
-                QMessageBox.warning(self, "网络问题", f"无法连接到服务器，请检查EchoGraph服务是否运行")
-
-        else:
-            return
-
-    def reinitialize_tavern_character_graph(self):
-        """重新初始化酒馆角色的知识图谱"""
-        try:
-            logger.info(f"🍺 重新初始化酒馆角色知识图谱，会话ID: {self.tavern_session_id}")
-
-            # 获取主窗口实例
-            main_window = None
-            widget = self.parent()
-            while widget is not None:
-                if isinstance(widget, EchoGraphMainWindow):
-                    main_window = widget
-                    break
-                widget = widget.parent()
-
-            if not main_window:
-                QMessageBox.warning(self, "初始化失败", "无法找到主窗口实例")
-                return
-
-            # 清空当前知识图谱
-            api_base_url = self._api_base_url()
-
-            # 调用API服务器的角色初始化端点
-            init_url = f"{api_base_url}/sessions/{self.tavern_session_id}/reinitialize"
-
-            response = requests.post(init_url, timeout=30)
-
-            if response.status_code == 200:
-                result = response.json()
-                nodes_created = result.get('nodes_created', 0)
-                edges_created = result.get('edges_created', 0)
-                character_name = result.get('character_name', '未知角色')
-
-                logger.info(f"✅ 酒馆角色图谱重新初始化成功: {character_name}, 节点={nodes_created}, 边={edges_created}")
-
-                # 刷新UI显示 - 从API服务器获取最新数据
-                self.refresh_from_api_server(self.tavern_session_id)
-
-                QMessageBox.information(
-                    self,
-                    "初始化成功",
-                    f"酒馆角色 '{character_name}'的知识图谱已重新初始化！\n\n"
-                    f"创建了 {nodes_created} 个节点和 {edges_created} 个关系。"
-                )
-
-            else:
-                error_text = response.text
-                logger.error(f"❌ 酒馆角色图谱重新初始化失败: HTTP {response.status_code} - {error_text}")
-                QMessageBox.warning(
-                    self,
-                    "初始化失败",
-                    f"无法重新初始化酒馆角色图谱：\nHTTP {response.status_code}\n\n{error_text}"
-                )
-
-        except requests.exceptions.Timeout:
-            logger.error("⏱️ 酒馆角色图谱初始化超时")
-            QMessageBox.warning(self, "初始化超时", "重新初始化请求超时，请检查API服务器状态")
-
-        except Exception as e:
-            logger.error(f"💥 酒馆角色图谱重新初始化异常: {e}")
-            logger.error(f"详细错误: {traceback.format_exc()}")
-            QMessageBox.critical(self, "初始化异常", f"重新初始化时发生异常：\n{str(e)}")
-
-    def open_dev_tools(self):
-        """打开开发者工具"""
-        try:
-            from PySide6.QtWebEngineWidgets import QWebEngineView
-
-            # 创建开发者工具窗口
-            if not hasattr(self, 'dev_view'):
-                self.dev_view = QWebEngineView()
-                self.dev_view.setWindowTitle("开发者工具 - EchoGraph Graph")
-                self.dev_view.resize(1000, 600)
-
-            # 设置开发者工具页面
-            self.graph_view.page().setDevToolsPage(self.dev_view.page())
-            self.dev_view.show()
-
-            logger.info("开发者工具已打开")
-
-        except Exception as e:
-            logger.error(f"打开开发者工具失败: {e}")
-            QMessageBox.warning(self, "错误", f"无法打开开发者工具：{str(e)}")
-
-    def show_debug_info(self):
-        """显示调试信息"""
-        try:
-            # 执行JavaScript获取调试信息
-            js_code = """
-            if (typeof window.debugGraph === 'function') {
-                window.debugGraph();
-                // 返回一些基本信息
-                {
-                    d3_loaded: typeof d3 !== 'undefined',
-                    d3_version: typeof d3 !== 'undefined' ? d3.version : 'not loaded',
-                    nodes_count: typeof nodes !== 'undefined' ? nodes.length : 'undefined',
-                    links_count: typeof links !== 'undefined' ? links.length : 'undefined',
-                    edit_mode: typeof editMode !== 'undefined' ? editMode : 'undefined',
-                    selected_node: typeof selectedNode !== 'undefined' && selectedNode ? selectedNode.datum().name : 'none',
-                    webchannel_bridge: typeof bridge !== 'undefined' ? 'available' : 'not available'
-                };
-            } else {
-                { error: 'debugGraph function not available' };
-            }
-            """
-
-            def show_result(result):
-                if result:
-                    debug_text = json.dumps(result, indent=2, ensure_ascii=False)
-                    QMessageBox.information(self, "调试信息", f"图谱状态：\n{debug_text}")
-                else:
-                    QMessageBox.information(self, "调试信息", "无法获取调试信息")
-
-            self.graph_view.page().runJavaScript(js_code, show_result)
-
-        except Exception as e:
-            logger.error(f"显示调试信息失败: {e}")
-            QMessageBox.warning(self, "错误", f"获取调试信息失败：{str(e)}")
-
     def _api_base_url(self):
         main_window = self.window()
         port = getattr(main_window, 'api_server_port', 9543)
@@ -3520,8 +3180,6 @@ class GraphPage(QWidget):
                        self.filter_all_btn, *self.filter_type_buttons.values()):
             button.setEnabled(not unavailable)
             button.setToolTip("酒馆图谱暂不可用，请刷新重试" if unavailable else "")
-        self.init_graph_btn.setVisible(not self.tavern_mode)
-        self.init_graph_btn.setEnabled(False)
         self.update_manual_controls()
         for button in (self.add_node_btn, self.edit_node_btn, self.delete_node_btn):
             button.setEnabled(not pending)
@@ -3602,91 +3260,6 @@ class GraphPage(QWidget):
         """从API服务器获取知识图谱数据并刷新显示"""
         if self.tavern_mode:
             return self._refresh_timeline_graph(session_id, force)
-        try:
-            logger.info(f"从API服务器获取会话 {session_id} 的知识图谱数据...")
-
-
-            # 获取会话统计信息
-            api_base_url = self._api_base_url()  # 从配置获取
-            stats_url = f"{api_base_url}/sessions/{session_id}/stats"
-
-            health_check_timeout = int(os.getenv("HEALTH_CHECK_TIMEOUT", "10"))
-            response = requests.get(stats_url, timeout=health_check_timeout)
-            if not self.tavern_mode or self.tavern_session_id != session_id:
-                return False
-            if response.status_code == 200:
-                stats = response.json()
-                logger.info(f"成功获取会话统计: 节点={stats.get('graph_nodes', 0)}, 边={stats.get('graph_edges', 0)}")
-                if stats.get("graph_nodes", 0) == 0:
-                    if hasattr(self, "clear_graph_layout"):
-                        self.clear_graph_layout()
-                    state = {}
-                    try:
-                        current = requests.get(f"{api_base_url}/tavern/current_session", timeout=health_check_timeout)
-                        if current.status_code == 200 and current.json().get("session_id") == session_id:
-                            state = current.json()
-                    except Exception as state_error:
-                        logger.debug(f"无法获取图谱初始化状态: {state_error}")
-                    placeholder_data = {**stats, **state}
-                    if (self.showing_tavern_placeholder and self.tavern_session_id == session_id
-                            and self._placeholder_stats == placeholder_data):
-                        return True
-                    self._show_tavern_mode_placeholder(session_id, placeholder_data)
-                    return True
-
-                # 获取会话的知识图谱导出数据
-                export_url = f"{api_base_url}/sessions/{session_id}/export"
-                export_response = requests.get(export_url, timeout=30)
-
-                if not self.tavern_mode or self.tavern_session_id != session_id:
-                    return False
-                if export_response.status_code == 200:
-                    graph_data = export_response.json()
-                    if (not self.showing_tavern_placeholder and self._tavern_graph_data
-                            and graph_data.get('graph_data') == self._tavern_graph_data.get('graph_data')):
-                        return True
-                    self._tavern_graph_data = graph_data
-                    self._tavern_entities = [
-                        {'name': node.get('id', ''), 'type': normalize_type(node.get('type', 'other'))[0],
-                         'display_name': display_name(node.get('id', ''), node.get('name')),
-                         'subtype': node.get('subtype') or normalize_type(node.get('type', 'other'))[1],
-                         'description': node.get('description', ''),
-                         'created_time': node.get('created_time', time.time()),
-                         'last_modified': node.get('last_modified', time.time()),
-                         'attributes': {key: value for key, value in node.items()
-                                        if key not in {'id', 'type', 'subtype', 'description',
-                                                       'created_time', 'last_modified'}}}
-                        for node in graph_data.get('graph_data', {}).get('nodes', [])
-                    ]
-                    self.showing_tavern_placeholder = False
-                    self._update_mode_controls()
-                    logger.info("成功获取知识图谱导出数据")
-
-                    # 从导出的图谱数据生成HTML显示
-                    self._generate_graph_html_from_api_data(graph_data)
-
-                    # 加载图谱HTML
-                    if self.graph_file_path.exists():
-                        self.graph_view.load(QUrl.fromLocalFile(str(self.graph_file_path)))
-                        logger.info("知识图谱HTML已加载到WebView")
-
-                    # 更新实体列表和统计
-                    self._update_ui_from_api_data(graph_data)
-                    return True
-                else:
-                    logger.warning(f"无法获取图谱导出数据: HTTP {export_response.status_code}")
-                    # 尝试仅使用统计数据更新UI
-                    self._update_ui_from_stats_only(stats)
-                    self._show_tavern_mode_placeholder(session_id, stats)
-            else:
-                logger.warning(f"Cannot fetch Tavern session stats: HTTP {response.status_code}")
-                self._show_tavern_mode_placeholder(session_id, {"graph_nodes": 0, "graph_edges": 0})
-        except Exception as exc:
-            logger.error(f"Tavern graph refresh failed: {exc}")
-            if self.tavern_mode and self.tavern_session_id == session_id:
-                self._show_tavern_mode_placeholder(session_id, {"graph_nodes": 0, "graph_edges": 0})
-        return False
-
     def _refresh_timeline_graph(self, chat_uuid, force=False):
         if not chat_uuid or self.tavern_session_id != chat_uuid:
             return False
@@ -3782,38 +3355,6 @@ class GraphPage(QWidget):
             logger.error(f"从API数据生成图谱HTML失败: {e}")
             # 使用备用方案
             self.html_generator._generate_fallback_html(self.graph_file_path)
-
-    def _update_ui_from_stats_only(self, stats: dict):
-        """仅从统计数据更新UI（当无法获取完整图谱数据时的备用方案）"""
-        try:
-            logger.info("使用统计数据更新UI（备用方案）")
-
-            # 更新统计信息
-            node_count = stats.get('graph_nodes', 0)
-            edge_count = stats.get('graph_edges', 0)
-
-            import datetime
-            current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-            stats_text = f"""节点数量: {node_count}
-关系数量: {edge_count}
-最后更新: {current_time}
-数据源: API服务器"""
-
-            self.stats_label.setText(stats_text)
-
-            # 清空实体列表并显示占位信息
-            self.entity_list.clear()
-            if node_count > 0:
-                self.entity_list.addItem(f"[酒馆] 检测到 {node_count} 个实体")
-                self.entity_list.addItem("请刷新图谱获取详细信息")
-            else:
-                self.entity_list.addItem("暂无实体数据")
-
-            logger.info(f"UI已更新（仅统计数据）: {node_count} 节点, {edge_count} 边")
-
-        except Exception as e:
-            logger.error(f"从统计数据更新UI失败: {e}")
 
     def _update_ui_from_api_data(self, graph_data: dict):
         """从API数据更新UI组件"""
@@ -4075,8 +3616,6 @@ class ConfigPage(QWidget):
             self.model_detail_labels[name] = label
         self.model_input.currentTextChanged.connect(self.update_model_details)
         self.stream_checkbox = QCheckBox("启用流式输出")
-        self.embedding_review_checkbox = QCheckBox("启用Embedding向量复核（付费）")
-        self.embedding_review_checkbox.setToolTip("仅勾选后才会调用Embedding接口进行语义复核，可能产生额外费用。")
 
         # LLM参数配置
         self.max_tokens_input = ValueUnitInput([UnitSpec('tokens', 1), UnitSpec('K tokens', 1000)], 100, 32000, decimals=0)
@@ -4110,28 +3649,10 @@ class ConfigPage(QWidget):
         llm_layout.addRow("温度参数:", self.temperature_input)
         llm_layout.addRow("请求超时:", self.request_timeout_input)
         llm_layout.addRow("", self.stream_checkbox)
-        llm_layout.addRow("", self.embedding_review_checkbox)
         llm_layout.addRow("", self.timeline_per_turn_checkbox)
         llm_layout.addRow("", self.timeline_include_books_checkbox)
 
         # 滑动窗口配置组
-        window_group = QGroupBox("滑动窗口配置")
-        window_layout = QFormLayout(window_group)
-
-        self.window_size_input = ValueUnitInput([UnitSpec('轮', 1)], 2, 20, decimals=0)
-        self.window_size_input.setValue(4)
-
-        self.processing_delay_input = ValueUnitInput([UnitSpec('轮', 1)], 0, 10, decimals=0)
-        self.processing_delay_input.setValue(1)
-
-        self.enable_conflict_resolution_checkbox = QCheckBox("启用冲突解决")
-        self.enable_conflict_resolution_checkbox.setChecked(True)
-
-        window_layout.addRow("窗口大小:", self.window_size_input)
-        window_layout.addRow("处理延迟:", self.processing_delay_input)
-        window_layout.addRow("", self.enable_conflict_resolution_checkbox)
-
-        # 服务器配置组
         server_group = QGroupBox("服务器配置")
         server_layout = QFormLayout(server_group)
 
@@ -4196,7 +3717,6 @@ class ConfigPage(QWidget):
 
         # 添加到布局
         layout.addWidget(llm_group)
-        layout.addWidget(window_group)
         layout.addWidget(server_group)
         layout.addWidget(status_group)
         layout.addWidget(ui_group)
@@ -4267,17 +3787,8 @@ class ConfigPage(QWidget):
 
         stream_val = config.get("LLM_STREAM_OUTPUT", "false").lower()
         self.stream_checkbox.setChecked(stream_val in ('true', '1', 't'))
-        embedding_review_val = config.get("ENABLE_EMBEDDING_REVIEW", "false").lower()
-        self.embedding_review_checkbox.setChecked(embedding_review_val in ('true', '1', 't'))
 
         # 滑动窗口配置
-        self.window_size_input.setValue(int(config.get("SLIDING_WINDOW_SIZE", "4")))
-        self.processing_delay_input.setValue(int(config.get("PROCESSING_DELAY", "1")))
-
-        conflict_resolution_val = config.get("ENABLE_CONFLICT_RESOLUTION", "true").lower()
-        self.enable_conflict_resolution_checkbox.setChecked(conflict_resolution_val in ('true', '1', 't'))
-
-        # 服务器配置
         self.api_server_port_input.setText(config.get("API_SERVER_PORT", "9543"))
         self.api_timeout_input.setValue(int(config.get("API_TIMEOUT", "15")))
         self.health_check_timeout_input.setValue(int(config.get("HEALTH_CHECK_TIMEOUT", "10")))
@@ -4372,8 +3883,6 @@ class ConfigPage(QWidget):
             ("上下文长度", self.context_size_input),
             ("温度参数", self.temperature_input),
             ("请求超时", self.request_timeout_input),
-            ("滑动窗口", self.window_size_input),
-            ("处理延迟", self.processing_delay_input),
             ("API请求超时", self.api_timeout_input),
             ("健康检查超时", self.health_check_timeout_input),
             ("最大消息数", self.max_messages_input),
@@ -4392,7 +3901,6 @@ class ConfigPage(QWidget):
             set_key(self.env_path, "OPENAI_API_KEY", self.api_key_input.text())
             set_key(self.env_path, "DEFAULT_MODEL", self.model_input.currentText())
             set_key(self.env_path, "LLM_STREAM_OUTPUT", str(self.stream_checkbox.isChecked()).lower())
-            set_key(self.env_path, "ENABLE_EMBEDDING_REVIEW", str(self.embedding_review_checkbox.isChecked()).lower())
 
             # LLM参数配置
             set_key(self.env_path, "MAX_TOKENS", str(self.max_tokens_input.value()))
@@ -4403,11 +3911,6 @@ class ConfigPage(QWidget):
             set_key(self.env_path, "REQUEST_TIMEOUT", str(self.request_timeout_input.value()))
 
             # 滑动窗口配置
-            set_key(self.env_path, "SLIDING_WINDOW_SIZE", str(self.window_size_input.value()))
-            set_key(self.env_path, "PROCESSING_DELAY", str(self.processing_delay_input.value()))
-            set_key(self.env_path, "ENABLE_CONFLICT_RESOLUTION", str(self.enable_conflict_resolution_checkbox.isChecked()).lower())
-
-            # 服务器配置
             set_key(self.env_path, "API_SERVER_PORT", self.api_server_port_input.text())
             set_key(self.env_path, "API_TIMEOUT", str(self.api_timeout_input.value()))
             set_key(self.env_path, "HEALTH_CHECK_TIMEOUT", str(self.health_check_timeout_input.value()))
@@ -4435,11 +3938,6 @@ class ConfigPage(QWidget):
             )
             from src.utils.config import reload_config, config as live_config
             reload_config(self.env_path)
-            main_window = self.window()
-            if isinstance(main_window, EchoGraphMainWindow) and hasattr(main_window, "game_engine"):
-                main_window.game_engine.grag_agent = (
-                    GRAGUpdateAgent(LLMClient()) if live_config.llm.api_key and live_config.llm.base_url else None
-                )
             port = self.api_server_port_input.text().strip() or "9543"
             self.save_button.setEnabled(False)
             self.backend_reload_worker = BackendReloadWorker(port, self)
@@ -4476,14 +3974,6 @@ class EchoGraphMainWindow(QMainWindow):
 
         # 启动API服务器
         self.start_api_server()
-        # 在启动或连接到已有API服务器后，强制关闭酒馆模式，确保默认本地隔离
-        try:
-            requests.post(f"http://localhost:{self.api_server_port}/system/tavern_mode", json={"active": False}, timeout=3)
-        except Exception:
-            pass
-
-
-        # 初始化UI
         self.init_ui()
 
         # 设置窗口属性
@@ -4512,7 +4002,7 @@ class EchoGraphMainWindow(QMainWindow):
             # 初始化核心系统 - 本地模式使用独立目录
             base_path = local_data_root()
             local_mode_path = base_path / "local_mode"  # 本地模式专用目录
-            local_mode_path.mkdir(exist_ok=True)
+            local_mode_path.mkdir(exist_ok=True, parents=True)
 
             self.memory = GRAGMemory(
                 hot_memory_size=10,
@@ -4521,30 +4011,8 @@ class EchoGraphMainWindow(QMainWindow):
                 auto_load_entities=True,  # 本地模式需要加载已有的对话数据
                 attention_config=ATTENTION_CONFIG.copy(),
             )
-            self.perception = PerceptionModule()
-            self.rpg_processor = RPGTextProcessor()
-            self.validation_layer = ValidationLayer()
-            grag_agent = None
-
-            # 默认优先启用LLM Agent做图谱维护，避免纯正则策略误更新。
-            try:
-                from src.utils.config import config
-                if config.llm.api_key and config.llm.base_url:
-                    grag_agent = GRAGUpdateAgent(LLMClient())
-                    logger.info("🤖 本地模式已启用GRAG Agent。")
-                else:
-                    logger.warning("⚠️ LLM配置不完整，本地模式将不会自动维护图谱（正则回退已禁用）。")
-            except Exception as agent_error:
-                logger.warning(f"⚠️ 本地模式GRAG Agent初始化失败: {agent_error}")
-
-            # 创建游戏引擎
-            self.game_engine = GameEngine(
-                self.memory,
-                self.perception,
-                self.rpg_processor,
-                self.validation_layer,
-                grag_agent
-            )
+            from types import SimpleNamespace
+            self.game_engine = SimpleNamespace(memory=self.memory)
 
             logger.info("核心组件初始化完成")
 
@@ -4556,15 +4024,6 @@ class EchoGraphMainWindow(QMainWindow):
     def init_managers(self):
         """初始化管理器组件"""
         try:
-            # 场景管理器
-            self.scenario_manager = ScenarioManager(
-                self.memory,
-                self.perception,
-                self.rpg_processor,
-                self.validation_layer
-            )
-
-            # 资源清理管理器
             self.cleanup_manager = ResourceCleanupManager(self)
 
             logger.info("管理器组件初始化完成")

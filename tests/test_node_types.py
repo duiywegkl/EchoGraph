@@ -26,37 +26,6 @@ def test_enum_shared_with_palette_and_page(tmp_path):
     assert '{{TYPE_METADATA}}' not in html
 
 
-def test_prompt_contains_all_types(tmp_path):
-    from src.core.game_engine import GameEngine
-    from src.core.grag_update_agent import GRAGUpdateAgent
-    from src.core.llm_client import ChatResult
-    from src.graph.node_types import prompt_types
-
-    definitions = prompt_types()
-    assert '怪物、精英怪物、生物及怪物群体' in definitions
-    assert '属性面板' in definitions
-    assert '组织、势力、阵营、世界观设定、设定、规则、体系或抽象概念' in definitions
-    assert '异能、技能、能力及 skill、ability、power' in definitions
-    assert '具体词放 subtype' in definitions
-
-    prompt = GameEngine._build_character_analysis_prompt(None, 'A', '', '', '', '', '', '')
-    assert prompt_types() in prompt
-    update_prompt = GRAGUpdateAgent._build_analysis_prompt(
-        None, '', '', {'nodes': {}, 'edges': []})
-    assert prompt_types() in update_prompt
-
-    class Stub:
-        calls = []
-        def chat_with_metadata(self, messages, **kwargs):
-            self.calls.append(messages[-1]['content'])
-            return ChatResult(json.dumps({'entities': [], 'relationships': []}), 'stop')
-
-    stub = Stub()
-    memory = GRAGMemory(graph_save_path=str(tmp_path / 'graph.graphml'),
-                        entities_json_path=str(tmp_path / 'entities.json'), auto_load_entities=False)
-    engine = GameEngine(memory, None, None, None, SimpleNamespace(llm_client=stub))
-    engine._perform_llm_analysis('Hero', '', '', '', '', '', '')
-    assert prompt_types() in stub.calls[0]
 
 
 def test_validator_repairs_synonyms_and_rejects_unknown():
@@ -149,20 +118,3 @@ def test_legacy_entities_migrate_without_write(tmp_path):
     assert counts == {'character': 7, 'location': 5, 'item': 10, 'other': 1}
     assert any(attrs['type'] == 'other' and attrs.get('subtype') == '异能'
                for _, attrs in memory.knowledge_graph.graph.nodes(data=True))
-
-
-def test_api_create_type_validation(tmp_path, monkeypatch):
-    import api_server
-    memory = GRAGMemory(graph_save_path=str(tmp_path / 'graph.graphml'),
-                        entities_json_path=str(tmp_path / 'entities.json'), auto_load_entities=False)
-    monkeypatch.setattr(api_server, 'sessions', {'types': SimpleNamespace(memory=memory)})
-    async def send(*args):
-        pass
-    monkeypatch.setattr(api_server.manager, 'send_message', send)
-    client = TestClient(api_server.app)
-    url = '/sessions/types/nodes'
-    assert client.post(url, json={'name': 'X', 'type': 'galaxy'}).status_code == 400
-    assert client.post(url, json={'name': 'Car', 'type': '\u8f7d\u5177'}).status_code == 200
-    assert memory.knowledge_graph.graph.nodes['Car']['type'] == 'item'
-    assert memory.knowledge_graph.graph.nodes['Car']['subtype'] == '\u8f7d\u5177'
-    assert {n['type'] for n in client.get('/sessions/types/export').json()['graph_data']['nodes']} == {'item'}
