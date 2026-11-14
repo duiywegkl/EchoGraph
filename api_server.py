@@ -2420,14 +2420,31 @@ async def delete_character(character_name: str):
         logger.error(f"Error deleting character: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to delete character: {e}")
 
+_plugin_heartbeat_at = 0.0
+_plugin_chat_uuid = None
+_plugin_heartbeat_lock = Lock()
+
+
+@app.post('/timeline/heartbeat')
+async def timeline_heartbeat(body: dict):
+    """Record plugin presence without opening a timeline store or WebSocket."""
+    global _plugin_heartbeat_at, _plugin_chat_uuid
+    chat_uuid = body.get('chat_uuid')
+    if chat_uuid is not None and not isinstance(chat_uuid, str):
+        raise HTTPException(status_code=400, detail='chat_uuid must be a string or null')
+    with _plugin_heartbeat_lock:
+        _plugin_heartbeat_at = time.monotonic()
+        _plugin_chat_uuid = chat_uuid or None
+    return {'ok': True}
+
+
 @app.get("/system/plugin_status")
 async def get_plugin_status():
-    """Read-only status based on active plugin WebSocket connections."""
-    connected = any(
-        sid.startswith("tavern_") and bool(sockets)
-        for sid, sockets in manager.active_connections.items()
-    )
-    return {"connected": connected}
+    """Read-only plugin presence from a recent heartbeat."""
+    with _plugin_heartbeat_lock:
+        connected = bool(_plugin_heartbeat_at) and time.monotonic() - _plugin_heartbeat_at < 30
+        chat_uuid = _plugin_chat_uuid if connected else None
+    return {'connected': connected, 'chat_uuid': chat_uuid}
 
 @app.get("/tavern/current_session")
 async def get_current_tavern_session():

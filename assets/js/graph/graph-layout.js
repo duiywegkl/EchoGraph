@@ -210,16 +210,46 @@ function typeLayout() {
 
 function renderGraph() {
     positionLinks(link);
-    linkLabel.attr('x', d => (edgeEndpoints(d).x1 + edgeEndpoints(d).x2) / 2)
-        .attr('y', d => (edgeEndpoints(d).y1 + edgeEndpoints(d).y2) / 2);
+    positionEdgeLabels();
     g.selectAll('.node-group').attr('transform', d => `translate(${d.x}, ${d.y})`);
+}
+
+function positionEdgeLabels() {
+    if (!linkLabel) return;
+    const occupied = nodes.map(n => labelBox(n));
+    linkLabel.each(function(d) {
+        const edge = edgeEndpoints(d);
+        const dx = edge.x2 - edge.x1, dy = edge.y2 - edge.y1;
+        const length = Math.hypot(dx, dy) || 1;
+        const normalX = -dy / length, normalY = dx / length;
+        const measured = this.getBBox();
+        const width = measured.width || String(d.relation || '').length * 12;
+        const height = measured.height || 14;
+        let point = null;
+        for (const t of [0.5, 0.35, 0.65]) {
+            for (const offset of [-18, 18, -32, 32]) {
+                const x = edge.x1 + dx * t + normalX * offset;
+                const y = edge.y1 + dy * t + normalY * offset;
+                const box = {left: x - width / 2 - 3, right: x + width / 2 + 3,
+                    top: y - height - 3, bottom: y + 3};
+                if (occupied.every(nodeBox => !boxesOverlap(box, nodeBox))) {
+                    point = {x, y};
+                    break;
+                }
+            }
+            if (point) break;
+        }
+        d.labelFits = !!point;
+        d3.select(this).attr('x', (point || {x: 0}).x).attr('y', (point || {y: 0}).y);
+    });
+    updateEdgeLabelVisibility(svg ? d3.zoomTransform(svg.node()).k : 1);
 }
 
 function updateEdgeLabelVisibility(scale) {
     if (!linkLabel) return;
     const focus = selectedNode && selectedNode.datum();
-    linkLabel.style('display', d => scale >= 1.5 || (focus &&
-        ((d.source.id || d.source) === focus.id || (d.target.id || d.target) === focus.id)) ? null : 'none');
+    linkLabel.style('display', d => d.labelFits && (scale >= 1.5 || (focus &&
+        ((d.source.id || d.source) === focus.id || (d.target.id || d.target) === focus.id))) ? null : 'none');
 }
 
 function fitGraphToView() {

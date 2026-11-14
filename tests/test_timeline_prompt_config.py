@@ -3,11 +3,26 @@
 from src.timeline.graph import GraphState
 from src.timeline.tavern import TavernTimeline
 from src.utils.config import config
+from src.timeline.initialization import extraction_prompt
+from src.timeline.extractor import TimelineExtractor
 
 
 class FakeClient:
     def __init__(self):
         self.model = config.llm.model
+
+
+def test_extraction_prompts_require_source_language():
+    base = extraction_prompt('阿青', '旅人', '', '', '', '', '', '')
+    assert '名称、描述和关系标签必须与原文使用相同语言' in base
+    assert '2–6 个汉字' in base
+    extractor = TimelineExtractor(FakeClient())
+    from src.timeline.graph import GraphState
+    from types import SimpleNamespace
+    segment = SimpleNamespace(turn=1, messages=[{'role': 'user', 'content': '阿青看见古城'}])
+    timeline = extractor.request_text(GraphState(), [segment])
+    assert '名称、描述和关系标签必须与对话原文使用相同语言' in timeline
+    assert '2–6 个汉字' in timeline
 
 
 def registered(service, state):
@@ -32,6 +47,8 @@ def test_prompt_selects_relevant_nodes_and_bounds_context(tmp_path, monkeypatch)
     service.store.put_chat(chat)
     monkeypatch.setattr(config.memory, 'max_context_length', 900)
     content = service.prompt('chat')['content']
+    assert '## 最近对话' in content and '## 相关知识图谱' in content
+    assert 'Lantern (角色)' in content
     assert 'Lantern' in content and 'Harbor' in content and 'visits' in content
     assert 'Node 0' not in content
     assert len(content) <= 900

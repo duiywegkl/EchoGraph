@@ -64,6 +64,8 @@ class TimelineExtractor:
                   '每项必须有整数 turn 和 op。op 为 add_node、update_node、delete_node、'
                   'add_edge、update_edge、delete_edge。节点用 id/name/type，关系用 source/target/relation；'
                   '更新和删除必须引用现有 id 或 edge_id。新增关系不要写 edge_id。'
+                  '新增或更新的实体名称、描述和关系标签必须与对话原文使用相同语言；中文对话用中文。'
+                  '关系标签应简短，中文用 2–6 个汉字，如位于、属于、看见、持有；不要用 located_in、part_of 等英文下划线标签。'
                   '允许 description、attributes 和节点 subtype；按轮次顺序输出。\n'
                   + prompt_types() + '\n当前图谱：'
                   + json.dumps(graph, ensure_ascii=False, separators=(',', ':'))

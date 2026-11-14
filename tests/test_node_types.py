@@ -1,9 +1,7 @@
 import copy
 import hashlib
 import json
-import shutil
 from collections import Counter
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -135,11 +133,14 @@ def test_resource_cleanup_removes_current_graph_pages(tmp_path, monkeypatch):
     assert all(not path.exists() for path in paths)
 
 
-def test_real_copy_migrates_without_write(tmp_path):
-    source = max(Path('data/tavern_characters').glob('*/sessions/current/entities.json'),
-                 key=lambda p: len(json.loads(p.read_text(encoding='utf-8')).get('entities', [])))
+def test_legacy_entities_migrate_without_write(tmp_path):
     copied = tmp_path / 'entities.json'
-    shutil.copyfile(source, copied)
+    entities = ([{'name': f'角色{i}', 'type': '人物'} for i in range(7)]
+                + [{'name': f'地点{i}', 'type': '地点'} for i in range(5)]
+                + [{'name': f'物品{i}', 'type': '物资'} for i in range(10)]
+                + [{'name': '法术', 'type': '异能'}])
+    copied.write_text(json.dumps({'entities': entities, 'relationships': []},
+                                 ensure_ascii=False), encoding='utf-8')
     before = hashlib.md5(copied.read_bytes()).hexdigest()
     memory = GRAGMemory(graph_save_path=str(tmp_path / 'missing.graphml'),
                         entities_json_path=str(copied))
@@ -148,7 +149,6 @@ def test_real_copy_migrates_without_write(tmp_path):
     assert counts == {'character': 7, 'location': 5, 'item': 10, 'other': 1}
     assert any(attrs['type'] == 'other' and attrs.get('subtype') == '异能'
                for _, attrs in memory.knowledge_graph.graph.nodes(data=True))
-    print('real copied entities distribution:', dict(counts))
 
 
 def test_api_create_type_validation(tmp_path, monkeypatch):

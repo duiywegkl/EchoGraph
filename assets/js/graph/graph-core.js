@@ -467,7 +467,7 @@ function initializeGraph() {
                 restored.add(d.id);
             }
         });
-        if (restored.size) {
+        if (restored.size > nodes.length / 2) {
             if (restored.size < nodes.length) placeNewNodes(restored);
             simulation.stop();
             physicsEnabled = false;
@@ -477,6 +477,7 @@ function initializeGraph() {
             fitGraphToView();
             if (restored.size < nodes.length) saveLayoutSoon();
         } else if (nodes.length) {
+            // A sparse layout is effectively new; arrange the whole graph once.
             arrangeGraph('auto');
         }
 
@@ -580,14 +581,7 @@ function setupEventHandlers(nodeGroup) {
 function setupSimulation() {
     simulation.on("tick", () => {
         positionLinks(link);
-
-        linkLabel.attr("x", d => {
-            const edge = edgeEndpoints(d);
-            return (edge.x1 + edge.x2) / 2;
-        }).attr("y", d => {
-            const edge = edgeEndpoints(d);
-            return (edge.y1 + edge.y2) / 2;
-        });
+        positionEdgeLabels();
 
         // 更新节点组位置（包含圆圈和文字）
         g.selectAll(".node-group")

@@ -4,6 +4,7 @@ import re
 
 import networkx as nx
 
+from src.graph.node_types import TYPE_LABELS
 from src.memory.attention import DEFAULT_CONFIG, EntityImportanceEvaluator
 
 
@@ -46,10 +47,11 @@ def prompt_context(state, messages, limit):
                     (ident not in anchors, -evaluator.score(ident)['importance_score'], ident))[:slots]
     selected = set(ranked)
     history = '\n'.join(recent)[-min(limit // 4, 600):]
-    lines = ['## Recent Conversation History', history, '', '## Relevant Knowledge Graph']
+    lines = ['## 最近对话', history, '', '## 相关知识图谱']
     for ident in ranked:
         node = state.nodes[ident]
-        lines.append(f"{node.get('name', ident)} ({node.get('type', 'other')}): {node.get('description', '')}")
+        type_id = node.get('type', 'other')
+        lines.append(f"{node.get('name', ident)} ({TYPE_LABELS.get(type_id, TYPE_LABELS['other'])}): {node.get('description', '')}")
     for edge in state.edges.values():
         if edge['source'] in selected and edge['target'] in selected:
             lines.append(f"{state.nodes[edge['source']]['name']} -> {state.nodes[edge['target']]['name']}: {edge['relation']}")

@@ -1942,6 +1942,9 @@ class GraphPage(QWidget):
         self.tavern_timeline_retry.hide()
 
         header.addWidget(title)
+        header.addWidget(self.tavern_timeline_status)
+        header.addWidget(self.tavern_timeline_retry)
+        header.addWidget(self.skipped_edits_label)
         header.addStretch()
         header.addWidget(self.refresh_btn)
         header.addWidget(self.export_btn)
@@ -1951,13 +1954,7 @@ class GraphPage(QWidget):
         header.addWidget(self.redo_btn)
         header.addWidget(self.reset_view_btn)
 
-        layout.addLayout(header)
-        status_row = QHBoxLayout()
-        status_row.addWidget(self.tavern_timeline_status)
-        status_row.addWidget(self.tavern_timeline_retry)
-        status_row.addStretch()
-        layout.addLayout(status_row)
-        layout.addWidget(self.skipped_edits_label)
+        layout.addLayout(header, 0)
 
         # 图谱显示区域
         self.graph_view = QWebEngineView()
@@ -2017,7 +2014,7 @@ class GraphPage(QWidget):
         self.graph_view.setContextMenuPolicy(Qt.CustomContextMenu)
         self.graph_view.customContextMenuRequested.connect(show_context_menu)
 
-        layout.addWidget(self.graph_view)
+        layout.addWidget(self.graph_view, 1)
 
         return panel
 
