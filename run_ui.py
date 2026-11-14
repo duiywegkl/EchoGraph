@@ -1109,7 +1109,7 @@ class IntegratedPlayPage(QWidget):
                 return
 
             try:
-                r = requests.get(f"{self.api_base_url}/tavern/current_session", timeout=poll_interval)
+                r = requests.get(f"{self.api_base_url}/timeline/current", timeout=poll_interval)
                 if self.is_test_mode:
                     return
                 if r.status_code == 200:
@@ -1134,17 +1134,14 @@ class IntegratedPlayPage(QWidget):
                                 logger.warning(f"⚠️ 切换图谱为酒馆会话失败: {ui_err}")
                         elif getattr(self.window(), 'graph_page', None):
                             self.window().graph_page.refresh_from_api_server(session_id)
-                        state = data.get("initialization_status")
-                        reason = data.get("initialization_reason", "")
-                        if state == "failed":
-                            status_text = f"图谱初始化失败：{reason or '未知原因'}"
-                        elif state == "partial":
-                            status_text = f"图谱部分完成：{reason or '部分世界书条目未提取'}"
-                        elif data.get("graph_nodes", 0) == 0:
-                            status_text = (f"图谱为空：{reason or '角色卡未提取到实体'}"
-                                           if state == "completed" else "正在从角色卡生成图谱…")
-                        else:
-                            status_text = f"图谱已就绪：{data['graph_nodes']} 个实体，{data.get('graph_edges', 0)} 条关系"
+                        try:
+                            timeline = requests.get(f"{self.api_base_url}/timeline/status/{session_id}", timeout=poll_interval).json()
+                            status_text = {
+                                'processing': '图谱更新中', 'needs_base': '需要构建基础图',
+                                'consistent': '已连接',
+                            }.get(timeline.get('state'), f"图谱与聊天不一致：{timeline.get('reason') or '提取失败'}")
+                        except Exception:
+                            status_text = '酒馆图谱状态不可用'
                         if getattr(self, "_last_polled_tavern_status", None) != status_text:
                             logger.info(f"📊 酒馆图谱状态：{status_text}")
                             self._last_polled_tavern_status = status_text
@@ -1938,6 +1935,11 @@ class GraphPage(QWidget):
         self.redo_btn.setEnabled(False)
         self.skipped_edits_label = QLabel('')
         self.skipped_edits_label.setProperty('role', 'status')
+        self.tavern_timeline_status = QLabel('')
+        self.tavern_timeline_status.setProperty('role', 'status')
+        self.tavern_timeline_retry = QPushButton('重试')
+        self.tavern_timeline_retry.clicked.connect(self.retry_tavern_timeline)
+        self.tavern_timeline_retry.hide()
 
         header.addWidget(title)
         header.addStretch()
@@ -1950,6 +1952,11 @@ class GraphPage(QWidget):
         header.addWidget(self.reset_view_btn)
 
         layout.addLayout(header)
+        status_row = QHBoxLayout()
+        status_row.addWidget(self.tavern_timeline_status)
+        status_row.addWidget(self.tavern_timeline_retry)
+        status_row.addStretch()
+        layout.addLayout(status_row)
         layout.addWidget(self.skipped_edits_label)
 
         # 图谱显示区域
@@ -2359,12 +2366,34 @@ class GraphPage(QWidget):
             return []
 
     def _tavern_mutation(self, method, path, payload=None, params=None):
-        from urllib.parse import quote
+        from urllib.parse import quote, unquote
         if not self.tavern_session_id:
             raise RuntimeError("酒馆会话不可用，请重新连接后重试。")
-        url = f"{self._api_base_url()}/sessions/{quote(self.tavern_session_id, safe='')}/{path}"
+        graph = (getattr(self, '_tavern_graph_data', None) or {}).get('graph_data', {})
+        nodes = {n['id']: n for n in graph.get('nodes', [])}
+        links = graph.get('links', [])
+        value = payload or params or {}
+        if path == 'relationships':
+            edge_id = value.get('edge_id') or next((edge.get('edge_id') for edge in links
+                if edge['source'] == value.get('source') and edge['target'] == value.get('target')), None)
+            op = {'POST': 'add_edge', 'PUT': 'update_edge', 'DELETE': 'delete_edge'}[method]
+            data = {'id': edge_id or str(uuid.uuid4())}
+            if method == 'POST':
+                data.update(source=value['source'], target=value['target'], relation=value['relationship'])
+            elif method == 'PUT':
+                data['relation'] = value['relationship']
+        elif path.startswith('nodes/'):
+            old_id = unquote(path.split('/', 1)[1])
+            op = 'delete_node' if method == 'DELETE' else 'update_node'
+            data = {'id': old_id} if method == 'DELETE' else GraphPage._entity_payload(value)
+            data['id'] = old_id
+        elif path == 'nodes':
+            op, data = 'add_node', GraphPage._entity_payload(value)
+        else:
+            raise RuntimeError('未知图谱操作')
+        url = f"{self._api_base_url()}/timeline/manual/{quote(self.tavern_session_id, safe='')}"
         try:
-            response = requests.request(method, url, json=payload, params=params, timeout=30)
+            response = requests.request('POST', url, json={'op': op, 'payload': data}, timeout=30)
         except requests.RequestException as exc:
             raise RuntimeError("酒馆后端不可用，请检查连接后重试。") from exc
         if not response.ok:
@@ -2381,7 +2410,7 @@ class GraphPage(QWidget):
         try:
             if self.tavern_mode:
                 method = {"create": "POST", "update": "PUT", "delete": "DELETE"}[action]
-                body = {"source": source, "target": target}
+                body = {"source": source, "target": target, "edge_id": edge_id}
                 if action != "delete":
                     body["relationship"] = relation
                 self._tavern_mutation(method, "relationships", None if action == "delete" else body,
@@ -2471,17 +2500,28 @@ class GraphPage(QWidget):
 
     def update_manual_controls(self, skipped=0):
         layer = getattr(self, 'local_layer', None)
-        enabled = not self.tavern_mode and layer is not None
-        self.undo_btn.setEnabled(enabled and layer.can_undo)
-        self.redo_btn.setEnabled(enabled and layer.can_redo)
+        if self.tavern_mode:
+            manual = (self._tavern_graph_data or {}).get('manual', {})
+            self.undo_btn.setEnabled(bool(manual.get('can_undo')))
+            self.redo_btn.setEnabled(bool(manual.get('can_redo')))
+            skipped = manual.get('skipped', 0)
+        else:
+            self.undo_btn.setEnabled(layer is not None and layer.can_undo)
+            self.redo_btn.setEnabled(layer is not None and layer.can_redo)
         self.skipped_edits_label.setText(f'有 {skipped} 条手动编辑因目标不存在被跳过' if skipped else '')
 
     def undo_manual(self):
-        if not self.tavern_mode and hasattr(self, 'local_layer') and self.local_layer.undo():
+        if self.tavern_mode and self.tavern_session_id:
+            requests.post(f'{self._api_base_url()}/timeline/undo/{self.tavern_session_id}', timeout=10)
+            self.refresh_from_api_server(self.tavern_session_id, force=True)
+        elif hasattr(self, 'local_layer') and self.local_layer.undo():
             self.reload_manual_graph()
 
     def redo_manual(self):
-        if not self.tavern_mode and hasattr(self, 'local_layer') and self.local_layer.redo():
+        if self.tavern_mode and self.tavern_session_id:
+            requests.post(f'{self._api_base_url()}/timeline/redo/{self.tavern_session_id}', timeout=10)
+            self.refresh_from_api_server(self.tavern_session_id, force=True)
+        elif hasattr(self, 'local_layer') and self.local_layer.redo():
             self.reload_manual_graph()
 
     def _add_sample_entities(self):
@@ -3187,6 +3227,12 @@ class GraphPage(QWidget):
             if not file_path:
                 return
 
+            if self.tavern_mode:
+                with open(file_path, 'w', encoding='utf-8') as stream:
+                    json.dump(self._tavern_graph_data, stream, ensure_ascii=False, indent=2)
+                QMessageBox.information(self, '导出成功', f'图谱已导出到：{file_path}')
+                return
+
             # 获取所有实体数据
             entities = self.get_all_entities()
 
@@ -3264,17 +3310,17 @@ class GraphPage(QWidget):
         if reply == QMessageBox.Yes:
             try:
                 if self.tavern_mode and self.tavern_session_id:
-                    # 酒馆模式下：通过API清空当前会话的图谱
-                    api_url = f"{self._api_base_url()}/sessions/{self.tavern_session_id}/clear"
-                    api_timeout = int(os.getenv("API_TIMEOUT", "15"))
-                    response = requests.post(api_url, timeout=api_timeout)
-                    if response.status_code == 200:
-                        logger.info("通过API成功清空酒馆会话知识图谱")
-                        # 刷新显示
-                        if not self.refresh_from_api_server(self.tavern_session_id):
-                            raise RuntimeError("Graph cleared but refresh failed")
-                    else:
-                        raise Exception(f"API清空失败: {response.status_code}")
+                    graph = (self._tavern_graph_data or {}).get('graph_data', {})
+                    ops = ([{'op': 'delete_edge', 'id': edge['edge_id']}
+                            for edge in graph.get('links', [])]
+                           + [{'op': 'delete_node', 'id': node['id']}
+                              for node in graph.get('nodes', [])])
+                    if ops:
+                        response = requests.post(
+                            f'{self._api_base_url()}/timeline/manual/{self.tavern_session_id}',
+                            json={'op': 'edit_set', 'payload': {'ops': ops}}, timeout=15)
+                        response.raise_for_status()
+                    self.refresh_from_api_server(self.tavern_session_id, force=True)
                 else:
                     layer, head = self._manual_context()
                     state, _ = effective_state(head, layer.data)
@@ -3477,7 +3523,8 @@ class GraphPage(QWidget):
                        self.filter_all_btn, *self.filter_type_buttons.values()):
             button.setEnabled(not unavailable)
             button.setToolTip("酒馆图谱暂不可用，请刷新重试" if unavailable else "")
-        self.init_graph_btn.setEnabled(self.tavern_mode and not unavailable)
+        self.init_graph_btn.setVisible(not self.tavern_mode)
+        self.init_graph_btn.setEnabled(False)
         self.update_manual_controls()
         for button in (self.add_node_btn, self.edit_node_btn, self.delete_node_btn):
             button.setEnabled(not pending)
@@ -3556,6 +3603,8 @@ class GraphPage(QWidget):
 
     def refresh_from_api_server(self, session_id: str, force: bool = False):
         """从API服务器获取知识图谱数据并刷新显示"""
+        if self.tavern_mode:
+            return self._refresh_timeline_graph(session_id, force)
         try:
             logger.info(f"从API服务器获取会话 {session_id} 的知识图谱数据...")
 
@@ -3640,6 +3689,54 @@ class GraphPage(QWidget):
             if self.tavern_mode and self.tavern_session_id == session_id:
                 self._show_tavern_mode_placeholder(session_id, {"graph_nodes": 0, "graph_edges": 0})
         return False
+
+    def _refresh_timeline_graph(self, chat_uuid, force=False):
+        if not chat_uuid or self.tavern_session_id != chat_uuid:
+            return False
+        try:
+            response = requests.get(f'{self._api_base_url()}/timeline/graph/{chat_uuid}', timeout=10)
+            response.raise_for_status()
+            graph_data = response.json()
+            status = graph_data.get('status', {})
+            state = status.get('state')
+            self.tavern_timeline_status.setText(
+                '图谱更新中' if state == 'processing' else
+                f"图谱与聊天不一致：{status.get('reason') or '提取失败'}" if state == 'inconsistent' else
+                f"需要构建基础图（{status.get('progress', 0)}%）" if state == 'needs_base' else '已连接')
+            self.tavern_timeline_retry.setVisible(state == 'inconsistent')
+            if (not force and self._tavern_graph_data and
+                    graph_data.get('graph_data') == self._tavern_graph_data.get('graph_data') and
+                    graph_data.get('manual') == self._tavern_graph_data.get('manual')):
+                return True
+            self._tavern_graph_data = graph_data
+            self._tavern_entities = [
+                {'name': node['id'], 'type': normalize_type(node.get('type', 'other'))[0],
+                 'display_name': node.get('name', node['id']),
+                 'subtype': node.get('subtype', ''), 'description': node.get('description', ''),
+                 'attributes': node.get('attributes', {})}
+                for node in graph_data.get('graph_data', {}).get('nodes', [])]
+            self.showing_tavern_placeholder = False
+            self._update_mode_controls()
+            self._generate_graph_html_from_api_data(graph_data)
+            if self.graph_file_path.exists():
+                self.graph_view.load(QUrl.fromLocalFile(str(self.graph_file_path)))
+            self._update_ui_from_api_data(graph_data)
+            self.update_manual_controls()
+            return True
+        except Exception as exc:
+            logger.warning(f'Timeline graph refresh failed: {exc}')
+            self.tavern_timeline_status.setText('图谱与聊天不一致：后端不可用')
+            self.tavern_timeline_retry.show()
+            return False
+
+    def retry_tavern_timeline(self):
+        if not self.tavern_session_id:
+            return
+        try:
+            requests.post(f'{self._api_base_url()}/timeline/retry/{self.tavern_session_id}', timeout=10).raise_for_status()
+            self.refresh_from_api_server(self.tavern_session_id, force=True)
+        except Exception as exc:
+            self.tavern_timeline_status.setText(f'图谱与聊天不一致：{exc}')
 
     def _generate_graph_html_from_api_data(self, graph_data: dict):
         """从API数据生成图谱HTML"""

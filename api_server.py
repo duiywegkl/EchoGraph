@@ -3269,6 +3269,106 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
     finally:
         manager.disconnect(session_id, websocket)
 
+def _tavern_timeline_service():
+    """Lazy creation keeps imports and TestClient construction away from real data."""
+    service = getattr(app.state, 'tavern_timeline', None)
+    if service is None:
+        from pathlib import Path
+        from src.timeline.tavern import TavernTimeline
+        default_root = Path(__file__).resolve().parent / 'data' / 'tavern_timeline'
+        service = TavernTimeline(
+            Path(os.getenv('TIMELINE_TAVERN_DATA_ROOT', str(default_root))),
+            LLMClient)
+        app.state.tavern_timeline = service
+    return service
+
+
+def _timeline_call(callback):
+    from src.timeline.store import StoreError
+    from src.timeline.graph import GraphError
+    try:
+        return callback()
+    except (ValueError, StoreError, GraphError, KeyError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post('/timeline/register')
+async def timeline_register(body: dict):
+    service = _tavern_timeline_service()
+    return _timeline_call(lambda: service.register(
+        body.get('chat_uuid'), body.get('integrity'), body.get('owner'),
+        body.get('file_name'), body.get('previous_file_exists', False)))
+
+
+@app.get('/timeline/identity/{chat_uuid}')
+async def timeline_identity(chat_uuid: str):
+    def lookup():
+        try:
+            chat = _tavern_timeline_service().store.get_chat(chat_uuid)
+            return {'previous_file_name': chat['file_name'], 'owner': chat['owner']}
+        except Exception:
+            return {'previous_file_name': None, 'owner': None}
+    return lookup()
+
+
+@app.post('/timeline/base')
+async def timeline_base(body: dict):
+    service = _tavern_timeline_service()
+    return _timeline_call(lambda: service.base(body.get('owner'),
+        {'card': body.get('card', {}), 'books': body.get('books', [])}))
+
+
+@app.post('/timeline/sync')
+async def timeline_sync(body: dict):
+    service = _tavern_timeline_service()
+    return _timeline_call(lambda: service.sync(body.get('chat_uuid'),
+        body.get('messages'), body.get('books')))
+
+
+@app.get('/timeline/status/{chat_uuid}')
+async def timeline_status(chat_uuid: str):
+    return _timeline_call(lambda: _tavern_timeline_service().status(chat_uuid))
+
+
+@app.post('/timeline/retry/{chat_uuid}')
+async def timeline_retry(chat_uuid: str):
+    return _timeline_call(lambda: _tavern_timeline_service().retry(chat_uuid))
+
+
+@app.get('/timeline/graph/{chat_uuid}')
+async def timeline_graph(chat_uuid: str):
+    return _timeline_call(lambda: _tavern_timeline_service().graph(chat_uuid))
+
+
+@app.post('/timeline/manual/{chat_uuid}')
+async def timeline_manual(chat_uuid: str, body: dict):
+    return _timeline_call(lambda: _tavern_timeline_service().edit(chat_uuid,
+        body.get('op'), body.get('payload', {})))
+
+
+@app.post('/timeline/undo/{chat_uuid}')
+async def timeline_undo(chat_uuid: str):
+    return _timeline_call(lambda: _tavern_timeline_service().history(chat_uuid, 'undo'))
+
+
+@app.post('/timeline/redo/{chat_uuid}')
+async def timeline_redo(chat_uuid: str):
+    return _timeline_call(lambda: _tavern_timeline_service().history(chat_uuid, 'redo'))
+
+
+@app.get('/timeline/prompt/{chat_uuid}')
+async def timeline_prompt(chat_uuid: str):
+    return _timeline_call(lambda: _tavern_timeline_service().prompt(chat_uuid))
+
+
+@app.get('/timeline/current')
+async def timeline_current():
+    chat_uuid = _tavern_timeline_service().current_chat_uuid
+    return {'has_session': bool(chat_uuid), 'chat_uuid': chat_uuid, 'session_id': chat_uuid}
+
+
+
+
 # --- 服务器启动 ---
 import argparse
 

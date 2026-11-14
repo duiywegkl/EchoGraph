@@ -85,10 +85,11 @@ def test_tavern_dialog_saves_renamed_node_via_api(app, monkeypatch):
     run_ui.GraphPage.edit_node_with_python_dialog(page, "Alice", "character")
     assert len(calls) == 1, notices
     method, url, kwargs = calls[0]
-    assert (method, url) == ("PUT", "http://stub.invalid/sessions/session-1/nodes/Alice")
-    assert kwargs["json"]["name"] == "Alicia"
-    assert kwargs["json"]["type"] == "character"
-    assert kwargs["json"]["attributes"] == {"role": "hero"}
+    assert (method, url) == ("POST", "http://stub.invalid/timeline/manual/session-1")
+    assert kwargs["json"]["op"] == "update_node"
+    assert kwargs["json"]["payload"]["name"] == "Alicia"
+    assert kwargs["json"]["payload"]["type"] == "character"
+    assert kwargs["json"]["payload"]["attributes"] == {"role": "hero"}
     assert notices[0][0] == "information"
 
 
@@ -126,7 +127,7 @@ def test_tavern_dialog_deletes_node_via_api(app, monkeypatch):
 
     monkeypatch.setattr(QDialog, "exec", accept_dialog)
     run_ui.GraphPage.edit_node_with_python_dialog(page, "Alice", "character")
-    assert calls == [("DELETE", "http://stub.invalid/sessions/session-1/nodes/Alice")]
+    assert calls == [("POST", "http://stub.invalid/timeline/manual/session-1")]
     assert warnings == []
 
 
@@ -178,6 +179,7 @@ def test_unchanged_tavern_graph_skips_page_reload(monkeypatch):
         _tavern_graph_data=graph,
         _api_base_url=lambda: "http://stub.invalid",
     )
+    page._refresh_timeline_graph = lambda session_id, force=False: session_id == 'session-1' and force
     assert run_ui.GraphPage.refresh_from_api_server(page, "session-1", force=True)
 
 
@@ -198,4 +200,5 @@ def test_unchanged_tavern_placeholder_skips_page_reload(monkeypatch):
         _placeholder_stats={**stats, **state},
         _api_base_url=lambda: "http://stub.invalid",
     )
+    page._refresh_timeline_graph = lambda session_id, force=False: session_id == 'session-1'
     assert run_ui.GraphPage.refresh_from_api_server(page, "session-1")

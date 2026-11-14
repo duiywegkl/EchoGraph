@@ -42,9 +42,19 @@ def _books(source, allowed):
     return sorted(books, key=lambda book: json.dumps(book, ensure_ascii=False, sort_keys=True))
 
 
+def _cards(source):
+    if 'cards' not in source:
+        return [{key: _clean((source.get('card') or {}).get(key) or '') for key in CARD_FIELDS}]
+    cards = [{key: _clean((card or {}).get(key) or '') for key in CARD_FIELDS}
+             for card in source['cards']]
+    if not cards:
+        raise ValueError('group base requires at least one card')
+    return sorted(cards, key=lambda card: json.dumps(card, ensure_ascii=False, sort_keys=True))
+
+
 def base_hash(source):
-    payload = {'card': {key: _clean((source.get('card') or {}).get(key) or '') for key in CARD_FIELDS},
-               'books': _books(source, BASE_SOURCES)}
+    payload = {'cards': _cards(source)} if 'cards' in source else {'card': _cards(source)[0]}
+    payload['books'] = _books(source, BASE_SOURCES)
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
     return hashlib.sha256(raw.encode('utf-8')).hexdigest()
 
@@ -76,41 +86,52 @@ def lore_messages(source, include_global_persona=False):
     return result
 
 
-def build_base(source, llm_client, store):
+def build_base(source, llm_client, store, progress=None, context_size=0):
     """Return (hash, state), reusing a stored base without calling the LLM."""
     digest = base_hash(source)
     try:
         return digest, store.get_base(digest)
     except StoreError:
         pass
-    card = {key: _clean((source.get('card') or {}).get(key) or '') for key in CARD_FIELDS}
-    name = card['name'] or 'Unknown Character'
+    cards = _cards(source)
     world = json.dumps([{'book': book['name'], **entry} for book in _books(source, BASE_SOURCES)
                         for entry in book['entries'] if not entry['disable']], ensure_ascii=False)
     entities, relationships, seen_relations = {}, [], set()
-    canonical = {name.strip().casefold(): name}
-    main = {'name': name, 'type': 'character', 'attributes': {'is_main_character': True}}
-    for batch in [''] + world_batches(world):
-        prompt = extraction_prompt(name, card['description'], card['personality'],
-                                   card['scenario'], '', card['mes_example'], batch,
-                                   ', '.join(list(canonical.values())[:80]))
-        parsed, _ = request_json(llm_client, prompt,
+    card_names = [card['name'] or 'Unknown Character' for card in cards]
+    main_names = {name.strip().casefold() for name in card_names}
+    canonical = {name.strip().casefold(): name for name in card_names}
+    mains = []
+    world_budget = min(6000, max(500, context_size * 2)) if context_size else 6000
+    batches = world_batches(world, budget=world_budget)
+    total = len(cards) + len(batches)
+    completed = 0
+    for card_index, (card, name) in enumerate(zip(cards, card_names)):
+        main = {'name': name, 'type': 'character', 'attributes': {'is_main_character': True}}
+        for batch in ([''] + batches if card_index == 0 else ['']):
+            prompt = extraction_prompt(name, card['description'], card['personality'],
+                                       card['scenario'], '', card['mes_example'], batch,
+                                       ', '.join(list(canonical.values())[:80]))
+            parsed, _ = request_json(llm_client, prompt,
                                  '你是知识图谱提取助手。只输出简洁的 JSON。', validate_kg)
-        if parsed.get('main_character'):
-            main.update(parsed['main_character'])
-            main['name'] = name
-        for entity in parsed['entities']:
-            key = entity['name'].strip().casefold()
-            if key != name.strip().casefold():
-                entities[key] = entity
-                canonical[key] = entity['name']
-        for relation in parsed['relationships']:
-            key = json.dumps(relation, ensure_ascii=False, sort_keys=True)
-            if key not in seen_relations:
-                relationships.append(relation)
-                seen_relations.add(key)
+            if parsed.get('main_character'):
+                main.update(parsed['main_character'])
+                main['name'] = name
+            for entity in parsed['entities']:
+                key = entity['name'].strip().casefold()
+                if key not in main_names:
+                    entities[key] = entity
+                    canonical[key] = entity['name']
+            for relation in parsed['relationships']:
+                key = json.dumps(relation, ensure_ascii=False, sort_keys=True)
+                if key not in seen_relations:
+                    relationships.append(relation)
+                    seen_relations.add(key)
+            completed += 1
+            if progress:
+                progress(int(90 * completed / total))
+        mains.append(main)
     nodes, names = {}, {}
-    for entity in [main, *entities.values()]:
+    for entity in [*mains, *entities.values()]:
         raw_type = entity.get('type', 'character')
         if raw_type not in TYPE_IDS and raw_type.casefold() not in SYNONYMS:
             raise ValueError(f'unknown base node type: {raw_type}')

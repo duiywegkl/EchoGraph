@@ -117,9 +117,10 @@ class TimelineEngine:
         if (segment.turn + 1) % self.store.snapshot_every == 0:
             self.store.put_snapshot(segment.key, state)
 
-    def process(self, chat_uuid, messages, mode="batch"):
+    def process(self, chat_uuid, messages, mode="batch", *, extractor=None):
         if mode not in ("batch", "per_turn"):
             raise ValueError("mode must be batch or per_turn")
+        extractor = extractor or self.extractor
         lock, process_lock = self._chat_locks(chat_uuid)
         with process_lock:
             with lock:
@@ -134,7 +135,7 @@ class TimelineEngine:
             state = self.store.state_at(segments[first_missing].parent_key, base_hash)
             def run_group(group, depth=0):
                 try:
-                    raw = self.extractor.extract(state.copy(), group)
+                    raw = extractor.extract(state.copy(), group)
                     grouped = self._validated_ops(raw, {item.turn for item in group})
                 except ExtractionRequestError:
                     if len(group) == 1 or depth == 3:
@@ -144,7 +145,8 @@ class TimelineEngine:
                     run_group(group[middle:], depth + 1)
                     return
                 info = {"mode": mode, "group_size": len(group), "split_depth": depth,
-                        "model": getattr(self.extractor, 'model', '')}
+                        "model": getattr(extractor, 'model', ''),
+                        "extractor": type(extractor).__name__}
                 for item in group:
                     self._store_segment(item, base_hash, state, grouped[item.turn], info)
 
@@ -162,15 +164,15 @@ class TimelineEngine:
                     run = segments[cursor:end]
                     if mode == 'per_turn':
                         groups = [[item] for item in run]
-                    elif getattr(self.extractor, 'context_size', 0) and hasattr(self.extractor, 'request_text'):
+                    elif getattr(extractor, 'context_size', 0) and hasattr(extractor, 'request_text'):
                         groups = None
                     else:
                         groups = [run]
                     if groups is None:
                         remaining = run
                         while remaining:
-                            group = plan_groups(remaining, self.extractor.context_size,
-                                                lambda items: self.extractor.request_text(state, items))[0]
+                            group = plan_groups(remaining, extractor.context_size,
+                                                lambda items: extractor.request_text(state, items))[0]
                             run_group(group)
                             remaining = remaining[len(group):]
                     else:

@@ -33,7 +33,7 @@ class TimelineStore:
         self.root = Path(root)
         self.snapshot_every = snapshot_every
         self._write_lock = RLock()
-        for name in ("bases", "deltas", "snapshots", "chats", "manual"):
+        for name in ("bases", "deltas", "snapshots", "chats", "manual", "owners"):
             (self.root / name).mkdir(parents=True, exist_ok=True)
 
     def _path(self, folder, key):
