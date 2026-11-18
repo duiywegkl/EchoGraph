@@ -8,6 +8,7 @@ from src.utils.llm_json import request_json
 
 from .base import _edge_id
 from .graph import GraphState
+from .initialization import COMPACT_GRAPH_RULES
 
 
 class ExtractionRequestError(RuntimeError):
@@ -66,7 +67,10 @@ class TimelineExtractor:
                   '更新和删除必须引用现有 id 或 edge_id。新增关系不要写 edge_id。'
                   '新增或更新的实体名称、描述和关系标签必须与对话原文使用相同语言；中文对话用中文。'
                   '关系标签应简短，中文用 2–6 个汉字，如位于、属于、看见、持有；不要用 located_in、part_of 等英文下划线标签。'
-                  '允许 description、attributes 和节点 subtype；按轮次顺序输出。\n'
+                  '每个描述不超过 60 字；允许 description、attributes 和节点 subtype；按轮次顺序输出。'
+                  + COMPACT_GRAPH_RULES
+                  + '每轮通常新增 0–3 个真正重要的节点；优先用 update_node 更新现有角色的 description 或 attributes，'
+                  '尤其将新异能或技能写入所属角色 attributes；无重要变化时返回空 operations。\n'
                   + prompt_types() + '\n当前图谱：'
                   + json.dumps(graph, ensure_ascii=False, separators=(',', ':'))
                   + '\n待处理：\n' + '\n'.join(lines))

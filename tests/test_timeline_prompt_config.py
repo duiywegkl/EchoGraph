@@ -23,6 +23,15 @@ def test_extraction_prompts_require_source_language():
     timeline = extractor.request_text(GraphState(), [segment])
     assert '名称、描述和关系标签必须与对话原文使用相同语言' in timeline
     assert '2–6 个汉字' in timeline
+    for prompt in (base, timeline):
+        assert '不要提取游戏或叙述系统、AI、作为系统的玩家、UI、状态栏' in prompt
+        assert '提示词指令及卡片标题' in prompt
+        assert '不要把异能、技能、能力、天赋建成节点；写入所属角色的 attributes' in prompt
+        assert '普通消耗品、道具、补给不记录，连 attributes 也不写' in prompt
+        assert '同一实体对不要重复关系' in prompt
+    assert '跨所有批次力求约 30 个节点以内' in base
+    assert '每轮通常新增 0–3 个' in timeline
+    assert '优先用 update_node' in timeline
 
 
 def registered(service, state):

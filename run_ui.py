@@ -2984,7 +2984,7 @@ class GraphPage(QWidget):
         reply = QMessageBox.question(
             self,
             "确认删除",
-            f"确定要删除节点 '{node_name}'吗？\n此操作不可撤销。",
+            f"确定要删除节点 '{node_name}'吗？\n删除后可在图谱页按 Ctrl+Z 撤销。",
             QMessageBox.Yes | QMessageBox.No
         )
 

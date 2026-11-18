@@ -16,7 +16,7 @@ NODE_TYPES = (
     NodeType("item", "物品", "物资、装备、武器或载具等可使用的实物"),
     NodeType("event", "事件", "发生的事件、任务或行动"),
     NodeType("concept", "概念", "组织、势力、阵营、世界观设定、设定、规则、体系或抽象概念"),
-    NodeType("other", "其他", "异能、技能、能力及 skill、ability、power；具体词放 subtype，或其他实体"),
+    NodeType("other", "其他", "不属于以上类别的重要实体（技能和异能不要建节点，写入角色 attributes）"),
 )
 TYPE_IDS = tuple(item.id for item in NODE_TYPES)
 TYPE_LABELS = {item.id: item.label for item in NODE_TYPES}

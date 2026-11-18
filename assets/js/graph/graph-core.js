@@ -133,10 +133,18 @@ function calculateForceParameters(nodeCount, linkCount) {
     };
 }
 
+function currentCentroid() {
+    const positioned = nodes.filter(d => Number.isFinite(d.x) && Number.isFinite(d.y));
+    if (!positioned.length) {
+        return {x: window.innerWidth / 2, y: window.innerHeight / 2};
+    }
+    return {x: d3.mean(positioned, d => d.x), y: d3.mean(positioned, d => d.y)};
+}
+
 /**
  * 更新力参数
  */
-function updateForceParameters() {
+function updateForceParameters(restartAlpha = 0.3) {
     const params = calculateForceParameters(nodes.length, links.length);
 
     simulation.force("charge", d3.forceManyBody().strength(params.repulsion));
@@ -145,14 +153,15 @@ function updateForceParameters() {
 
     // 只在需要时添加中心引力
     if (params.centerStrength > 0) {
-        simulation.force("x", d3.forceX(window.innerWidth / 2).strength(params.centerStrength));
-        simulation.force("y", d3.forceY(window.innerHeight / 2).strength(params.centerStrength));
+        const center = currentCentroid();
+        simulation.force("x", d3.forceX(center.x).strength(params.centerStrength));
+        simulation.force("y", d3.forceY(center.y).strength(params.centerStrength));
     } else {
         simulation.force("x", null);  // 移除中心引力
         simulation.force("y", null);
     }
 
-    simulation.alpha(0.3).restart();
+    simulation.alpha(restartAlpha).restart();
 }
 
 // 本地D3.js路径（支持从HTML注入绝对路径）
@@ -382,21 +391,33 @@ function initializeGraph() {
         svg.call(zoom);
         console.log('缩放行为设置完成');
 
+        const stored = window.graphLayout || {};
+        const restored = new Set();
+        nodes.forEach(d => {
+            const point = stored[d.id];
+            if (point && Number.isFinite(point.x) && Number.isFinite(point.y)) {
+                d.x = d.fx = point.x;
+                d.y = d.fy = point.y;
+                restored.add(d.id);
+            }
+        });
+
         // 力导向布局 - 使用智能参数
         const params = calculateForceParameters(nodes.length, links.length);
+        const initialCenter = currentCentroid();
 
         simulation = d3.forceSimulation(nodes)
             .force("link", d3.forceLink(links).id(d => d.id).distance(params.linkDistance))
             .force("charge", d3.forceManyBody().strength(params.repulsion))
-            .force("center", d3.forceCenter(width / 2, height / 2))
+            .force("center", d3.forceCenter(initialCenter.x, initialCenter.y))
             .force("collision", d3.forceCollide().radius(params.collisionRadius))
-            .alphaDecay(0.02)     // 更慢的衰减
-            .velocityDecay(0.8);  // 增加阻尼
+            .alphaDecay(0.015)
+            .velocityDecay(0.4);
 
         // 只在需要时添加中心引力
         if (params.centerStrength > 0) {
-            simulation.force("x", d3.forceX(width / 2).strength(params.centerStrength));
-            simulation.force("y", d3.forceY(height / 2).strength(params.centerStrength));
+            simulation.force("x", d3.forceX(initialCenter.x).strength(params.centerStrength));
+            simulation.force("y", d3.forceY(initialCenter.y).strength(params.centerStrength));
         }
 
         console.log('力导向布局创建完成');
@@ -457,16 +478,6 @@ function initializeGraph() {
         setupEventHandlers(nodeGroup);
         setupSimulation();
         setupSliderListeners();
-        const stored = window.graphLayout || {};
-        const restored = new Set();
-        nodes.forEach(d => {
-            const point = stored[d.id];
-            if (point && Number.isFinite(point.x) && Number.isFinite(point.y)) {
-                d.x = d.fx = point.x;
-                d.y = d.fy = point.y;
-                restored.add(d.id);
-            }
-        });
         if (restored.size > nodes.length / 2) {
             if (restored.size < nodes.length) placeNewNodes(restored);
             simulation.stop();
@@ -566,12 +577,7 @@ function setupEventHandlers(nodeGroup) {
         console.log(`窗口大小改变: ${newWidth}x${newHeight}`);
         svg.attr("width", newWidth).attr("height", newHeight);
 
-        // 更新所有与位置相关的力
-        simulation.force("center", d3.forceCenter(newWidth / 2, newHeight / 2));
-        simulation.force("x", d3.forceX(newWidth / 2).strength(0.05));
-        simulation.force("y", d3.forceY(newHeight / 2).strength(0.05));
-        if (physicsEnabled) simulation.alpha(0.3).restart();
-        else fitGraphToView();
+        fitGraphToView();
     });
 }
 
@@ -586,6 +592,9 @@ function setupSimulation() {
         // 更新节点组位置（包含圆圈和文字）
         g.selectAll(".node-group")
             .attr("transform", d => `translate(${d.x}, ${d.y})`);
+    });
+    simulation.on("end.layoutsave", () => {
+        if (physicsEnabled) saveLayoutSoon();
     });
 }
 
@@ -627,10 +636,14 @@ function dragged(event, d) {
 }
 
 function dragended(event, d) {
-    if (physicsEnabled && !event.active) simulation.alphaTarget(0);
-    d.fx = d.x;
-    d.fy = d.y;
-    saveLayoutSoon();
+    if (physicsEnabled) {
+        if (!event.active) simulation.alphaTarget(0);
+        d.fx = d.fy = null;
+    } else {
+        d.fx = d.x;
+        d.fy = d.y;
+        saveLayoutSoon();
+    }
 }
 
 /**
@@ -684,8 +697,9 @@ window.togglePhysics = function() {
         btn.textContent = '关闭物理效果';
         btn.classList.toggle('active');
         nodes.forEach(d => { d.fx = d.fy = null; });
-        simulation.force("center", d3.forceCenter(window.innerWidth / 2, window.innerHeight / 2));
-        updateForceParameters();
+        const center = currentCentroid();
+        simulation.force("center", d3.forceCenter(center.x, center.y));
+        updateForceParameters(0.2);
     }
 }
 
@@ -736,8 +750,9 @@ window.applyForceChanges = function() {
 
     // 中心引力
     if (centerStrength > 0) {
-        simulation.force("x", d3.forceX(window.innerWidth / 2).strength(centerStrength));
-        simulation.force("y", d3.forceY(window.innerHeight / 2).strength(centerStrength));
+        const center = currentCentroid();
+        simulation.force("x", d3.forceX(center.x).strength(centerStrength));
+        simulation.force("y", d3.forceY(center.y).strength(centerStrength));
     } else {
         simulation.force("x", null);
         simulation.force("y", null);

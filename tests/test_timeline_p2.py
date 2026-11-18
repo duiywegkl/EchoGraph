@@ -1,6 +1,7 @@
 """P2 extraction contracts; every model call uses an in-process fake."""
 
 from copy import deepcopy
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -88,6 +89,43 @@ def test_base_reuse_and_multiedges(tmp_path):
     assert (again, cached) == (digest, state)
     assert BaseGraphBuilder(store).build_base(source(), llm) == (digest, state)
     assert len(llm.calls) == 2  # card and world-book batch, no cache call
+
+
+@pytest.mark.parametrize('hierarchy,reverse', [
+    (("城", "山", "包含"), ("山", "城", "属于")),
+    (("山", "城", "属于"), ("城", "山", "包括")),
+])
+def test_base_dedupes_relations_and_reverse_hierarchy(tmp_path, hierarchy, reverse):
+    def relation(source_name, target_name, label, description, **attributes):
+        return {'source': source_name, 'target': target_name,
+                'relationship': label, 'description': description,
+                'attributes': attributes}
+
+    first = {'entities': [{'name': '山', 'type': 'location'},
+                          {'name': '城', 'type': 'location'}],
+             'relationships': [
+                 relation('阿青', '山', '守护', '首次描述', strength='high'),
+                 relation(' 阿青 ', '山 ', ' 守护 ', '重复描述', strength='low'),
+                 relation(*hierarchy, '保留的层级'),
+                 relation(*reverse, '反向重复'),
+             ]}
+    second = {'entities': [], 'relationships': [
+        relation('阿青', '山', '守护', '跨批次重复'),
+        relation('山', '城', '位于', '另一种关系'),
+        relation(*reverse, '跨批次反向重复'),
+    ]}
+    llm = FakeLLM([json.dumps(item, ensure_ascii=False) for item in (first, second)])
+    _, state = build_base(source(), llm, TimelineStore(tmp_path))
+
+    assert len(llm.calls) == 2
+    assert len(state.edges) == 3
+    edges = list(state.edges.values())
+    guarded = next(edge for edge in edges if edge['relation'] == '守护')
+    assert guarded['description'] == '首次描述'
+    assert guarded['attributes'] == {'strength': 'high'}
+    assert any(edge['relation'] == hierarchy[2] and
+               edge['description'] == '保留的层级' for edge in edges)
+    assert any(edge['relation'] == '位于' for edge in edges)
 
 
 def test_lore_is_opening_and_invalidates_every_key():

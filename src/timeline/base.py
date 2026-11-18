@@ -14,6 +14,8 @@ from .store import StoreError
 CARD_FIELDS = ('name', 'description', 'personality', 'scenario', 'mes_example')
 BASE_SOURCES = {'character', 'character_extra', 'embedded'}
 ENTRY_FIELDS = ('uid', 'key', 'keysecondary', 'content', 'disable')
+# Bump when the base extraction prompt or merging rules change.
+BASE_EXTRACTION_VERSION = 2
 
 
 def _clean(value):
@@ -55,6 +57,7 @@ def _cards(source):
 def base_hash(source):
     payload = {'cards': _cards(source)} if 'cards' in source else {'card': _cards(source)[0]}
     payload['books'] = _books(source, BASE_SOURCES)
+    payload['version'] = BASE_EXTRACTION_VERSION
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
     return hashlib.sha256(raw.encode('utf-8')).hexdigest()
 
@@ -94,8 +97,20 @@ def build_base(source, llm_client, store, progress=None, context_size=0):
     except StoreError:
         pass
     cards = _cards(source)
-    world = json.dumps([{'book': book['name'], **entry} for book in _books(source, BASE_SOURCES)
-                        for entry in book['entries'] if not entry['disable']], ensure_ascii=False)
+    world_entries, seen_entries = [], set()
+    for book in _books(source, BASE_SOURCES):
+        book_signatures = set()
+        for entry in book['entries']:
+            if entry['disable']:
+                continue
+            signature = json.dumps([entry[field] for field in ('key', 'keysecondary', 'content')],
+                                   ensure_ascii=False, sort_keys=True)
+            if signature in seen_entries:
+                continue
+            world_entries.append({'book': book['name'], **entry})
+            book_signatures.add(signature)
+        seen_entries.update(book_signatures)
+    world = json.dumps(world_entries, ensure_ascii=False)
     entities, relationships, seen_relations = {}, [], set()
     card_names = [card['name'] or 'Unknown Character' for card in cards]
     main_names = {name.strip().casefold() for name in card_names}
@@ -122,10 +137,18 @@ def build_base(source, llm_client, store, progress=None, context_size=0):
                     entities[key] = entity
                     canonical[key] = entity['name']
             for relation in parsed['relationships']:
-                key = json.dumps(relation, ensure_ascii=False, sort_keys=True)
-                if key not in seen_relations:
-                    relationships.append(relation)
-                    seen_relations.add(key)
+                source = relation['source'].strip().casefold()
+                target = relation['target'].strip().casefold()
+                label = relation['relationship'].strip()
+                key = (source, target, label)
+                reverse_labels = ({'属于'} if label in ('包含', '包括') else
+                                  {'包含', '包括'} if label == '属于' else set())
+                if key in seen_relations or any(
+                        (target, source, reverse) in seen_relations
+                        for reverse in reverse_labels):
+                    continue
+                relationships.append(relation)
+                seen_relations.add(key)
             completed += 1
             if progress:
                 progress(int(90 * completed / total))
